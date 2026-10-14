@@ -46,6 +46,8 @@ pub struct Mod<'a> {
     pub final_: bool,
     /// `redeclare model/package X = Y`: class override (name, class expression, scope).
     pub redeclares: Vec<(String, &'a ast::ComponentReference, Scope)>,
+    /// `redeclare T comp(...)`: new type of the modified component.
+    pub retype: Option<(&'a ast::ComponentReference, Scope)>,
 }
 
 impl<'a> Mod<'a> {
@@ -93,6 +95,9 @@ pub fn merge<'a>(outer: &Mod<'a>, inner: &Mod<'a>) -> Mod<'a> {
     for rd in &outer.redeclares {
         r.redeclares.retain(|x| x.0 != rd.0);
         r.redeclares.push(rd.clone());
+    }
+    if outer.retype.is_some() {
+        r.retype = outer.retype.clone();
     }
     r
 }
@@ -220,6 +225,9 @@ pub struct Flattener<'a, 't> {
     when_assigned: FxHashSet<VarId>,
     depth: usize,
     pub var_by_name: FxHashMap<String, VarId>,
+    /// Declared but not yet instantiated components, instantiated on first reference so
+    /// that declaration order does not matter (e.g. conditions on later parameters).
+    deferred: FxHashMap<(InstId, String), (&'a ast::Component, Rc<Env>, Mod<'a>)>,
 }
 
 const MAX_DEPTH: usize = 200;
@@ -244,6 +252,7 @@ impl<'a, 't> Flattener<'a, 't> {
             when_assigned: FxHashSet::default(),
             depth: 0,
             var_by_name: FxHashMap::default(),
+            deferred: FxHashMap::default(),
         }
     }
 
@@ -285,6 +294,10 @@ impl<'a, 't> Flattener<'a, 't> {
                     found = Some(c);
                     break;
                 }
+            }
+            if let Some(c) = self.tree.lookup_import(e.class, first) {
+                found = Some(c);
+                break;
             }
             if e.parent.is_none() {
                 found = self.tree.lookup(e.class, &[first], None);
@@ -333,12 +346,24 @@ impl<'a, 't> Flattener<'a, 't> {
         match e {
             E::Modification { target, value, .. } => {
                 let path: Vec<String> = target.parts.iter().map(|p| p.ident.text.to_string()).collect();
-                if let E::ClassModification { target: cls, modifications, .. } = &**value
+                if let E::ClassModification {
+                    target: cls,
+                    modifications,
+                    each_flags,
+                    final_flags,
+                    redeclare_flags,
+                    ..
+                } = &**value
                     && (redeclare || (modifications.is_empty() && self.looks_like_class(cls, scope)))
                 {
                     if path.len() == 1 {
                         m.redeclares.push((path[0].clone(), cls, scope.clone()));
                     }
+                    // Component redeclaration: new type plus its modifications.
+                    let mut sub = self.mods_from_exprs(modifications, each_flags, final_flags, redeclare_flags, scope);
+                    sub.retype = Some((cls, scope.clone()));
+                    sub.each = each;
+                    m.set_path(&path, sub);
                     return;
                 }
                 let sub = Mod {
@@ -355,6 +380,21 @@ impl<'a, 't> Flattener<'a, 't> {
                 sub.each = each;
                 sub.final_ = final_;
                 m.set_path(&path, sub);
+            }
+            // `field(attr = ..) = value`
+            E::Binary { op: rumoca_core::OpBinary::Assign, lhs, rhs, .. }
+                if matches!(lhs.as_ref(), E::ClassModification { .. }) =>
+            {
+                if let E::ClassModification { target, modifications, each_flags, final_flags, redeclare_flags, .. } =
+                    lhs.as_ref()
+                {
+                    let path: Vec<String> = target.parts.iter().map(|p| p.ident.text.to_string()).collect();
+                    let mut sub = self.mods_from_exprs(modifications, each_flags, final_flags, redeclare_flags, scope);
+                    sub.value = Some(Scoped { expr: rhs, scope: scope.clone() });
+                    sub.each = each;
+                    sub.final_ = final_;
+                    m.set_path(&path, sub);
+                }
             }
             E::NamedArgument { name, value, .. } => {
                 let sub = Mod {
@@ -531,15 +571,29 @@ impl<'a, 't> Flattener<'a, 't> {
         });
         let mut elems: Vec<(&'a ast::Component, Rc<Env>, Mod<'a>)> = Vec::new();
         self.collect(class, env.clone(), m, id, &mut elems, 0)?;
-        for (comp, cenv, cm) in elems {
-            if self.insts[id as usize].comps.contains_key(comp.name.as_str()) {
-                continue;
-            }
-            self.instantiate_component(id, comp, cenv, cm)
-                .with_context(|| format!("instantiating '{}{}'", dot(&prefix), comp.name))?;
+        let names: Vec<&'a str> = elems.iter().map(|(c, _, _)| c.name.as_str()).collect();
+        for (comp, cenv, cm) in elems.into_iter().rev() {
+            // first declaration wins (later duplicates come from inherited classes)
+            self.deferred.insert((id, comp.name.clone()), (comp, cenv, cm));
+        }
+        for name in names {
+            self.ensure_component(id, name)?;
         }
         self.depth -= 1;
         Ok(id)
+    }
+
+    /// Instantiate a deferred component of `inst` now, if it has not been yet.
+    fn ensure_component(&mut self, inst: InstId, name: &str) -> Result<()> {
+        if let Some((comp, cenv, cm)) = self.deferred.remove(&(inst, name.to_string())) {
+            if self.insts[inst as usize].comps.contains_key(name) {
+                return Ok(());
+            }
+            let prefix = self.insts[inst as usize].prefix.clone();
+            self.instantiate_component(inst, comp, cenv, cm)
+                .with_context(|| format!("instantiating '{}{}'", dot(&prefix), comp.name))?;
+        }
+        Ok(())
     }
 
     /// Collect components (own + inherited) with their effective modifiers.
@@ -666,10 +720,16 @@ impl<'a, 't> Flattener<'a, 't> {
         let tclass = if builtin.is_some() {
             None
         } else {
-            Some(
-                self.lookup_class(&env, &tparts)
-                    .ok_or_else(|| anyhow!("type '{}' not found", comp.type_name))?,
-            )
+            match &m.retype {
+                Some((cls, sc)) => {
+                    let parts: Vec<&str> = cls.parts.iter().map(|p| &*p.ident.text).collect();
+                    Some(self.lookup_class(&sc.env, &parts).ok_or_else(|| anyhow!("type '{}' not found", cls))?)
+                }
+                None => Some(
+                    self.lookup_class(&env, &tparts)
+                        .ok_or_else(|| anyhow!("type '{}' not found", comp.type_name))?,
+                ),
+            }
         };
         // Dimensions
         let mut dims = Vec::new();
@@ -2230,6 +2290,12 @@ impl<'a, 't> Flattener<'a, 't> {
         }
         if first == "time" && cr.parts.len() == 1 {
             return Ok(Val::S(self.model.arena.time()));
+        }
+        if !ctx.in_function
+            && !cr.local
+            && let Some(inst) = scope.inst
+        {
+            self.ensure_component(inst, first)?;
         }
         if !ctx.in_function
             && !cr.local

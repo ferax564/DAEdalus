@@ -18,6 +18,8 @@ COMMANDS:
   flatten     print the flat model
   dump        print the sorted, causalised equation system
   simulate    simulate and write results
+  test-library  translate and simulate every model with an experiment
+                annotation under --model (a package); prints a report
 
 SOURCES:
   .mo files or directories (loaded recursively). The bundled Daedalus library
@@ -121,6 +123,11 @@ fn run() -> anyhow::Result<()> {
         let p = Path::new(s);
         if p.is_dir() {
             lib.load_dir(p)?;
+            for d in &lib.docs {
+                for e in d.errors.iter().take(3) {
+                    eprintln!("{e}");
+                }
+            }
         } else {
             let text = std::fs::read_to_string(p).map_err(|e| anyhow::anyhow!("{s}: {e}"))?;
             for e in lib.set_document(s, &text) {
@@ -230,6 +237,7 @@ fn run() -> anyhow::Result<()> {
             }
             Ok(())
         }
+        "test-library" => test_library(&lib, &model, &opts),
         _ => anyhow::bail!("unknown command '{cmd}'\n\n{USAGE}"),
     }
 }
@@ -247,4 +255,99 @@ fn write_result(res: &daedalus_core::results::Results, out: &str, vars: Option<&
 
 fn ms(d: std::time::Duration) -> f64 {
     d.as_secs_f64() * 1000.0
+}
+
+fn has_experiment(def: &rumoca_ir_ast::ClassDef) -> bool {
+    def.annotation.iter().any(|a| match a {
+        rumoca_ir_ast::Expression::ClassModification { target, .. } => {
+            target.parts.len() == 1 && &*target.parts[0].ident.text == "experiment"
+        }
+        _ => false,
+    })
+}
+
+fn test_library(lib: &Library, prefix: &str, opts: &Options) -> anyhow::Result<()> {
+    let tree = lib.tree();
+    let mut models = Vec::new();
+    tree.walk(&mut |c| {
+        let node = tree.node(c);
+        if (node.path == prefix || node.path.starts_with(&format!("{prefix}.")))
+            && let Some(def) = node.def
+            && !def.partial
+            && matches!(def.class_type, rumoca_core::ClassType::Model | rumoca_core::ClassType::Block)
+            && has_experiment(def)
+        {
+            models.push(node.path.clone());
+        }
+    });
+    drop(tree);
+    let mut ok = 0;
+    let mut failures: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+    let t_all = Instant::now();
+    for name in &models {
+        let t0 = Instant::now();
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<String, String> {
+            let m = daedalus_core::translate(lib, name, opts).map_err(|e| format!("translate: {e:#}"))?;
+            let mut o = SimOptions::from_model(&m);
+            o.max_wall_time = 20.0;
+            let (_, st) = daedalus_core::sim::simulate(&m, o).map_err(|e| format!("simulate: {}", e.message))?;
+            Ok(format!("{} states, {} steps", m.states.len(), st.solver.steps))
+        }));
+        let dt = t0.elapsed().as_secs_f64() * 1000.0;
+        match r {
+            Ok(Ok(info)) => {
+                ok += 1;
+                println!("PASS {name} ({info}, {dt:.0} ms)");
+            }
+            Ok(Err(e)) => {
+                let first = e.lines().next().unwrap_or("").to_string();
+                println!("FAIL {name}: {first}");
+                failures.entry(categorize(&first)).or_default().push(name.clone());
+            }
+            Err(_) => {
+                println!("FAIL {name}: panic");
+                failures.entry("panic".into()).or_default().push(name.clone());
+            }
+        }
+    }
+    println!(
+        "\n{ok}/{} passed ({:.1}%) in {:.1} s",
+        models.len(),
+        100.0 * ok as f64 / models.len().max(1) as f64,
+        t_all.elapsed().as_secs_f64()
+    );
+    let mut cats: Vec<_> = failures.into_iter().collect();
+    cats.sort_by_key(|(_, v)| std::cmp::Reverse(v.len()));
+    for (c, v) in cats {
+        println!("{:4}  {c}", v.len());
+    }
+    Ok(())
+}
+
+/// Group error messages by stripping names and numbers.
+fn categorize(msg: &str) -> String {
+    let mut out = String::new();
+    let mut in_quote = false;
+    for ch in msg.chars() {
+        if ch == '\'' {
+            in_quote = !in_quote;
+            if in_quote {
+                out.push_str("'…");
+            } else {
+                out.push('\'');
+            }
+            continue;
+        }
+        if in_quote {
+            continue;
+        }
+        if ch.is_ascii_digit() {
+            if !out.ends_with('#') {
+                out.push('#');
+            }
+            continue;
+        }
+        out.push(ch);
+    }
+    out.chars().take(120).collect()
 }

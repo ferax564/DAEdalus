@@ -48,6 +48,9 @@ pub struct SimOptions {
     pub store_events: bool,
     /// Parameter overrides by name.
     pub params: Vec<(String, f64)>,
+    /// Abort after this many seconds of wall-clock time (0 = no limit).
+    #[serde(default)]
+    pub max_wall_time: f64,
 }
 
 impl Default for SimOptions {
@@ -63,6 +66,7 @@ impl Default for SimOptions {
             max_step: 0.0,
             store_events: true,
             params: Vec::new(),
+            max_wall_time: 0.0,
         }
     }
 }
@@ -414,10 +418,14 @@ impl<'m> Simulation<'m> {
         let n_rel = m.layout.n_rel;
         let mut xi = vec![0.0; n];
         let mut guard = 0u64;
+        let wall0 = crate::backend::web_time_now();
         while t < o.stop_time * (1.0 - 1e-15) - 1e-300 && self.terminated.is_none() {
             guard += 1;
             if guard > 50_000_000 {
                 return Err("too many steps".into());
+            }
+            if o.max_wall_time > 0.0 && guard % 64 == 0 && crate::backend::web_time_now() - wall0 > o.max_wall_time {
+                return Err(format!("wall-clock limit of {} s reached at t = {}", o.max_wall_time, t));
             }
             let tn = solver.step(&mut self.rt, o.stop_time)?;
             let tp = solver.t_prev();

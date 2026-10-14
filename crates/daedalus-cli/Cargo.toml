@@ -9,3 +9,5 @@ path = "src/main.rs"
 [dependencies]
 daedalus-core = { path = "../daedalus-core" }
 anyhow = { workspace = true }
+rumoca-ir-ast = { workspace = true }
+rumoca-core = { workspace = true }

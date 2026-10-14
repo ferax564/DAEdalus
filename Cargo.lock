@@ -244,6 +244,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "daedalus-core",
+ "rumoca-core",
+ "rumoca-ir-ast",
 ]
 
 [[package]]

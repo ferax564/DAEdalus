@@ -185,7 +185,7 @@ impl<'a> ClassTree<'a> {
         Some(c)
     }
 
-    fn lookup_import(&self, scope: ClassId, name: &str) -> Option<ClassId> {
+    pub fn lookup_import(&self, scope: ClassId, name: &str) -> Option<ClassId> {
         let def = self.def(scope)?;
         for imp in &def.imports {
             match imp {

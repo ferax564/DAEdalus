@@ -33,20 +33,19 @@ impl Library {
     /// Add or replace a document. Parse errors are recorded; the recovered AST is kept
     /// so the editor and browser keep working on partially valid text.
     pub fn set_document(&mut self, uri: &str, text: &str) -> Vec<String> {
-        let syntax = rumoca_phase_parse::parse_to_syntax(text, uri);
-        let errors: Vec<String> = syntax
-            .parse_errors()
-            .iter()
-            .map(|e| rumoca_phase_parse::format_parse_error(e, uri, text))
-            .collect();
-        let ast = syntax.best_effort().clone();
-        let doc = Document { uri: uri.to_string(), text: Arc::from(text), ast, errors: errors.clone() };
+        let doc = parse_document(uri, text);
+        let errors = doc.errors.clone();
+        self.insert(doc);
+        errors
+    }
+
+    fn insert(&mut self, doc: Document) {
+        let uri = doc.uri.clone();
         if let Some(d) = self.docs.iter_mut().find(|d| d.uri == uri) {
             *d = doc;
         } else {
             self.docs.push(doc);
         }
-        errors
     }
 
     pub fn remove_document(&mut self, uri: &str) {
@@ -54,9 +53,10 @@ impl Library {
     }
 
     /// Load a directory tree (package.mo / package.order layout or loose .mo files).
+    /// Files are parsed in parallel.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn load_dir(&mut self, dir: &std::path::Path) -> Result<usize> {
-        let mut n = 0;
+        let mut files = Vec::new();
         let mut stack = vec![dir.to_path_buf()];
         while let Some(d) = stack.pop() {
             let mut entries: Vec<_> = std::fs::read_dir(&d)?.filter_map(|e| e.ok()).collect();
@@ -66,11 +66,37 @@ impl Library {
                 if p.is_dir() {
                     stack.push(p);
                 } else if p.extension().is_some_and(|x| x == "mo") {
-                    let text = std::fs::read_to_string(&p)?;
-                    self.set_document(&p.to_string_lossy(), &text);
-                    n += 1;
+                    files.push(p);
                 }
             }
+        }
+        let n = files.len();
+        let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).min(16);
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let mut docs: Vec<(usize, Document)> = std::thread::scope(|sc| {
+            let handles: Vec<_> = (0..threads)
+                .map(|_| {
+                    sc.spawn(|| {
+                        let mut out = Vec::new();
+                        loop {
+                            let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            if i >= files.len() {
+                                break;
+                            }
+                            let p = &files[i];
+                            if let Ok(text) = std::fs::read_to_string(p) {
+                                out.push((i, parse_document(&p.to_string_lossy(), &text)));
+                            }
+                        }
+                        out
+                    })
+                })
+                .collect();
+            handles.into_iter().flat_map(|h| h.join().unwrap_or_default()).collect()
+        });
+        docs.sort_by_key(|(i, _)| *i);
+        for (_, d) in docs {
+            self.insert(d);
         }
         Ok(n)
     }
@@ -89,4 +115,13 @@ impl Library {
         f.flatten(id)?;
         Ok(f.model)
     }
+}
+
+/// Parse one document, keeping the recovered AST on syntax errors.
+pub fn parse_document(uri: &str, text: &str) -> Document {
+    let syntax = rumoca_phase_parse::parse_to_syntax(text, uri);
+    let errors: Vec<String> =
+        syntax.parse_errors().iter().map(|e| rumoca_phase_parse::format_parse_error(e, uri, text)).collect();
+    let ast = syntax.best_effort().clone();
+    Document { uri: uri.to_string(), text: Arc::from(text), ast, errors }
 }
