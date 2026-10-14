@@ -39,19 +39,23 @@
 
 ### Modelica Standard Library coverage
 
-The current MSL 4.x sweep is `daedalus test-library <MSL> -m Modelica`:
-**110 of 534** example models translate and simulate. The largest groups of
-failures, which are the next work items:
+The MSL 4.x sweep is `daedalus test-library <MSL> -m Modelica`:
+**261 of 534** example models translate and simulate (up from 110). Now
+covered: MultiBody, overconstrained connectors (`Connections.branch`/`root`),
+`Complex` and the QuasiStatic libraries, `CombiTable1D`/`CombiTimeTable`, and
+expandable connectors. The largest remaining groups of failures, which are the
+next work items:
 
 | Failures | Missing feature |
 | ---: | --- |
-| ~95 | Base classes from not-yet-supported packages, mostly synchronous `Clock` models (`Modelica.Clocked`) and `ExternalObject` tables (`CombiTable*`, `CombiTimeTable`) |
-| 76 | Array-valued attributes on record and matrix components (MultiBody `R_rel`, `r_0`, frame records) |
-| 58 | References to disabled conditional components inside connect sets and bindings |
-| ~40 | Parameter and function evaluation that meets a record component or a string where a number is expected |
-| 21 | `extends` depth on deeply nested Media packages |
-| 11 | Over-determined systems, most likely from overconstrained connectors (`Connections.branch`/`root`), which are not handled yet |
-| 8 | External C functions |
+| 73 | Synchronous `Clock` models (`Modelica.Clocked` and the clocked blocks) |
+| ~40 | Media: `extends` depth on deeply nested packages, string-valued substance names in numeric context, and function evaluation over record states |
+| ~25 | Array sizes and subscripts in record and matrix bindings (for example the battery `cellData` tables) |
+| 14 | External C functions (`Modelica.Math.Random`, `Streams.writeRealMatrix`) |
+| ~10 | Index reduction and initialization of a few FundamentalWave machines and rectifiers |
+| 1 | RobotR3 `OneAxis`/`FullRobot`: bearing friction stick-slip makes events chatter; the run stops with a clear error |
+
+`CombiTable2D` is not supported yet.
 
 ### Performance
 
