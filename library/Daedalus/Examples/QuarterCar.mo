@@ -12,6 +12,9 @@ package QuarterCar "Quarter-car ride model with a physical hydraulic damper (aft
     parameter Units.Time t0=0.2 "Time the tyre reaches the bump";
   equation
     y = if time < t0 or time > t0 + L/v then 0 else h/2*(1 - cos(2*3.141592653589793*(time - t0)*v/L));
+    annotation (Icon(graphics={
+        Line(points={{-80,-60},{-30,-60},{-20,-50},{-10,10},{0,30},{10,10},{20,-50},{30,-60},{80,-60}}, color={0,0,127}, smooth=Smooth.Bezier),
+        Line(points={{-90,-70},{90,-70}}, color={95,95,95})}));
   end RoadBump;
 
   model MonotubeDamper "Gas-charged monotube damper: piston valves, bleed orifice and floating gas piston"
@@ -70,7 +73,7 @@ package QuarterCar "Quarter-car ride model with a physical hydraulic damper (aft
     parameter Units.Length d_rod=0.018 "Damper rod diameter";
     parameter Units.Force F_gas=if hydraulicDamper then p_gas*3.141592653589793/4*d_rod^2 else 0
       "Gas spring force of the damper at the static position";
-    Daedalus.Blocks.Interfaces.RealInput z_road(unit="m");
+    Daedalus.Blocks.Interfaces.RealInput z_road(unit="m") annotation (Placement(transformation(extent={{-20,-20},{20,20}}, rotation=90, origin={0,-120})));
     Units.Acceleration a_body = body.a "Vertical body acceleration (ride comfort)";
     Units.Force F_tyre = -tyre.f "Tyre load (road holding)";
   equation
@@ -83,6 +86,17 @@ package QuarterCar "Quarter-car ride model with a physical hydraulic damper (aft
     connect(damper.flange_b, body.flange_a);
     connect(wheel.flange_b, linearDamper.flange_a);
     connect(linearDamper.flange_b, body.flange_a);
+    annotation (Icon(coordinateSystem(extent={{-100,-100},{100,100}}), graphics={
+        Rectangle(extent={{-100,100},{100,-100}}, lineColor={95,95,95}, fillColor={250,250,250}, fillPattern=FillPattern.Solid, radius=6),
+        Rectangle(extent={{-50,90},{50,50}}, lineColor={0,0,0}, fillColor={0,128,255}, fillPattern=FillPattern.Solid),
+        Line(points={{-20,50},{-20,40},{-35,32},{-5,22},{-35,12},{-5,2},{-20,-6},{-20,-15}}),
+        Rectangle(extent={{10,40},{30,10}}, lineColor={0,0,0}),
+        Line(points={{20,50},{20,40}}),
+        Line(points={{20,25},{20,-15}}),
+        Rectangle(extent={{-40,-15},{40,-45}}, lineColor={0,0,0}, fillColor={95,95,95}, fillPattern=FillPattern.Solid),
+        Line(points={{0,-45},{0,-55},{-12,-62},{12,-70},{0,-78},{0,-90}}),
+        Line(points={{-60,-90},{60,-90}}, thickness=1),
+        Text(extent={{-150,145},{150,105}}, textString="%name", textColor={0,0,255})}));
   end Corner;
 
   model BumpComparison "Linear damper versus hydraulic damper with clean and aerated oil over a 50 mm bump"

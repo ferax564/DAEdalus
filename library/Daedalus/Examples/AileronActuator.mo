@@ -19,6 +19,14 @@ package AileronActuator "Electro-hydraulic aileron actuator (after Modelon)"
     connect(supplyLine.port_b, P);
     connect(T, returnLine.port_a);
     connect(returnLine.port_b, ret.port);
+    annotation (Icon(coordinateSystem(extent={{-100,-100},{100,100}}), graphics={
+        Rectangle(extent={{-100,100},{100,-100}}, lineColor={95,95,95}, fillColor={250,250,250}, fillPattern=FillPattern.Solid, radius=6),
+        Ellipse(extent={{-60,40},{20,-40}}, lineColor={0,0,0}, fillColor={0,128,255}, fillPattern=FillPattern.Solid),
+        Polygon(points={{-20,40},{0,20},{-40,20},{-20,40}}, lineColor={0,0,0}, fillColor={255,255,255}, fillPattern=FillPattern.Solid),
+        Line(points={{-40,90},{-40,40}}, color={0,128,255}, thickness=1),
+        Line(points={{40,90},{40,-60},{-20,-60},{-20,-40}}, color={0,128,255}, thickness=1),
+        Text(extent={{-90,-70},{90,-95}}, textString="3000 psi", textColor={64,64,64}),
+        Text(extent={{-150,145},{150,105}}, textString="%name", textColor={0,0,255})}));
   end HydraulicSupply;
 
   model Actuator "Servo valve driving a balanced (through-rod) cylinder"
@@ -29,10 +37,10 @@ package AileronActuator "Electro-hydraulic aileron actuator (after Modelon)"
     H.Components.ServoValve4_3 valve(q_nom=20/60000, dp_nom=70e5, f_spool=100, D_spool=0.7);
     H.Actuators.Cylinder cylinder(D_piston=D_piston, d_rod_A=d_rod, d_rod_B=d_rod, stroke=stroke,
       s_start=stroke/2, V_dead=2e-5, x_air=x_air, pA_start=105e5, pB_start=105e5, d_visc=2000, F_coulomb=200);
-    H.Interfaces.Port_a P;
-    H.Interfaces.Port_b T;
-    Tr.Interfaces.Flange_a mount;
-    Tr.Interfaces.Flange_b rod;
+    H.Interfaces.Port_a P annotation (Placement(transformation(extent={{-50,90},{-30,110}})));
+    H.Interfaces.Port_b T annotation (Placement(transformation(extent={{30,90},{50,110}})));
+    Tr.Interfaces.Flange_a mount annotation (Placement(transformation(extent={{-110,-20},{-90,0}})));
+    Tr.Interfaces.Flange_b rod annotation (Placement(transformation(extent={{90,-20},{110,0}})));
     Daedalus.Blocks.Interfaces.RealInput u "Normalised valve command";
   equation
     connect(P, valve.P);
@@ -42,6 +50,17 @@ package AileronActuator "Electro-hydraulic aileron actuator (after Modelon)"
     connect(mount, cylinder.housing);
     connect(cylinder.rod, rod);
     connect(u, valve.u);
+    annotation (Icon(coordinateSystem(extent={{-100,-100},{100,100}}), graphics={
+        Rectangle(extent={{-100,100},{100,-100}}, lineColor={95,95,95}, fillColor={250,250,250}, fillPattern=FillPattern.Solid, radius=6),
+        Rectangle(extent={{-70,20},{50,-40}}, lineColor={0,0,0}, fillColor={192,192,192}, fillPattern=FillPattern.Solid),
+        Rectangle(extent={{-20,20},{-10,-40}}, lineColor={0,0,0}, fillColor={95,95,95}, fillPattern=FillPattern.Solid),
+        Rectangle(extent={{-10,-6},{100,-14}}, lineColor={0,0,0}, fillColor={160,160,164}, fillPattern=FillPattern.Solid),
+        Rectangle(extent={{-50,70},{30,40}}, lineColor={0,0,0}, fillColor={0,128,255}, fillPattern=FillPattern.Solid),
+        Line(points={{-40,90},{-40,70}}, color={0,128,255}),
+        Line(points={{40,90},{40,70},{30,70}}, color={0,128,255}),
+        Line(points={{-30,40},{-30,20}}, color={0,128,255}),
+        Line(points={{10,40},{10,20}}, color={0,128,255}),
+        Text(extent={{-150,145},{150,105}}, textString="%name", textColor={0,0,255})}));
   end Actuator;
 
   model PositionControl "Aileron deflection steps and a sine sweep under aerodynamic hinge moment"

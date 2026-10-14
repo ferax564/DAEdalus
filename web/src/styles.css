@@ -81,7 +81,7 @@ label.file input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
 .node .val { margin-left: auto; color: var(--muted); font-family: var(--mono); font-size: 11.5px; }
 .node.selected .val { color: white; }
 .node input[type="checkbox"] { margin: 0; }
-.node input.par { width: 70px; margin-left: auto; font-family: var(--mono); font-size: 11.5px; padding: 0 4px; }
+.node input.par { width: 88px; margin-left: auto; font-family: var(--mono); font-size: 11.5px; padding: 0 4px; }
 .kids { padding-left: 14px; }
 .tabs { display: flex; align-items: center; gap: 4px; padding: 5px 8px; border-bottom: 1px solid var(--line); }
 .tabs .spacer { flex: 1; }
@@ -110,3 +110,9 @@ canvas.plot { position: absolute; inset: 0; display: block; }
 #log .err { color: var(--err); }
 #log .ok { color: var(--ok); }
 #log .warn { color: var(--warn); }
+
+/* Diagnostics keep their line structure (caret lines, boxes). */
+#log div {
+  white-space: pre-wrap;
+}
+.node input.par.ro { background: transparent; border-color: transparent; color: var(--muted, #888); }

@@ -94,6 +94,9 @@ pub struct Model {
     /// Parameter bindings in dependency order, one segment per parameter so that
     /// individual parameters can be overridden without recompiling.
     pub params: Vec<(VarId, Vec<Ins>)>,
+    /// Public parameters with a literal value: overriding them changes the result.
+    /// Others are computed from other parameters (or protected) and are shown read-only.
+    pub free_params: Vec<VarId>,
     /// Start values of non-parameters (guesses and discrete initial values).
     pub starts: Vec<Ins>,
     pub init: Vec<Ins>,
@@ -391,6 +394,7 @@ pub fn compile(mut sys: System) -> Model {
     let mut newton = Vec::new();
     // Parameters.
     let mut params = Vec::new();
+    let mut free_params = Vec::new();
     for &p in &sys.params {
         let v = &sys.vars[p as usize];
         let e = if v.kind == VarKind::Input {
@@ -398,6 +402,9 @@ pub fn compile(mut sys: System) -> Model {
         } else {
             v.binding.or(v.start)
         };
+        if !v.is_protected && e.is_none_or(|e| em.arena.vars_in(&[e]).is_empty()) {
+            free_params.push(p);
+        }
         let mut seg = Vec::new();
         if let Some(e) = e {
             em.assign(p, e, &mut FxHashMap::default(), &mut seg);
@@ -528,6 +535,7 @@ pub fn compile(mut sys: System) -> Model {
         tables,
         newton,
         params,
+        free_params,
         starts,
         init,
         ode,

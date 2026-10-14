@@ -9,7 +9,7 @@ package TorqueConverter "Torque converter stall test and vehicle launch (after C
     Rot.Components.TorqueConverter converter;
     Rot.Components.Fixed brake "Turbine held by the service brake";
     Daedalus.Blocks.Sources.Ramp throttle(height=0.85, offset=0.15, duration=0.5, startTime=0.5) "Idle throttle, then full load";
-    Real rpm_engine = engine.rpm;
+    Real rpm_engine(unit="rev/min") = engine.rpm;
     Real rpm_stall_theory "Speed where the K-factor curve meets the full-load torque at speed ratio 0";
   protected
     parameter Real K0 = converter.table[1, 2];
@@ -42,10 +42,10 @@ passenger-car three-element converter) and a 2.5 l engine torque curve.</p></htm
     Rot.Components.Inertia turbine(J=0.05);
     Rot.Components.IdealGear gearbox(ratio=gearRatio, eta=0.96);
     Daedalus.Vehicle.Chassis.VehicleBody car(m=1700, Cd=0.32, A_front=2.4);
-    Daedalus.Blocks.Interfaces.RealInput throttle;
+    Daedalus.Blocks.Interfaces.RealInput throttle annotation (Placement(transformation(extent={{-140,-20},{-100,20}})));
     Boolean locked(start=false, fixed=true) "Lock-up command";
     discrete Real t_lock(start=1e30, fixed=true);
-    Real v_kmh = car.v*3.6;
+    Real v_kmh(unit="km/h") = car.v*3.6;
   equation
     when converter.speedRatio > lockupRatio and time > 1 then
       locked = true;
@@ -59,6 +59,15 @@ passenger-car three-element converter) and a 2.5 l engine torque curve.</p></htm
     connect(lockup.flange_b, turbine.flange_a);
     connect(turbine.flange_b, gearbox.flange_a);
     connect(gearbox.flange_b, car.axle);
+    annotation (Icon(coordinateSystem(extent={{-100,-100},{100,100}}), graphics={
+        Rectangle(extent={{-100,100},{100,-100}}, lineColor={95,95,95}, fillColor={250,250,250}, fillPattern=FillPattern.Solid, radius=6),
+        Ellipse(extent={{-80,30},{-20,-30}}, lineColor={0,0,0}, fillColor={175,175,175}, fillPattern=FillPattern.Solid),
+        Line(points={{-20,0},{10,0}}, thickness=1),
+        Rectangle(extent={{10,30},{40,-30}}, lineColor={0,0,0}, fillColor={160,215,160}, fillPattern=FillPattern.Solid),
+        Line(points={{40,0},{60,0}}, thickness=1),
+        Ellipse(extent={{55,-40},{85,-70}}, lineColor={0,0,0}, fillColor={60,60,60}, fillPattern=FillPattern.Solid),
+        Rectangle(extent={{50,-10},{90,-40}}, lineColor={0,0,0}, fillColor={0,128,255}, fillPattern=FillPattern.Solid),
+        Text(extent={{-150,145},{150,105}}, textString="%name", textColor={0,0,255})}));
   end Driveline;
 
   model Launch "Full-throttle launch: static K-factor converter versus converter with fluid dynamics"

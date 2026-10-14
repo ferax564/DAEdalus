@@ -3,6 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3E%3Crect width=%2716%27 height=%2716%27 rx=%273%27 fill=%27%231f4e79%27/%3E%3Cpath d=%27M3 12 L6 5 L9 10 L13 3%27 stroke=%27white%27 stroke-width=%271.6%27 fill=%27none%27/%3E%3C/svg%3E" />
     <title>DAEdalus Workbench</title>
   </head>
   <body>
@@ -18,7 +19,7 @@
         <span class="sep"></span>
         <button id="btn-check" title="Translate and check the model">Check</button>
         <label>Stop <input id="set-stop" type="number" step="any" placeholder="auto" /></label>
-        <label>Intervals <input id="set-n" type="number" value="500" /></label>
+        <label>Intervals <input id="set-n" type="number" min="1" placeholder="auto" /></label>
         <label>Tol <input id="set-tol" type="text" placeholder="auto" size="6" /></label>
         <label>Method
           <select id="set-method"><option value="">auto</option><option value="Bdf">BDF</option><option value="Dopri5">Dopri5</option><option value="Rk4">RK4</option><option value="Euler">Euler</option></select>

@@ -26,7 +26,7 @@ package VehicleEfficiency "EV drive-cycle energy studies (after Claytex VeSyMA a
       v_wind=v_wind, psi_wind=psi_wind);
     V.Powertrain.Battery battery(capacity=200, SOC_start=0.95);
     V.Sensors.EnergyMeter meter;
-    Real v_kmh = body.v*3.6;
+    Real v_kmh(unit="km/h") = body.v*3.6;
     Real distance_km = body.s/1000;
   equation
     connect(driveCycle.y, driver.v_ref);
@@ -38,6 +38,14 @@ package VehicleEfficiency "EV drive-cycle energy studies (after Claytex VeSyMA a
     connect(motor.P_el, battery.P);
     connect(motor.P_el, meter.P);
     connect(body.s, meter.s);
+    annotation (Icon(coordinateSystem(extent={{-100,-100},{100,100}}), graphics={
+        Rectangle(extent={{-100,100},{100,-100}}, lineColor={95,95,95}, fillColor={250,250,250}, fillPattern=FillPattern.Solid, radius=6),
+        Polygon(points={{-80,-30},{-80,0},{-50,10},{-25,40},{35,40},{60,10},{80,5},{80,-30},{-80,-30}}, lineColor={0,0,0}, fillColor={0,128,255}, fillPattern=FillPattern.Solid),
+        Ellipse(extent={{-60,-15},{-30,-45}}, lineColor={0,0,0}, fillColor={60,60,60}, fillPattern=FillPattern.Solid),
+        Ellipse(extent={{35,-15},{65,-45}}, lineColor={0,0,0}, fillColor={60,60,60}, fillPattern=FillPattern.Solid),
+        Rectangle(extent={{-20,-50},{20,-75}}, lineColor={0,0,0}, fillColor={0,170,0}, fillPattern=FillPattern.Solid),
+        Text(extent={{-20,-50},{20,-75}}, textString="+ -", textColor={255,255,255}),
+        Text(extent={{-150,145},{150,105}}, textString="%name", textColor={0,0,255})}));
   end ElectricVehicle;
 
   model NEDCSensitivity "Baseline, 2 % grade, 25 mph crosswind at 30 deg and a roof box over repeated NEDC"
@@ -47,9 +55,9 @@ package VehicleEfficiency "EV drive-cycle energy studies (after Claytex VeSyMA a
     ElectricVehicle uphill(repetitions=repetitions, grade=0.02);
     ElectricVehicle crosswind(repetitions=repetitions, v_wind=25*0.44704, psi_wind=30*3.141592653589793/180);
     ElectricVehicle roofBox(repetitions=repetitions, m_payload=50, dCdA=0.12);
-    Real delta_uphill = (uphill.meter.Wh_per_km/baseline.meter.Wh_per_km - 1)*100 "Consumption change [%]";
-    Real delta_crosswind = (crosswind.meter.Wh_per_km/baseline.meter.Wh_per_km - 1)*100 "Consumption change [%]";
-    Real delta_roofBox = (roofBox.meter.Wh_per_km/baseline.meter.Wh_per_km - 1)*100 "Consumption change [%]";
+    Real delta_uphill(unit="%") = (uphill.meter.Wh_per_km/baseline.meter.Wh_per_km - 1)*100 "Consumption change [%]";
+    Real delta_crosswind(unit="%") = (crosswind.meter.Wh_per_km/baseline.meter.Wh_per_km - 1)*100 "Consumption change [%]";
+    Real delta_roofBox(unit="%") = (roofBox.meter.Wh_per_km/baseline.meter.Wh_per_km - 1)*100 "Consumption change [%]";
     annotation (experiment(StopTime=12980, Interval=1), Documentation(info="<html>
 <p>Source: Claytex, <i>Sensitivity testing of vehicle efficiency using VeSyMA drive cycle</i>,
 <a href=\"https://www.claytex.com/tech-blog/sensitivity-testing-of-vehicle-efficiency-using-vesyma-drive-cycle/\">claytex.com/tech-blog</a>.</p>
@@ -66,7 +74,7 @@ loss model, 9:1 reduction, 75 kWh pack. The NEDC table is the regulation's segme
   model CoastDown "Coast-down from 130 km/h in neutral; the result is fitted to F = F0 + F1*v + F2*v^2"
     extends Daedalus.Icons.Example;
     V.Chassis.VehicleBody body(m=1650, Cd=0.29, A_front=2.3, crr=0.009, v_start=130/3.6);
-    Real v_kmh = body.v*3.6;
+    Real v_kmh(unit="km/h") = body.v*3.6;
     Units.Force F_decel = -(body.m + body.J_wheels/body.R_wheel^2)*body.a "Road load from the deceleration";
   equation
     body.axle.tau = 0;
@@ -92,7 +100,7 @@ coefficients feed <code>UDDSEnergy</code>.</p></html>"));
     Rot.Components.IdealGear reduction(ratio=9.0, eta=0.97);
     V.Chassis.RoadLoadVehicle fitted(m=1650, F0=145.7, F1=0.0, F2=0.4002) "Coefficients from tools/fit_coastdown.py";
     V.Sensors.EnergyMeter meter;
-    Real energy_difference = (meter.Wh_per_km/physical.meter.Wh_per_km - 1)*100 "[%]";
+    Real energy_difference(unit="%") = (meter.Wh_per_km/physical.meter.Wh_per_km - 1)*100 "[%]";
   equation
     connect(driveCycle.y, driver.v_ref);
     connect(fitted.v, driver.v);

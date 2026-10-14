@@ -217,7 +217,23 @@ fn collect(lib: &Library, tree: &ClassTree, id: ClassId, info: &mut ClassInfo, d
     let node = tree.node(id);
     let Some(def) = node.def else { return };
     let text = lib.docs.get(node.source).map(|d| &*d.text);
+    // The parser drops the annotation of a short class definition
+    // (`connector RealOutput = output Real annotation(Icon(...))`), so read it from source.
+    let short = if def.annotation.is_empty() {
+        text.and_then(|t| short_class_annotation(t, def.location.end as usize))
+            .and_then(|a| parse_annotation(&a))
+    } else {
+        None
+    };
     for (name, layer) in [("Icon", &mut info.icon), ("Diagram", &mut info.diagram)] {
+        if let Some(Value::Object(o)) = short.as_ref().and_then(|v| v.get(name)) {
+            if let Some(Value::Array(items)) = o.get("graphics") {
+                layer.graphics.extend(items.iter().cloned());
+            }
+            if let Some(cs) = o.get("coordinateSystem") {
+                layer.coordinate_system = Some(cs.clone());
+            }
+        }
         if let Some(ast::Expression::ClassModification { modifications, .. }) =
             find_annotation(&def.annotation, name)
         {
@@ -371,6 +387,73 @@ fn connect_annotation(text: &str, rhs_end: usize) -> Option<String> {
             }
         }
         i += 1;
+    }
+    None
+}
+
+/// The annotation argument list of a short class definition `class A = B(...) annotation(...)`
+/// whose name ends at `name_end` in `text`; `None` for long definitions.
+fn short_class_annotation(text: &str, name_end: usize) -> Option<String> {
+    let body = text.get(name_end..)?;
+    // A short definition continues with `=` right after its name.
+    let eq = body.find(|c: char| !c.is_whitespace())?;
+    if body.as_bytes()[eq] != b'=' {
+        return None;
+    }
+    // Find a top-level `annotation` keyword after the `=`, outside strings and parentheses.
+    let b = body.as_bytes();
+    let (mut i, mut level, mut in_str) = (eq, 0i32, false);
+    while i < b.len() {
+        let ch = b[i];
+        if in_str {
+            if ch == b'\\' {
+                i += 1;
+            } else if ch == b'"' {
+                in_str = false;
+            }
+        } else if ch == b'"' {
+            in_str = true;
+        } else if ch == b'(' {
+            level += 1;
+        } else if ch == b')' {
+            level -= 1;
+        } else if ch == b';' && level == 0 {
+            break;
+        } else if level == 0
+            && body[i..].starts_with("annotation")
+            && !body[..i].ends_with(|c: char| c.is_alphanumeric() || c == '_')
+        {
+            let s = &body[i + "annotation".len()..];
+            let open = s.find('(')?;
+            if !s[..open].trim().is_empty() {
+                return None;
+            }
+            return balanced(&s[open..]);
+        }
+        i += 1;
+    }
+    None
+}
+
+/// The contents of the parenthesised group that `s` starts with.
+fn balanced(s: &str) -> Option<String> {
+    let b = s.as_bytes();
+    let (mut level, mut in_str) = (0i32, false);
+    for (i, &ch) in b.iter().enumerate() {
+        if in_str {
+            if ch == b'"' && (i == 0 || b[i - 1] != b'\\') {
+                in_str = false;
+            }
+        } else if ch == b'"' {
+            in_str = true;
+        } else if ch == b'(' {
+            level += 1;
+        } else if ch == b')' {
+            level -= 1;
+            if level == 0 {
+                return Some(s[1..i].to_string());
+            }
+        }
     }
     None
 }
@@ -696,6 +779,18 @@ mod tests {
         assert_eq!(v["Line"]["points"], json!([[-60, 0], [-40, 0]]));
         assert_eq!(v["Line"]["color"], json!([0, 0, 127]));
         assert_eq!(v["Line"]["thickness"], json!(0.5));
+    }
+
+    #[test]
+    fn short_connector_icon() {
+        let mut lib = Library::new();
+        lib.set_document(
+            "a.mo",
+            "package P connector RealOutput = output Real \"y\" annotation (Icon(graphics={Polygon(points={{-100,100},{100,0},{-100,-100}})}), Diagram(graphics={Line(points={{0,0},{1,1}})})); end P;",
+        );
+        let i = class_info(&lib, "P.RealOutput").unwrap();
+        assert_eq!(i.icon.graphics.len(), 1);
+        assert_eq!(i.diagram.graphics.len(), 1);
     }
 
     #[test]

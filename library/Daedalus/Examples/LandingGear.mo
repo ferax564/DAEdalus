@@ -59,7 +59,7 @@ package LandingGear "Oleo-pneumatic landing gear drop test (after Modelon)"
     Tr.Components.ElastoGap tyre(c=c_tyre, d=d_tyre, n=n_tyre, s_rel0=R_tyre);
     Tr.Components.Fixed ground;
     Tr.Sources.ConstantForce lift(f_constant=liftFactor*(M_sprung + m_unsprung)*9.81);
-    Real loadFactor "Ground reaction / weight";
+    Real loadFactor(unit="1") "Ground reaction / weight";
     Units.Force F_ground;
     Units.Energy E_kinetic0 = 0.5*(M_sprung + m_unsprung)*v_sink^2;
   equation
@@ -70,6 +70,15 @@ package LandingGear "Oleo-pneumatic landing gear drop test (after Modelon)"
     connect(axle.flange_b, strut.flange_a);
     connect(strut.flange_b, sprung.flange_a);
     connect(lift.flange, sprung.flange_b);
+    annotation (Icon(coordinateSystem(extent={{-100,-100},{100,100}}), graphics={
+        Rectangle(extent={{-100,100},{100,-100}}, lineColor={95,95,95}, fillColor={250,250,250}, fillPattern=FillPattern.Solid, radius=6),
+        Rectangle(extent={{-60,90},{60,60}}, lineColor={0,0,0}, fillColor={0,128,255}, fillPattern=FillPattern.Solid),
+        Rectangle(extent={{-12,60},{12,0}}, lineColor={0,0,0}, fillColor={192,192,192}, fillPattern=FillPattern.Solid),
+        Rectangle(extent={{-6,10},{6,-30}}, lineColor={0,0,0}, fillColor={160,160,164}, fillPattern=FillPattern.Solid),
+        Ellipse(extent={{-30,-30},{30,-90}}, lineColor={0,0,0}, fillColor={60,60,60}, fillPattern=FillPattern.Solid),
+        Line(points={{-80,-92},{80,-92}}, thickness=1),
+        Polygon(points={{70,40},{80,40},{75,20},{70,40}}, lineColor={0,0,0}, fillColor={0,0,0}, fillPattern=FillPattern.Solid),
+        Text(extent={{-150,145},{150,105}}, textString="%name", textColor={0,0,255})}));
   end DropTest;
 
   model SinkRates "Drop tests at 2.0, 3.05 (limit) and 3.66 m/s (reserve energy)"

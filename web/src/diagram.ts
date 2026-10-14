@@ -23,7 +23,7 @@ export class DiagramView {
   readonly svg: SVGSVGElement;
   private root: SVGGElement;
   private view = { x: -110, y: -110, w: 220, h: 220 };
-  private drag: { x: number; y: number; vx: number; vy: number } | null = null;
+  private drag: { x: number; y: number; vx: number; vy: number; id: number; moved: boolean } | null = null;
   private renderToken = 0;
   onSelect: (c: ComponentInfo | null) => void = () => {};
   onOpen: (typePath: string) => void = () => {};
@@ -37,17 +37,30 @@ export class DiagramView {
     this.svg.addEventListener("wheel", (e) => this.zoom(e), { passive: false });
     this.svg.addEventListener("pointerdown", (e) => {
       if (e.button !== 0 && e.button !== 1) return;
-      this.drag = { x: e.clientX, y: e.clientY, vx: this.view.x, vy: this.view.y };
-      this.svg.setPointerCapture(e.pointerId);
+      this.drag = { x: e.clientX, y: e.clientY, vx: this.view.x, vy: this.view.y, id: e.pointerId, moved: false };
     });
     this.svg.addEventListener("pointermove", (e) => {
       if (!this.drag) return;
+      // Capture only once this is a pan, so plain clicks still reach the components.
+      if (!this.drag.moved) {
+        if (Math.hypot(e.clientX - this.drag.x, e.clientY - this.drag.y) < 4) return;
+        this.drag.moved = true;
+        this.svg.setPointerCapture(this.drag.id);
+      }
       const k = this.view.w / this.svg.clientWidth;
       this.view.x = this.drag.vx - (e.clientX - this.drag.x) * k;
       this.view.y = this.drag.vy - (e.clientY - this.drag.y) * k;
       this.applyView();
     });
-    this.svg.addEventListener("pointerup", () => (this.drag = null));
+    const endDrag = () => {
+      if (this.drag?.moved) {
+        // Swallow the click that ends a pan so it does not select a component.
+        this.svg.addEventListener("click", (ev) => ev.stopPropagation(), { capture: true, once: true });
+      }
+      this.drag = null;
+    };
+    this.svg.addEventListener("pointerup", endDrag);
+    this.svg.addEventListener("pointercancel", () => (this.drag = null));
     new ResizeObserver(() => this.applyView()).observe(this.svg);
   }
 
@@ -118,10 +131,11 @@ export class DiagramView {
     try {
       const b = this.root.getBBox();
       if (b.width > 0 && b.height > 0) {
-        // root is mirrored (scale(1,-1)), so flip the box back to Modelica coordinates
+        // getBBox is in the root's own user space, before its scale(1,-1): Modelica coordinates.
+        const [[ax, ay], [bx, by]] = ext;
         return [
-          [Math.min(b.x, ext[0][0]), Math.min(-(b.y + b.height), ext[0][1])],
-          [Math.max(b.x + b.width, ext[1][0]), Math.max(-b.y, ext[1][1])],
+          [Math.min(b.x, ax, bx), Math.min(b.y, ay, by)],
+          [Math.max(b.x + b.width, ax, bx), Math.max(b.y + b.height, ay, by)],
         ];
       }
     } catch {
@@ -232,16 +246,31 @@ export class DiagramView {
         }
       }
     }
+    // Grid cells sized so that every layer and row fits inside the diagram extent.
+    const rowOf = new Map<string, number>();
     const rows = new Map<number, number>();
-    const cell = 60;
     for (const n of order) {
       const L = layer.get(n)!;
       const r = rows.get(L) ?? 0;
       rows.set(L, r + 1);
-      const x = -100 + L * cell;
-      const y = 60 - r * cell;
+      rowOf.set(n, r);
+    }
+    const nL = Math.max(...layer.values()) + 1;
+    const nR = Math.max(...rows.values());
+    const [[ex1, ey1], [ex2, ey2]] = systemExtent(cls.diagram.coordinate_system);
+    const [x0, x1] = [Math.min(ex1, ex2), Math.max(ex1, ex2)];
+    const [y0, y1] = [Math.min(ey1, ey2), Math.max(ey1, ey2)];
+    const cw = Math.min(60, (x1 - x0) / nL);
+    const ch = Math.min(60, (y1 - y0) / nR);
+    // Icons take half a cell, leaving room for the name above each one.
+    const half = Math.max(6, 0.25 * Math.min(cw, ch));
+    const left = (x0 + x1) / 2 - (nL * cw) / 2;
+    const top = (y0 + y1) / 2 + (nR * ch) / 2;
+    for (const n of order) {
+      const x = left + (layer.get(n)! + 0.5) * cw;
+      const y = top - (rowOf.get(n)! + 0.5) * ch - 0.1 * ch;
       const t = await this.src.get(auto.find((c) => c.name === n)!.type_path!);
-      const m = placementMatrix({ extent: [[x - 20, y - 20], [x + 20, y + 20]] }, systemExtent(t!.icon.coordinate_system));
+      const m = placementMatrix({ extent: [[x - half, y - half], [x + half, y + half]] }, systemExtent(t!.icon.coordinate_system));
       if (m) mats.set(n, m);
     }
     return mats;

@@ -27,6 +27,8 @@ export function displayUnit(unit: string): { unit: string; scale: number; offset
   switch (unit) {
     case "rad/s":
       return { unit: "rpm", scale: 60 / (2 * Math.PI), offset: 0 };
+    case "rev/min":
+      return { unit: "rpm", scale: 1, offset: 0 };
     case "rad":
       return { unit: "deg", scale: 180 / Math.PI, offset: 0 };
     case "Pa":
@@ -123,6 +125,11 @@ export class PlotWindow {
 
   has(name: string): boolean {
     return this.subplots[this.active]?.series.some((s) => s.name === name) ?? false;
+  }
+
+  /** Plotted in any subplot. */
+  hasAnywhere(name: string): boolean {
+    return this.subplots.some((sp) => sp.series.some((s) => s.name === name));
   }
 
   toggle(s: Omit<Series, "color">) {

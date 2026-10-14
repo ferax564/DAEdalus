@@ -65,6 +65,8 @@ struct VarSummary<'a> {
     kind: &'static str,
     /// constant value of parameters
     value: Option<f64>,
+    /// a parameter whose override changes the result (public, literal value)
+    editable: bool,
 }
 
 #[wasm_bindgen]
@@ -165,6 +167,11 @@ impl Workspace {
         };
         self.results = Some(res);
         let r = self.results.as_ref().unwrap();
+        let free: std::collections::HashSet<&str> = m
+            .free_params
+            .iter()
+            .map(|&p| m.vars[p as usize].name.as_str())
+            .collect();
         let vars = r
             .vars
             .iter()
@@ -182,6 +189,7 @@ impl Workspace {
                     description: &v.description,
                     kind,
                     value,
+                    editable: kind == "param" && free.contains(v.name.as_str()),
                 }
             })
             .collect();

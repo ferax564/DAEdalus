@@ -68,6 +68,8 @@ export interface VarSummary {
   description: string;
   kind: "series" | "param" | "alias";
   value: number | null;
+  /** Parameter whose override changes the result (public, with a literal value). */
+  editable: boolean;
 }
 
 export interface SimSummary {

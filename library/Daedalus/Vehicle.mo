@@ -126,7 +126,7 @@ package Vehicle "Longitudinal vehicle dynamics, electric and combustion powertra
       parameter Real table[:, 2]=NEDC "Cycle [time s, speed km/h]";
       parameter Integer repetitions(min=1)=1 "Number of consecutive repetitions";
       parameter Units.Time T_cycle=table[size(table, 1), 1] "Cycle duration";
-      Real v_kmh "Reference speed in km/h";
+      Real v_kmh(unit="km/h") "Reference speed in km/h";
     protected
       Units.Time t_local;
     equation
@@ -285,7 +285,7 @@ package Vehicle "Longitudinal vehicle dynamics, electric and combustion powertra
       Rotational.Interfaces.Flange_b flange annotation (Placement(transformation(extent={{90,-10},{110,10}})));
       Daedalus.Blocks.Interfaces.RealInput throttle "Throttle 0..1" annotation (Placement(transformation(extent={{-140,-20},{-100,20}})));
       Units.AngularVelocity w(start=w_start, fixed=true);
-      Real rpm;
+      Real rpm(unit="rev/min");
       Units.Torque tau_full, tau_eng;
       Units.Power P;
     equation
@@ -337,7 +337,7 @@ package Vehicle "Longitudinal vehicle dynamics, electric and combustion powertra
       Daedalus.Blocks.Interfaces.RealInput s(unit="m") annotation (Placement(transformation(extent={{-140,-80},{-100,-40}})));
       Real E(unit="J", start=0, fixed=true) "Energy";
       Real E_kWh(unit="kW.h");
-      Real Wh_per_km "Specific consumption";
+      Real Wh_per_km(unit="W.h/km") "Specific consumption";
     equation
       der(E) = P;
       E_kWh = E/3.6e6;

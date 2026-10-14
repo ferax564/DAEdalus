@@ -261,15 +261,21 @@ async function openClass(path: string) {
     log(`class ${path} not found`, "err");
     return;
   }
+  // Parameter overrides belong to the model they were made on.
+  if (current?.path !== info.path) overrides.clear();
   current = info;
   // expand the browser down to the class
   const parts = path.split(".");
   for (let i = 1; i < parts.length; i++) expanded.add(parts.slice(0, i).join("."));
   $("model-title").textContent = `${info.kind} ${info.path}`;
   $("model-title").title = info.description;
-  if (info.experiment) {
-    const st = info.experiment.StopTime;
+  {
+    // Placeholders show what the experiment annotation will use when a field is left empty.
+    const ex = info.experiment ?? {};
+    const st = ex.StopTime, t0 = typeof ex.StartTime === "number" ? ex.StartTime : 0, dt = ex.Interval;
     ($("set-stop") as HTMLInputElement).placeholder = typeof st === "number" ? String(st) : "auto";
+    ($("set-n") as HTMLInputElement).placeholder =
+      typeof st === "number" && typeof dt === "number" && dt > 0 ? String(Math.round((st - t0) / dt)) : "auto";
   }
   history.replaceState(null, "", `#${encodeURIComponent(path)}`);
   if (view !== "text" && view !== "doc" && view !== "flat") view = info.kind !== "connector" && info.kind !== "package" && info.components.some((c) => c.type_kind !== "type" && !c.protected) ? "diagram" : "icon";
@@ -429,6 +435,8 @@ function renderVariables() {
         const cb = document.createElement("input");
         cb.type = "checkbox";
         cb.checked = plot.has(k.full);
+        // Plotted in another subplot: shown as indeterminate.
+        cb.indeterminate = !cb.checked && plot.hasAnywhere(k.full);
         cb.onchange = () => togglePlot(k.full, k.v!);
         row.appendChild(cb);
       }
@@ -442,7 +450,13 @@ function renderVariables() {
           const inp = document.createElement("input");
           inp.className = "par";
           inp.value = String(overrides.get(k.full) ?? k.v.value ?? "");
-          inp.title = "Change and press Enter to re-simulate with this value";
+          inp.title = `${inp.value}\nChange and press Enter to re-simulate with this value`;
+          if (!k.v.editable) {
+            // Computed from other parameters (or protected): overriding it would do nothing.
+            inp.readOnly = true;
+            inp.classList.add("ro");
+            inp.title = `${inp.value}\nComputed from other parameters`;
+          }
           inp.onkeydown = (e) => {
             if (e.key === "Enter") {
               const x = parseFloat(inp.value);
