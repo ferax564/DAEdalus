@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DAEdalus Workbench</title>
+  </head>
+  <body>
+    <header id="topbar">
+      <div class="brand"><span class="logo">Δ</span> DAEdalus</div>
+      <nav class="modes">
+        <button data-mode="modeling" class="active">Modeling</button>
+        <button data-mode="simulation">Simulation</button>
+      </nav>
+      <div class="tools">
+        <label class="file">Open .mo / folder<input id="open-files" type="file" multiple accept=".mo" /></label>
+        <label class="file">Load library folder<input id="open-dir" type="file" webkitdirectory /></label>
+        <span class="sep"></span>
+        <button id="btn-check" title="Translate and check the model">Check</button>
+        <label>Stop <input id="set-stop" type="number" step="any" placeholder="auto" /></label>
+        <label>Intervals <input id="set-n" type="number" value="500" /></label>
+        <label>Tol <input id="set-tol" type="text" placeholder="auto" size="6" /></label>
+        <label>Method
+          <select id="set-method"><option value="">auto</option><option value="Bdf">BDF</option><option value="Dopri5">Dopri5</option><option value="Rk4">RK4</option><option value="Euler">Euler</option></select>
+        </label>
+        <button id="btn-sim" class="primary" title="Translate and simulate (Ctrl+Enter)">▶ Simulate</button>
+      </div>
+    </header>
+    <main id="app">
+      <aside id="left">
+        <section id="browser-pane" class="pane">
+          <div class="pane-title">Packages <input id="filter" type="search" placeholder="Filter" /></div>
+          <div id="browser" class="tree"></div>
+        </section>
+        <section id="vars-pane" class="pane hidden">
+          <div class="pane-title">Variables <input id="var-filter" type="search" placeholder="Filter" /></div>
+          <div id="variables" class="tree"></div>
+        </section>
+      </aside>
+      <section id="center">
+        <div id="model-pane" class="pane">
+          <div class="tabs" id="view-tabs">
+            <span id="model-title" class="model-title">No class open</span>
+            <button data-view="icon">Icon</button>
+            <button data-view="diagram" class="active">Diagram</button>
+            <button data-view="text">Text</button>
+            <button data-view="doc">Documentation</button>
+            <button data-view="flat">Flat model</button>
+          </div>
+          <div id="views">
+            <div id="view-graphic" class="view"></div>
+            <div id="view-text" class="view hidden"></div>
+            <div id="view-doc" class="view doc hidden"></div>
+            <pre id="view-flat" class="view flat hidden"></pre>
+          </div>
+        </div>
+        <div id="plot-pane" class="pane hidden">
+          <div class="tabs">
+            <span class="model-title">Plot</span>
+            <button id="plot-new">New subplot</button>
+            <button id="plot-clear">Clear</button>
+            <label>x-axis <select id="plot-x"><option value="">time</option></select></label>
+            <span class="spacer"></span>
+            <button id="export-csv">Export CSV</button>
+            <button id="export-mat">Export .mat</button>
+          </div>
+          <div id="plot" class="plot-host"></div>
+        </div>
+      </section>
+      <aside id="right">
+        <section class="pane">
+          <div class="pane-title">Component</div>
+          <div id="inspector" class="inspector"><p class="muted">Select a component in the diagram.</p></div>
+        </section>
+      </aside>
+    </main>
+    <footer id="messages">
+      <div class="pane-title">Messages <button id="msg-clear">Clear</button></div>
+      <div id="log"></div>
+    </footer>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

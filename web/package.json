@@ -1,0 +1,26 @@
+{
+  "name": "daedalus-workbench",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "license": "Apache-2.0",
+  "scripts": {
+    "wasm": "cargo build -p daedalus-wasm --profile release-wasm --target wasm32-unknown-unknown --manifest-path ../Cargo.toml && wasm-bindgen --target web --out-dir src/wasm ../target/wasm32-unknown-unknown/release-wasm/daedalus_wasm.wasm",
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "tsc --noEmit && node --test tests/"
+  },
+  "devDependencies": {
+    "typescript": "5.6.3",
+    "vite": "5.4.10"
+  },
+  "dependencies": {
+    "@codemirror/commands": "6.7.1",
+    "@codemirror/language": "6.10.3",
+    "@codemirror/legacy-modes": "6.4.2",
+    "@codemirror/search": "6.5.7",
+    "@codemirror/state": "6.4.1",
+    "@codemirror/view": "6.34.1"
+  }
+}

@@ -3,8 +3,13 @@ name = "daedalus-wasm"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "WebAssembly bindings: load sources, inspect classes, translate and simulate in the browser"
+
 [lib]
 crate-type = ["cdylib", "rlib"]
+
 [dependencies]
 daedalus-core = { path = "../daedalus-core" }
-wasm-bindgen = "0.2"
+wasm-bindgen = "=0.2.129"
+serde = { workspace = true }
+serde_json = { workspace = true }

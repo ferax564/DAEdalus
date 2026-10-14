@@ -3,6 +3,7 @@
 //! Parsing is delegated to Rumoca's parser (`rumoca-phase-parse`, Apache-2.0);
 //! instantiation, flattening and everything downstream is DAEdalus code.
 
+pub mod inspect;
 pub mod inst;
 pub mod tree;
 
