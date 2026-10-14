@@ -1,0 +1,118 @@
+:root {
+  --bg: #f4f5f7;
+  --panel: #ffffff;
+  --fg: #1d2330;
+  --muted: #6b7385;
+  --line: #d9dde5;
+  --grid: #eceef2;
+  --accent: #0b5fff;
+  --accent-soft: #e7efff;
+  --ok: #2b8a3e;
+  --err: #c92a2a;
+  --warn: #b26a00;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #15181e;
+    --panel: #1c2028;
+    --fg: #e3e6ec;
+    --muted: #8a92a5;
+    --line: #2d333f;
+    --grid: #262b35;
+    --accent: #5b8cff;
+    --accent-soft: #233150;
+    color-scheme: dark;
+  }
+  svg.diagram { background: #f8f9fb; }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+  display: grid;
+  grid-template-rows: auto 1fr 140px;
+  overflow: hidden;
+}
+button, select, input { font: inherit; color: inherit; }
+button {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+button:hover { border-color: var(--accent); }
+button.primary { background: var(--accent); border-color: var(--accent); color: white; font-weight: 600; }
+button.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+input, select { background: var(--panel); border: 1px solid var(--line); border-radius: 5px; padding: 2px 6px; }
+input[type="number"] { width: 72px; }
+#topbar {
+  display: flex; align-items: center; gap: 16px;
+  padding: 6px 12px; background: var(--panel); border-bottom: 1px solid var(--line);
+}
+.brand { font-weight: 700; font-size: 15px; letter-spacing: 0.2px; white-space: nowrap; }
+.logo { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 6px; background: var(--accent); color: white; margin-right: 4px; }
+.modes { display: flex; gap: 4px; }
+.tools { display: flex; align-items: center; gap: 10px; margin-left: auto; flex-wrap: wrap; }
+.tools label { color: var(--muted); display: flex; gap: 4px; align-items: center; }
+.sep { width: 1px; height: 20px; background: var(--line); }
+label.file { position: relative; overflow: hidden; border: 1px dashed var(--line); border-radius: 6px; padding: 3px 8px; cursor: pointer; color: var(--fg); }
+label.file input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+#app { display: grid; grid-template-columns: 280px 1fr 280px; min-height: 0; }
+.pane { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; margin: 6px; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+#left, #right, #center { display: flex; flex-direction: column; min-height: 0; }
+#left .pane, #center .pane { flex: 1; }
+.pane-title { display: flex; align-items: center; gap: 8px; padding: 6px 10px; font-weight: 600; border-bottom: 1px solid var(--line); color: var(--muted); text-transform: uppercase; font-size: 11px; letter-spacing: 0.6px; }
+.pane-title input { margin-left: auto; width: 120px; text-transform: none; font-weight: 400; letter-spacing: 0; }
+.pane-title button { margin-left: auto; font-size: 11px; padding: 1px 8px; }
+.hidden { display: none !important; }
+.tree { overflow: auto; flex: 1; padding: 4px 0; }
+.node { display: flex; align-items: center; gap: 4px; padding: 1px 6px; cursor: default; white-space: nowrap; user-select: none; }
+.node:hover { background: var(--accent-soft); }
+.node.selected { background: var(--accent); color: white; }
+.node .tw { width: 12px; text-align: center; color: var(--muted); cursor: pointer; flex: none; }
+.node .ico { width: 20px; height: 20px; flex: none; }
+.node .nm { overflow: hidden; text-overflow: ellipsis; }
+.node .run { color: var(--ok); font-size: 10px; }
+.node .val { margin-left: auto; color: var(--muted); font-family: var(--mono); font-size: 11.5px; }
+.node.selected .val { color: white; }
+.node input[type="checkbox"] { margin: 0; }
+.node input.par { width: 88px; margin-left: auto; font-family: var(--mono); font-size: 11.5px; padding: 0 4px; }
+.kids { padding-left: 14px; }
+.tabs { display: flex; align-items: center; gap: 4px; padding: 5px 8px; border-bottom: 1px solid var(--line); }
+.tabs .spacer { flex: 1; }
+.tabs label { color: var(--muted); display: flex; gap: 4px; align-items: center; margin-left: 8px; }
+.model-title { font-weight: 600; margin-right: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 45%; }
+#views { position: relative; flex: 1; min-height: 0; }
+.view { position: absolute; inset: 0; overflow: auto; }
+.view.doc { padding: 12px 18px; }
+.view.flat { margin: 0; padding: 10px; font: 12px/1.45 var(--mono); white-space: pre; }
+svg.diagram { width: 100%; height: 100%; display: block; background: white; cursor: grab; }
+svg.diagram .frame { fill: none; stroke: #c9ced8; stroke-dasharray: 4 3; vector-effect: non-scaling-stroke; }
+svg.diagram .component .hit { fill: transparent; stroke: none; }
+svg.diagram .component:hover .hit { fill: rgba(11, 95, 255, 0.06); stroke: rgba(11, 95, 255, 0.4); vector-effect: non-scaling-stroke; }
+svg.diagram .component.selected .hit { fill: rgba(11, 95, 255, 0.1); stroke: #0b5fff; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.plot-host { flex: 1; position: relative; min-height: 0; }
+canvas.plot { position: absolute; inset: 0; display: block; }
+.inspector { padding: 8px 10px; overflow: auto; }
+.inspector table { width: 100%; border-collapse: collapse; }
+.inspector td { padding: 2px 4px; border-bottom: 1px solid var(--grid); vertical-align: top; }
+.inspector td.k { color: var(--muted); white-space: nowrap; }
+.inspector td.v { font-family: var(--mono); font-size: 12px; word-break: break-all; }
+.inspector h4 { margin: 4px 0 6px; }
+.muted { color: var(--muted); }
+#messages { background: var(--panel); border-top: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
+#log { overflow: auto; padding: 4px 10px; font: 12px/1.5 var(--mono); flex: 1; }
+#log .err { color: var(--err); }
+#log .ok { color: var(--ok); }
+#log .warn { color: var(--warn); }
+
+/* Diagnostics keep their line structure (caret lines, boxes). */
+#log div {
+  white-space: pre-wrap;
+}
+.node input.par.ro { background: transparent; border-color: transparent; color: var(--muted, #888); }
