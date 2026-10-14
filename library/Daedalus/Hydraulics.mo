@@ -43,6 +43,16 @@ soft, delayed response seen in actuators and dampers with aerated oil.</p></html
       y := x/(x*x + delta*delta)^0.25;
     end regRoot;
 
+    function smoothStep "C2-continuous step from 0 (x <= 0) to 1 (x >= 1)"
+      input Real x;
+      output Real y;
+    protected
+      Real xc;
+    algorithm
+      xc := min(1, max(0, x));
+      y := xc*xc*xc*(10 - 15*xc + 6*xc*xc);
+    end smoothStep;
+
     function orificeFlow "Turbulent orifice flow with laminar transition"
       input Units.PressureDifference dp;
       input Units.Area A "Flow area";
@@ -222,7 +232,7 @@ soft, delayed response seen in actuators and dampers with aerated oil.</p></html
       parameter Units.Area A_leak=1e-11 "Leakage area";
       Real opening(min=0, max=1) "Relative opening";
     equation
-      opening = min(1, max(0, (dp - dp_crack)/dp_open));
+      opening = Functions.smoothStep((dp - dp_crack)/dp_open);
       q = Functions.orificeFlow(dp, A_max*opening + A_leak, Cd, 1e4);
       annotation (Icon(graphics={Line(points={{-100,0},{-30,0}}, color={0,90,190}), Line(points={{30,0},{100,0}}, color={0,90,190}),
           Ellipse(extent={{-30,20},{10,-20}}, lineColor={0,90,190}), Line(points={{10,30},{10,-30}}, color={0,90,190}, thickness=0.5)}));
@@ -236,7 +246,7 @@ soft, delayed response seen in actuators and dampers with aerated oil.</p></html
       parameter Real Cd=0.65;
       Real opening(min=0, max=1);
     equation
-      opening = min(1, max(0, (dp - p_set)/p_override));
+      opening = Functions.smoothStep((dp - p_set)/p_override);
       q = Functions.orificeFlow(dp, A_max*opening + 1e-12, Cd, 1e4);
       annotation (Icon(graphics={Rectangle(extent={{-40,40},{40,-40}}, lineColor={0,90,190}),
           Line(points={{-30,-20},{30,20}}, color={0,90,190}, arrow={Arrow.None,Arrow.Filled}),
@@ -324,6 +334,8 @@ soft, delayed response seen in actuators and dampers with aerated oil.</p></html
       parameter Units.TranslationalSpringConstant c_stop=1e8 "End-stop stiffness";
       parameter Units.TranslationalDampingConstant d_stop=1e5 "End-stop damping";
       parameter Units.Length s_start=stroke/2 "Initial extension";
+      parameter Boolean fixInitialExtension=true "false: initial extension follows from the connected mechanics";
+      parameter Units.Length L_closed=0 "Distance rod.s - housing.s at zero extension (mounting geometry)";
       parameter Units.AbsolutePressure pA_start=Oil.p_atm;
       parameter Units.AbsolutePressure pB_start=Oil.p_atm;
       Interfaces.Port_a port_A "Chamber A (extends the rod when pressurised)"
@@ -331,8 +343,8 @@ soft, delayed response seen in actuators and dampers with aerated oil.</p></html
       Interfaces.Port_b port_B "Chamber B" annotation (Placement(transformation(extent={{50,50},{70,70}})));
       Daedalus.Mechanics.Translational.Interfaces.Flange_a housing annotation (Placement(transformation(extent={{-110,-10},{-90,10}})));
       Daedalus.Mechanics.Translational.Interfaces.Flange_b rod annotation (Placement(transformation(extent={{90,-10},{110,10}})));
-      Units.Position s(start=s_start, fixed=true, stateSelect=StateSelect.prefer) "Extension (rod.s - housing.s)";
-      Units.Velocity v(start=0, fixed=true, stateSelect=StateSelect.prefer) "Extension speed";
+      Units.Position s(start=s_start, fixed=fixInitialExtension, stateSelect=StateSelect.prefer) "Extension (rod.s - housing.s)";
+      Units.Velocity v(start=0, fixed=fixInitialExtension, stateSelect=StateSelect.prefer) "Extension speed";
       Units.AbsolutePressure pA(start=pA_start, fixed=true, stateSelect=StateSelect.prefer);
       Units.AbsolutePressure pB(start=pB_start, fixed=true, stateSelect=StateSelect.prefer);
       Units.Volume VA, VB;
@@ -344,7 +356,7 @@ soft, delayed response seen in actuators and dampers with aerated oil.</p></html
       parameter Units.Area AA=3.141592653589793/4*(D_piston^2 - d_rod_A^2);
       parameter Units.Area AB=3.141592653589793/4*(D_piston^2 - d_rod_B^2);
     equation
-      s = rod.s - housing.s;
+      s = rod.s - housing.s - L_closed;
       v = der(s);
       VA = V_dead + AA*max(s, 0);
       VB = V_dead + AB*max(stroke - s, 0);

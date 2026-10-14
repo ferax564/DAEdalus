@@ -151,6 +151,18 @@ package Rotational "1D rotational mechanics: inertias, compliances, gears, clutc
           Text(extent={{-150,-70},{150,-110}}, textString="ratio=%ratio")}));
     end IdealGear;
 
+    model IdealLever "Ideal lever / crank: converts rotation into translation, s = r*phi (small-angle linkage)"
+      parameter Units.Length r(start=0.1) "Lever arm";
+      Interfaces.Flange_a flange_a "Rotational flange" annotation (Placement(transformation(extent={{-110,-10},{-90,10}})));
+      Daedalus.Mechanics.Translational.Interfaces.Flange_b flange_b "Translational flange"
+        annotation (Placement(transformation(extent={{90,-10},{110,10}})));
+    equation
+      flange_b.s = r*flange_a.phi;
+      0 = r*flange_b.f + flange_a.tau;
+      annotation (Icon(graphics={Line(points={{-100,0},{-20,0}}), Line(points={{-20,0},{40,50}}, thickness=1),
+          Line(points={{40,50},{100,0}}, color={0,127,0}), Ellipse(extent={{-26,6},{-14,-6}}, fillPattern=FillPattern.Solid)}));
+    end IdealLever;
+
     model Clutch "Friction clutch with regularised Coulomb friction (normalised normal force input)"
       extends Interfaces.PartialCompliant;
       parameter Real mu=0.3 "Friction coefficient";

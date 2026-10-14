@@ -20,6 +20,8 @@ const DENSE_LIMIT: usize = 48;
 pub struct SolverStats {
     pub steps: u64,
     pub rejected: u64,
+    /// Rejections caused by Newton non-convergence (the rest are error-test failures).
+    pub newton_failures: u64,
     pub rhs_evals: u64,
     pub jac_evals: u64,
     pub lu_factorizations: u64,
@@ -684,6 +686,7 @@ impl Integrator for Bdf {
             }
             if !converged {
                 self.stats.rejected += 1;
+                self.stats.newton_failures += 1;
                 self.h_abs *= 0.5;
                 self.change_d(0.5);
                 self.n_equal_steps = 0;

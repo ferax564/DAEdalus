@@ -3,8 +3,18 @@
 
 /// In-place LU factorisation. Returns false if the matrix is (numerically) singular.
 pub fn lu_factor(a: &mut [f64], n: usize, piv: &mut [usize]) -> bool {
-    let amax = a.iter().fold(0.0f64, |m, x| m.max(x.abs()));
-    let tiny = amax * 1e-14 + 1e-300;
+    // Rows and columns can differ in scale by many orders of magnitude (pressures in Pa next to
+    // positions in m), so singularity is judged per column against that column's own magnitude
+    // rather than against the largest entry of the whole matrix.
+    let mut colmax = vec![0.0f64; n];
+    for i in 0..n {
+        for (j, c) in colmax.iter_mut().enumerate() {
+            *c = c.max(a[i * n + j].abs());
+        }
+    }
+    if colmax.iter().any(|c| !c.is_finite()) {
+        return false;
+    }
     for k in 0..n {
         let mut p = k;
         let mut best = a[k * n + k].abs();
@@ -16,7 +26,7 @@ pub fn lu_factor(a: &mut [f64], n: usize, piv: &mut [usize]) -> bool {
             }
         }
         piv[k] = p;
-        if !(best > tiny) {
+        if !(best > colmax[k] * 1e-14 + 1e-300) {
             return false;
         }
         if p != k {

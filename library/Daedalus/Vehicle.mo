@@ -277,7 +277,7 @@ package Vehicle "Longitudinal vehicle dynamics, electric and combustion powertra
     end Battery;
 
     model Engine "Combustion engine: full-load torque curve scaled by throttle, with drag torque and inertia"
-      parameter Real torqueCurve[:, 2]=[800, 160; 1500, 210; 2500, 250; 3500, 250; 4500, 235; 5500, 210; 6300, 180]
+      parameter Real torqueCurve[:, 2]=[800, 160; 1500, 210; 2500, 250; 3500, 250; 4500, 235; 5500, 210; 6300, 180; 6800, 0]
         "Full-load torque [rpm, N.m]";
       parameter Units.Torque tau_drag=20 "Friction (motoring) torque at 3000 rpm";
       parameter Units.Inertia J=0.2 "Engine (crank + flywheel) inertia";

@@ -211,11 +211,12 @@ fn run() -> anyhow::Result<()> {
                 eprintln!("{l}");
             }
             eprintln!(
-                "translated in {:.1} ms; simulated in {:.1} ms ({} steps, {} rejected, {} f-evals, {} jacobians, {} events)",
+                "translated in {:.1} ms; simulated in {:.1} ms ({} steps, {} rejected ({} Newton), {} f-evals, {} jacobians, {} events)",
                 ms(t_tr) + ms(t_parse),
                 stats.init_ms + stats.sim_ms,
                 stats.solver.steps,
                 stats.solver.rejected,
+                stats.solver.newton_failures,
                 stats.solver.rhs_evals,
                 stats.solver.jac_evals,
                 stats.events
