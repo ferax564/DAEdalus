@@ -871,6 +871,24 @@ impl Arena {
         out
     }
 
+    /// Visit every leaf node: variables, `der`, `pre`, time, constants, relations, `initial()`.
+    pub fn visit_all_leaves(&self, root: ExprId, f: &mut dyn FnMut(Node)) {
+        let mut seen = rustc_hash::FxHashSet::default();
+        let mut stack = vec![root];
+        let mut ch = Vec::new();
+        while let Some(id) = stack.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
+            ch.clear();
+            self.children(id, &mut ch);
+            if ch.is_empty() {
+                f(self.node(id));
+            }
+            stack.extend(ch.iter().copied());
+        }
+    }
+
     /// Whether `initial()` occurs in the expression.
     pub fn mentions_initial(&self, root: ExprId) -> bool {
         let mut seen = rustc_hash::FxHashSet::default();

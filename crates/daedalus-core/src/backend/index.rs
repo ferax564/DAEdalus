@@ -61,6 +61,7 @@ impl Work {
         // Collect the unknowns first so derivative variables can be created up-front.
         let mut vs = Vec::new();
         self.unknowns_in(e, &mut vs);
+        vs.retain(|v| !self.invariant.contains(v));
         let map: FxHashMap<VarId, ExprId> = vs
             .into_iter()
             .map(|v| {
@@ -85,6 +86,63 @@ impl Work {
         self.unknowns_in(e.rhs, &mut out);
         out
     }
+}
+
+/// Find unknowns that are fixed by equations over parameters (and other such unknowns)
+/// only, like the switching times of a point-to-point path planner. Their derivative is
+/// zero, so index reduction does not differentiate the equations that define them.
+pub fn find_invariant(w: &mut Work) {
+    let mut invariant: FxHashSet<VarId> = FxHashSet::default();
+    let mut done = vec![false; w.eqs.len()];
+    let mut defining = Vec::new();
+    loop {
+        let mut changed = false;
+        for (k, eq) in w.eqs.iter().enumerate() {
+            if done[k] {
+                continue;
+            }
+            let mut varying = false;
+            let mut free: Option<VarId> = None;
+            let mut count = 0;
+            for root in [eq.lhs, eq.rhs] {
+                w.arena.visit_all_leaves(root, &mut |n| match n {
+                    Node::Var(v) => {
+                        let var = &w.vars[v as usize];
+                        if matches!(var.kind, VarKind::Parameter | VarKind::Constant)
+                            || invariant.contains(&v)
+                        {
+                            return;
+                        }
+                        if !w.unknown[v as usize]
+                            || !matches!(var.kind, VarKind::Continuous | VarKind::Discrete)
+                            || w.when_assigned.contains(&v)
+                        {
+                            varying = true;
+                        } else if free != Some(v) {
+                            free = Some(v);
+                            count += 1;
+                        }
+                    }
+                    Node::Const(_) => {}
+                    _ => varying = true,
+                });
+            }
+            if varying || count > 1 {
+                continue;
+            }
+            done[k] = true;
+            if let Some(v) = free {
+                invariant.insert(v);
+                defining.push(k);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    w.invariant = invariant;
+    w.invariant_eqs = defining.into_iter().collect();
 }
 
 /// Replace every `der(v)` leaf by a derivative variable.
@@ -259,7 +317,27 @@ fn unmatched_hint(w: &Work) -> String {
 pub fn pantelides(w: &mut Work) -> Result<()> {
     check_balance(w)?;
     let n_orig = w.eqs.len();
-    let mut adj: Vec<Vec<u32>> = w.eqs.iter().map(|e| w.eq_unknowns(e)).collect();
+    // Time-invariant unknowns and their defining equations are solved like parameters:
+    // they take no part in index reduction.
+    let invariant = w.invariant.clone();
+    let invariant_eqs = w.invariant_eqs.clone();
+    let unknowns = |w: &Work, e: &Eq| -> Vec<u32> {
+        let mut u = w.eq_unknowns(e);
+        u.retain(|v| !invariant.contains(v));
+        u
+    };
+    let mut adj: Vec<Vec<u32>> = w
+        .eqs
+        .iter()
+        .enumerate()
+        .map(|(k, e)| {
+            if invariant_eqs.contains(&k) {
+                Vec::new()
+            } else {
+                unknowns(w, e)
+            }
+        })
+        .collect();
     let mut eq_match: Vec<u32> = vec![NONE; w.eqs.len()];
     let mut var_match: Vec<u32> = vec![NONE; w.vars.len()];
     let mut visited_eq: Vec<u32> = vec![0; w.eqs.len()];
@@ -267,6 +345,9 @@ pub fn pantelides(w: &mut Work) -> Result<()> {
     let mut stamp = 0u32;
     let max_eqs = 8 * n_orig.max(16) + 1000;
     for k in 0..n_orig {
+        if invariant_eqs.contains(&k) {
+            continue;
+        }
         let mut i = k;
         let mut level = 0;
         loop {
@@ -328,7 +409,7 @@ pub fn pantelides(w: &mut Work) -> Result<()> {
                 w.eqs.push(new);
                 let ni = w.eqs.len() - 1;
                 w.eqs[l].derived = Some(ni);
-                adj.push(w.eq_unknowns(&new));
+                adj.push(unknowns(w, &new));
                 eq_match.push(NONE);
                 visited_eq.push(0);
             }
@@ -555,10 +636,16 @@ pub fn select_states(w: &mut Work) -> Result<Vec<VarId>> {
                 };
                 if pick.len() < rows.len() {
                     let names: Vec<&str> = bcols.iter().map(|&c| w.name(cols[c])).collect();
+                    let eqs: Vec<String> = rows
+                        .iter()
+                        .take(3)
+                        .map(|&ri| w.eq_text(&w.eqs[g[ri]]))
+                        .collect();
                     bail!(
-                        "index reduction failed: cannot select {} dummy derivatives among [{}] (singular Jacobian at start values)",
+                        "index reduction failed: cannot select {} dummy derivatives among [{}] (singular Jacobian at start values) for: {}",
                         rows.len(),
-                        names.join(", ")
+                        names.join(", "),
+                        eqs.join("; ")
                     );
                 }
                 chosen.extend(pick.into_iter().map(|l| bcols[l]));

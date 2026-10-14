@@ -200,6 +200,8 @@ pub struct Simulation<'m> {
     pub rt: Runtime<'m>,
     pub opts: SimOptions,
     cond_prev: Vec<Vec<bool>>,
+    /// Largest |lhs - rhs| seen per relation: sets the hysteresis band of its crossing.
+    zc_scale: Vec<f64>,
     terminated: Option<String>,
     log: Vec<String>,
     pub stats: SimStats,
@@ -225,6 +227,7 @@ impl<'m> Simulation<'m> {
             rt: Runtime::new(m),
             opts,
             cond_prev: m.whens.iter().map(|w| vec![false; w.conds.len()]).collect(),
+            zc_scale: vec![0.0; m.layout.n_rel],
             terminated: None,
             log: Vec::new(),
             stats: SimStats::default(),
@@ -489,6 +492,8 @@ impl<'m> Simulation<'m> {
         let n_rel = m.layout.n_rel;
         let mut xi = vec![0.0; n];
         let mut guard = 0u64;
+        // Events piling up at one instant (Zeno behaviour, chattering modes).
+        let (mut last_event, mut same_instant) = (f64::NEG_INFINITY, 0u32);
         let wall0 = crate::backend::web_time_now();
         while t < o.stop_time * (1.0 - 1e-15) - 1e-300 && self.terminated.is_none() {
             guard += 1;
@@ -516,7 +521,14 @@ impl<'m> Simulation<'m> {
                 for i in 0..n_rel {
                     let raw = self.rt.r[m.zc_raw[i] as usize];
                     let lat = self.rt.r[m.layout.rel0 + i];
-                    if raw != lat {
+                    let g = self.rt.r[m.zc_g[i] as usize].abs();
+                    if g.is_finite() && g > self.zc_scale[i] {
+                        self.zc_scale[i] = g;
+                    }
+                    // Hysteresis: a relation that sits on its switching point (a stuck
+                    // friction element, a value from a Newton solve) must move clearly past
+                    // it before it counts as crossing again; otherwise events chatter.
+                    if raw != lat && !(g <= self.hysteresis(i)) {
                         crossing.push(i);
                     }
                 }
@@ -547,6 +559,29 @@ impl<'m> Simulation<'m> {
                 k_out += 1;
             }
             if let Some(te) = event_t {
+                if te - last_event <= 1e-10 * te.abs().max(1.0) {
+                    same_instant += 1;
+                    if same_instant > 500 {
+                        let names: Vec<String> = (0..n_rel)
+                            .filter(|&i| {
+                                self.rt.r[m.zc_raw[i] as usize] != self.rt.r[m.layout.rel0 + i]
+                            })
+                            .take(4)
+                            .map(|i| format!("relation {i}"))
+                            .collect();
+                        return Err(format!(
+                            "events chatter at t = {te}: {} keep switching back and forth",
+                            if names.is_empty() {
+                                "relations".to_string()
+                            } else {
+                                names.join(", ")
+                            }
+                        ));
+                    }
+                } else {
+                    same_instant = 0;
+                }
+                last_event = te;
                 self.stats.events += 1;
                 self.stats.state_events += 1;
                 solver.interpolate(te, &mut xi);
@@ -612,6 +647,11 @@ impl<'m> Simulation<'m> {
     }
 
     /// Locate the first time in `(ta, tb]` where relation `i` changes its raw value.
+    /// Width of the hysteresis band of relation `i`.
+    fn hysteresis(&self, i: usize) -> f64 {
+        (1e-10 * self.zc_scale[i]).max(1e-14)
+    }
+
     fn locate(
         &mut self,
         solver: &dyn Integrator,
@@ -640,6 +680,9 @@ impl<'m> Simulation<'m> {
             return tb; // no crossing at tb any more (should not happen)
         }
         if ra != lat {
+            if ga.abs() <= self.hysteresis(i) {
+                return tb; // still inside the hysteresis band at the start
+            }
             return ta; // already crossed at the start (e.g. right after an event)
         }
         let mut side = 0;

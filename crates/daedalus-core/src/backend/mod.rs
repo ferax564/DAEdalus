@@ -126,6 +126,10 @@ pub struct Work {
     pub origins: Vec<String>,
     pub when_assigned: FxHashSet<VarId>,
     pub dummy: FxHashSet<VarId>,
+    /// Unknowns fixed by equations over parameters only: their time derivative is zero.
+    pub invariant: FxHashSet<VarId>,
+    /// The equations that define the `invariant` unknowns.
+    pub invariant_eqs: FxHashSet<usize>,
 }
 
 impl Work {
@@ -287,6 +291,8 @@ pub fn compile(flat: FlatModel, opts: &Options) -> Result<System> {
         origins,
         when_assigned,
         dummy: FxHashSet::default(),
+        invariant: FxHashSet::default(),
+        invariant_eqs: FxHashSet::default(),
     };
 
     // 1. Parameters
@@ -303,6 +309,7 @@ pub fn compile(flat: FlatModel, opts: &Options) -> Result<System> {
     stats.equations_after_alias = w.eqs.len();
 
     // 3. Derivatives and index reduction
+    index::find_invariant(&mut w);
     index::create_derivative_vars(&mut w);
     let n_before = w.eqs.len();
     if opts.index_reduction {
