@@ -86,6 +86,42 @@ impl Cmp {
     }
 }
 
+/// Synchronous-language operators (MLS chapter 16). They only exist between
+/// translation and clock lowering in the frontend; the backend never sees them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClkOp {
+    /// `Clock()`: clock inferred from the partition.
+    Inferred,
+    /// `Clock(interval)` (a = interval, possibly a [`ClkOp::Rational`]).
+    Periodic,
+    /// `Clock(condition)`.
+    Event,
+    /// Exact ratio `a / b` of two integer expressions (`Clock(counter, resolution)`, shift amounts).
+    Rational,
+    /// `Clock(c, solverMethod = ..)`: the clock of `a`, discretising continuous equations.
+    Solver,
+    /// `sample(a, b)`: b is the clock, or `Inferred`.
+    Sample,
+    /// `hold(a)`.
+    Hold,
+    /// `previous(a)`.
+    Previous,
+    /// `subSample(a, factor b)` of a clock or a clocked value.
+    Sub,
+    /// `superSample(a, factor b)`.
+    Super,
+    /// `shiftSample(a, b)` with b a `Rational` fraction of the interval.
+    Shift,
+    /// `backSample(a, b)`.
+    Back,
+    /// `noClock(a)`.
+    NoClock,
+    /// `interval(a)`.
+    Interval,
+    /// `firstTick(a)`.
+    FirstTick,
+}
+
 /// One node of the expression DAG.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Node {
@@ -118,6 +154,8 @@ pub enum Node {
     InterpDer(u32, u32, ExprId),
     /// Integration-time `initial()` flag (1 during initialization, else 0).
     Initial,
+    /// Synchronous operator with up to two operands (unused operands are `ZERO`).
+    Clk(ClkOp, ExprId, ExprId),
 }
 
 /// An event-generating relation `lhs op rhs`.
@@ -291,7 +329,14 @@ impl Table {
         }
         let x0 = self.at(lo, 0);
         let x1 = self.at(lo + 1, 0);
-        let w = if x1 > x0 { (x - x0) / (x1 - x0) } else { 0.0 };
+        // A repeated abscissa is a jump: at the breakpoint the right value holds.
+        let w = if x1 > x0 {
+            (x - x0) / (x1 - x0)
+        } else if x >= x1 {
+            1.0
+        } else {
+            0.0
+        };
         (lo, w)
     }
 
@@ -747,7 +792,8 @@ impl Arena {
             | Node::Div(a, b)
             | Node::Pow(a, b)
             | Node::F2(_, a, b)
-            | Node::Cmp(_, a, b) => {
+            | Node::Cmp(_, a, b)
+            | Node::Clk(_, a, b) => {
                 out.push(a);
                 out.push(b);
             }
@@ -757,6 +803,11 @@ impl Arena {
                 out.push(b);
             }
         }
+    }
+
+    /// A synchronous operator node.
+    pub fn clk(&mut self, op: ClkOp, a: ExprId, b: ExprId) -> ExprId {
+        self.intern_node(Node::Clk(op, a, b))
     }
 
     /// Rebuild a node with new children (in the order given by [`Arena::children`]).
@@ -784,6 +835,7 @@ impl Arena {
             Node::F2(f, ..) => self.f2(f, ch[0], ch[1]),
             Node::Cmp(op, ..) => self.cmp(op, ch[0], ch[1]),
             Node::If(..) => self.if_(ch[0], ch[1], ch[2]),
+            Node::Clk(op, ..) => self.clk(op, ch[0], ch[1]),
         }
     }
 
@@ -1260,6 +1312,13 @@ impl Arena {
             Node::InterpDer(t, c, x) => {
                 let _ = write!(s, "interpolateSlope(table{t}, {c}, ");
                 self.render_into(x, name, s, 0);
+                s.push(')');
+            }
+            Node::Clk(op, a, b) => {
+                let _ = write!(s, "{op:?}(");
+                self.render_into(a, name, s, 0);
+                s.push_str(", ");
+                self.render_into(b, name, s, 0);
                 s.push(')');
             }
         }

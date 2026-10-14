@@ -17,6 +17,9 @@ use rumoca_ir_ast::{Expression as E, TerminalType};
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::rc::Rc;
 
+#[path = "clocks.rs"]
+mod clocks;
+
 pub type InstId = u32;
 
 /// Lexical environment for class lookups, carrying redeclared class overrides.
@@ -240,6 +243,12 @@ pub struct Flattener<'a, 't> {
     /// Variables declared inside expandable connectors.
     expandable_vars: Vec<VarId>,
     when_assigned: FxHashSet<VarId>,
+    /// Variables of type `Clock`.
+    clock_vars: FxHashSet<VarId>,
+    /// Equations of `when <clock> then` clauses, with their clock.
+    clocked_whens: Vec<(ExprId, Vec<Equation>)>,
+    /// A synchronous operator was translated.
+    uses_clocks: bool,
     depth: usize,
     pub var_by_name: FxHashMap<String, VarId>,
     /// Declared but not yet instantiated components, instantiated on first reference so
@@ -281,6 +290,9 @@ impl<'a, 't> Flattener<'a, 't> {
             expandable_insts: FxHashSet::default(),
             expandable_vars: Vec::new(),
             when_assigned: FxHashSet::default(),
+            clock_vars: FxHashSet::default(),
+            clocked_whens: Vec::new(),
+            uses_clocks: false,
             depth: 0,
             var_by_name: FxHashMap::default(),
             deferred: FxHashMap::default(),
@@ -603,6 +615,7 @@ impl<'a, 't> Flattener<'a, 't> {
                 .with_context(|| format!("in component '{}'", self.inst_name(i as InstId)))?;
         }
         self.finish_connections();
+        self.lower_clocks()?;
         self.finish_discrete();
         self.drop_unused_expandable();
         let _ = root;
@@ -1040,11 +1053,13 @@ impl<'a, 't> Flattener<'a, 't> {
                     return Ok(());
                 }
                 "ExternalObject" => VarType::Integer,
+                "Clock" => VarType::Real,
                 _ => VarType::Enumeration,
             };
             let mut kind = match &comp.variability {
                 // An external object (table handle) is fixed for the whole simulation.
                 _ if b == "ExternalObject" => VarKind::Parameter,
+                _ if b == "Clock" => VarKind::Discrete,
                 Variability::Constant(_) => VarKind::Constant,
                 Variability::Parameter(_) => VarKind::Parameter,
                 Variability::Discrete(_) => VarKind::Discrete,
@@ -1087,6 +1102,9 @@ impl<'a, 't> Flattener<'a, 't> {
                 v.is_protected = comp.is_protected;
                 v.is_output = causality_output && prefix.is_empty();
                 let vid = self.model.add_var(v);
+                if b == "Clock" {
+                    self.clock_vars.insert(vid);
+                }
                 if self.expandable_insts.contains(&inst) {
                     self.expandable_vars.push(vid);
                 }
@@ -1821,6 +1839,28 @@ impl<'a, 't> Flattener<'a, 't> {
                 }
             }
             ast::Equation::When(blocks) => {
+                let maybe_clock = match &blocks[0].cond {
+                    E::ComponentReference(_) => true,
+                    E::FunctionCall { comp, .. } => matches!(
+                        cref_name(comp).as_str(),
+                        "Clock" | "subSample" | "superSample" | "shiftSample" | "backSample"
+                    ),
+                    _ => false,
+                };
+                if blocks.len() == 1 && maybe_clock {
+                    let c = self.translate(&blocks[0].cond, scope, ctx)?;
+                    if let Val::S(c) = c
+                        && self.is_clock_expr(c)
+                    {
+                        let mut es = Vec::new();
+                        for e in &blocks[0].eqs {
+                            self.translate_equation(e, scope, ctx, &mut es, initial)?;
+                        }
+                        self.clocked_whens.push((c, es));
+                        self.uses_clocks = true;
+                        return Ok(());
+                    }
+                }
                 let mut branches = Vec::new();
                 for b in blocks {
                     let c = self.when_condition(&b.cond, scope, ctx)?;
@@ -2640,7 +2680,12 @@ impl<'a, 't> Flattener<'a, 't> {
                 let mut last: &'a E = else_branch;
                 for (c, b) in branches.iter() {
                     let cv = self.translate(c, scope, ctx)?.scalar()?;
-                    match self.model.arena.as_const(cv) {
+                    let known = self
+                        .model
+                        .arena
+                        .as_const(cv)
+                        .or_else(|| self.eval_param_expr(cv));
+                    match known {
                         Some(x) if x != 0.0 => {
                             last = b;
                             break;
@@ -3763,6 +3808,11 @@ impl<'a, 't> Flattener<'a, 't> {
                 _ => return None,
             })
         };
+        if !name.contains('.')
+            && let Some(r) = self.clock_call(&name, &pos, &named, scope, ctx)
+        {
+            return r;
+        }
         let short = name.rsplit('.').next().unwrap_or(&name).to_string();
         let is_builtin_ns = !name.contains('.') || name.starts_with("Modelica.Math.");
         if is_builtin_ns && let Some(f) = f1(&short) {
@@ -4688,7 +4738,7 @@ impl<'a, 't> Flattener<'a, 't> {
         let out = match fun {
             "init2" | "init3" => {
                 // (fileName, tableName, table, nrow, ncol, [startTime,] columns, ncols, smoothness,
-                //  extrapolation, [shiftTime, timeEvents,] verboseRead, ...)
+                //  extrapolation, [shiftTime, timeEvents,] verboseRead, ...); nrow and ncol follow table
                 let (d, e) = args[2].elems()?;
                 if d.len() != 2 || d[0] == 0 {
                     bail!("tables read from files are not supported; give the table as a matrix");
@@ -4730,7 +4780,7 @@ impl<'a, 't> Flattener<'a, 't> {
                 }
                 if time {
                     t.start = num(self, &args[5], "startTime")?;
-                    t.shift = num(self, &args[10 + o], "shiftTime")?;
+                    t.shift = num(self, &args[9 + o], "shiftTime")?;
                 }
                 if columns.iter().any(|&c| c == 0 || c > t.cols) {
                     bail!(

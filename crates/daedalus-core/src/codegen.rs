@@ -219,7 +219,7 @@ impl Emitter<'_> {
                 Node::If(..) => Ins::Select(d, s[0], s[1], s[2]),
                 Node::Interp(t, c, _) => Ins::Interp(d, t, c, s[0]),
                 Node::InterpDer(t, c, _) => Ins::InterpDer(d, t, c, s[0]),
-                _ => unreachable!(),
+                other => unreachable!("node {other:?} in code generation"),
             };
             out.push(ins);
             memo.insert(id, d);

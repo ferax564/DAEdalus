@@ -360,6 +360,7 @@ pub fn builtin_name(s: &str) -> Option<&'static str> {
         "StateSelect" => Some("StateSelect"),
         "AssertionLevel" => Some("AssertionLevel"),
         "ExternalObject" => Some("ExternalObject"),
+        "Clock" => Some("Clock"),
         _ => None,
     }
 }

@@ -117,3 +117,19 @@ fn nonlinear_loop_tearing() {
     assert!(close(y, z + (y).sin() * 0.1 + x, 1e-9));
     assert!(close(z, 0.5 * y - x * z, 1e-9));
 }
+
+#[test]
+fn clocked_partitions() {
+    let r = run("clocked.mo", "Clocked", 0.65, Method::Bdf);
+    // The fast clock ticks at 0, 0.1, 0.2, ...; the sub-sampled one at 0, 0.3, 0.6.
+    assert_eq!(r.at("k", 0.05).unwrap(), 1.0);
+    assert_eq!(r.at("k", 0.25).unwrap(), 3.0);
+    assert_eq!(r.at("ksh", 0.25).unwrap(), 1.0);
+    assert_eq!(r.at("ksh", 0.35).unwrap(), 2.0);
+    assert_eq!(r.at("ksh", 0.62).unwrap(), 3.0);
+    // Zero-order hold: u = -2 x(0) on [0, 0.1).
+    let e = (-0.1f64).exp();
+    let x1 = e - 2.0 * (1.0 - e);
+    assert!(close(r.at("x", 0.1).unwrap(), x1, 1e-6));
+    assert!(close(r.at("u", 0.15).unwrap(), -2.0 * x1, 1e-6));
+}
