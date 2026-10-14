@@ -19,7 +19,8 @@ COMMANDS:
   dump        print the sorted, causalised equation system
   simulate    simulate and write results
   test-library  translate and simulate every model with an experiment
-                annotation under --model (a package); prints a report
+                annotation under --model (a package), each in its own
+                process with a time limit; prints a report
 
 SOURCES:
   .mo files or directories (loaded recursively). The bundled Daedalus library
@@ -39,6 +40,8 @@ OPTIONS:
   --vars a,b,c            variables written to CSV / printed
   --no-index-reduction    disable Pantelides index reduction
   --no-tearing            disable tearing
+  --jobs N                parallel processes for test-library (default: cores)
+  --timeout S             per-model time limit for test-library (default 60)
 ";
 
 fn main() -> ExitCode {
@@ -69,6 +72,8 @@ fn run() -> anyhow::Result<()> {
     let mut output = None;
     let mut vars: Option<Vec<String>> = None;
     let mut opts = Options::default();
+    let mut jobs = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let mut timeout = 60.0f64;
     let mut i = 1;
     let next = |i: &mut usize| -> anyhow::Result<String> {
         *i += 1;
@@ -108,6 +113,8 @@ fn run() -> anyhow::Result<()> {
             "--vars" => vars = Some(next(&mut i)?.split(',').map(|s| s.trim().to_string()).collect()),
             "--no-index-reduction" => opts.index_reduction = false,
             "--no-tearing" => opts.tearing = false,
+            "--jobs" => jobs = next(&mut i)?.parse::<usize>()?.max(1),
+            "--timeout" => timeout = next(&mut i)?.parse()?,
             _ if a.starts_with('-') => anyhow::bail!("unknown option {a}\n\n{USAGE}"),
             _ => sources.push(a.to_string()),
         }
@@ -238,7 +245,44 @@ fn run() -> anyhow::Result<()> {
             }
             Ok(())
         }
-        "test-library" => test_library(&lib, &model, &opts),
+        "test-library" => {
+            let mut child_args: Vec<String> = Vec::new();
+            for l in &libs {
+                child_args.push("-L".into());
+                child_args.push(l.clone());
+            }
+            child_args.extend(sources.iter().cloned());
+            if !opts.index_reduction {
+                child_args.push("--no-index-reduction".into());
+            }
+            if !opts.tearing {
+                child_args.push("--no-tearing".into());
+            }
+            test_library(&lib, &model, &child_args, jobs, timeout)
+        }
+        "probe" => {
+            // Internal: used by test-library to isolate one model per process.
+            let t = Instant::now();
+            let m = match daedalus_core::translate(&lib, &model, &opts) {
+                Ok(m) => m,
+                Err(e) => {
+                    println!("ERR translate: {}", format!("{e:#}").lines().next().unwrap_or(""));
+                    return Ok(());
+                }
+            };
+            let mut o = SimOptions::from_model(&m);
+            o.max_wall_time = timeout * 0.8;
+            match daedalus_core::sim::simulate(&m, o) {
+                Ok((_, st)) => println!(
+                    "OK {} states, {} steps, {:.0} ms",
+                    m.states.len(),
+                    st.solver.steps,
+                    t.elapsed().as_secs_f64() * 1000.0
+                ),
+                Err(e) => println!("ERR simulate: {}", e.message.lines().next().unwrap_or("")),
+            }
+            Ok(())
+        }
         _ => anyhow::bail!("unknown command '{cmd}'\n\n{USAGE}"),
     }
 }
@@ -267,7 +311,10 @@ fn has_experiment(def: &rumoca_ir_ast::ClassDef) -> bool {
     })
 }
 
-fn test_library(lib: &Library, prefix: &str, opts: &Options) -> anyhow::Result<()> {
+fn test_library(lib: &Library, prefix: &str, child_args: &[String], jobs: usize, timeout: f64) -> anyhow::Result<()> {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    use std::sync::{Arc, Mutex};
     let tree = lib.tree();
     let mut models = Vec::new();
     tree.walk(&mut |c| {
@@ -282,33 +329,71 @@ fn test_library(lib: &Library, prefix: &str, opts: &Options) -> anyhow::Result<(
         }
     });
     drop(tree);
-    let mut ok = 0;
-    let mut failures: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+    let exe = std::env::current_exe()?;
+    let queue = Arc::new(Mutex::new(models.iter().cloned().enumerate().collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>()));
+    let results: Arc<Mutex<Vec<(usize, String, Result<String, String>)>>> = Arc::default();
     let t_all = Instant::now();
-    for name in &models {
-        let t0 = Instant::now();
-        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<String, String> {
-            let m = daedalus_core::translate(lib, name, opts).map_err(|e| format!("translate: {e:#}"))?;
-            let mut o = SimOptions::from_model(&m);
-            o.max_wall_time = 20.0;
-            let (_, st) = daedalus_core::sim::simulate(&m, o).map_err(|e| format!("simulate: {}", e.message))?;
-            Ok(format!("{} states, {} steps", m.states.len(), st.solver.steps))
-        }));
-        let dt = t0.elapsed().as_secs_f64() * 1000.0;
-        match r {
-            Ok(Ok(info)) => {
-                ok += 1;
-                println!("PASS {name} ({info}, {dt:.0} ms)");
-            }
-            Ok(Err(e)) => {
-                let first = e.lines().next().unwrap_or("").to_string();
-                println!("FAIL {name}: {first}");
-                failures.entry(categorize(&first)).or_default().push(name.clone());
-            }
-            Err(_) => {
-                println!("FAIL {name}: panic");
-                failures.entry("panic".into()).or_default().push(name.clone());
-            }
+    let workers: Vec<_> = (0..jobs.min(models.len()).max(1))
+        .map(|_| {
+            let (queue, results, exe) = (queue.clone(), results.clone(), exe.clone());
+            let args = child_args.to_vec();
+            std::thread::spawn(move || {
+                loop {
+                    let Some((idx, name)) = queue.lock().unwrap().pop() else { break };
+                    let t0 = Instant::now();
+                    let child = Command::new(&exe)
+                        .arg("probe")
+                        .args(&args)
+                        .args(["-m", &name, "--timeout", &timeout.to_string()])
+                        .stdout(Stdio::piped())
+                        .stderr(Stdio::null())
+                        .spawn();
+                    let r = match child {
+                        Err(e) => Err(format!("spawn: {e}")),
+                        Ok(mut ch) => loop {
+                            match ch.try_wait() {
+                                Ok(Some(status)) => {
+                                    let mut out = String::new();
+                                    if let Some(mut so) = ch.stdout.take() {
+                                        let _ = so.read_to_string(&mut out);
+                                    }
+                                    let line = out.lines().last().unwrap_or("").to_string();
+                                    break if let Some(rest) = line.strip_prefix("OK ") {
+                                        Ok(rest.to_string())
+                                    } else if let Some(rest) = line.strip_prefix("ERR ") {
+                                        Err(rest.to_string())
+                                    } else {
+                                        Err(format!("crash ({status})"))
+                                    };
+                                }
+                                Ok(None) if t0.elapsed().as_secs_f64() > timeout => {
+                                    let _ = ch.kill();
+                                    let _ = ch.wait();
+                                    break Err(format!("timeout after {timeout} s"));
+                                }
+                                Ok(None) => std::thread::sleep(std::time::Duration::from_millis(20)),
+                                Err(e) => break Err(format!("wait: {e}")),
+                            }
+                        },
+                    };
+                    match &r {
+                        Ok(info) => println!("PASS {name} ({info})"),
+                        Err(e) => println!("FAIL {name}: {e}"),
+                    }
+                    results.lock().unwrap().push((idx, name, r));
+                }
+            })
+        })
+        .collect();
+    for w in workers {
+        let _ = w.join();
+    }
+    let results = std::mem::take(&mut *results.lock().unwrap());
+    let ok = results.iter().filter(|r| r.2.is_ok()).count();
+    let mut failures: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+    for (_, name, r) in &results {
+        if let Err(e) = r {
+            failures.entry(categorize(e)).or_default().push(name.clone());
         }
     }
     println!(
