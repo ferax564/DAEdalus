@@ -5,6 +5,7 @@
 
 pub mod inspect;
 pub mod inst;
+pub mod overconstrained;
 pub mod tree;
 
 use crate::flat::FlatModel;
@@ -113,6 +114,18 @@ impl Library {
         let tree = self.tree();
         let id = tree.find_path(model).ok_or_else(|| anyhow!("model '{model}' not found"))?;
         let mut f = inst::Flattener::new(&tree);
+        let first = f.flatten(id);
+        if !f.oc_log.used {
+            first?;
+            return Ok(f.model);
+        }
+        // Overconstrained connectors: flatten again with the spanning-tree answers, so that
+        // `Connections.isRoot/rooted` are known and loop-closing connections use
+        // `equalityConstraint` instead of potential equality.
+        let answers = std::rc::Rc::new(overconstrained::OcAnswers::compute(&f.oc_log));
+        drop(f);
+        let mut f = inst::Flattener::new(&tree);
+        f.oc_answers = Some(answers);
         f.flatten(id)?;
         Ok(f.model)
     }

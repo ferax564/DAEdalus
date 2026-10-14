@@ -8,6 +8,7 @@
 use super::tree::{ClassId, ClassTree, ROOT, builtin_name};
 use crate::expr::{Arena, Cmp, ExprId, Fn1, Fn2, Node, Table, VarId};
 use crate::flat::*;
+use super::overconstrained::{OcAnswers, OcLog};
 use anyhow::{Context, Result, anyhow, bail};
 use indexmap::IndexMap;
 use rumoca_core::{ArrayConstructor, Causality, ClassType, OpBinary, OpUnary, Variability};
@@ -35,6 +36,9 @@ pub struct Scope {
 pub struct Scoped<'a> {
     pub expr: &'a E,
     pub scope: Scope,
+    /// Element selection for modifiers distributed over arrays of components
+    /// (`c[n](p = {..})` gives element `k` the `k`-th slice): (k, n) pairs, outermost first.
+    pub sel: Vec<(usize, usize)>,
 }
 
 /// Modification tree (MLS §7.2) with expressions bound to the scope they were written in.
@@ -108,6 +112,9 @@ pub enum Comp {
     Inst(InstId),
     /// Array of components (shared: cloning a component reference is O(1)).
     Arr(Vec<usize>, std::rc::Rc<Vec<Comp>>),
+    /// String parameter or constant, evaluated at instantiation (strings never reach the
+    /// flat model, but they select conditional components and replaceable choices).
+    Str(std::rc::Rc<str>),
     Removed,
 }
 
@@ -228,6 +235,14 @@ pub struct Flattener<'a, 't> {
     /// Declared but not yet instantiated components, instantiated on first reference so
     /// that declaration order does not matter (e.g. conditions on later parameters).
     deferred: FxHashMap<(InstId, String), (&'a ast::Component, Rc<Env>, Mod<'a>)>,
+    /// Overconstrained connection graph recorded during this run.
+    pub oc_log: OcLog,
+    /// Spanning-tree answers from a previous run (second run of an overconstrained model).
+    pub oc_answers: Option<Rc<OcAnswers>>,
+    oc_class: FxHashMap<ClassId, Option<ClassId>>,
+    /// Structured components bound to a value as a whole (`Orientation R = nullRotation()`,
+    /// `Complex c = a*b`): the value is distributed over the fields in pass 2.
+    record_bindings: Vec<(InstId, Scoped<'a>)>,
 }
 
 const MAX_DEPTH: usize = 200;
@@ -253,6 +268,10 @@ impl<'a, 't> Flattener<'a, 't> {
             depth: 0,
             var_by_name: FxHashMap::default(),
             deferred: FxHashMap::default(),
+            oc_log: OcLog::default(),
+            oc_answers: None,
+            oc_class: FxHashMap::default(),
+            record_bindings: Vec::new(),
         }
     }
 
@@ -367,7 +386,7 @@ impl<'a, 't> Flattener<'a, 't> {
                     return;
                 }
                 let sub = Mod {
-                    value: Some(Scoped { expr: value, scope: scope.clone() }),
+                    value: Some(Scoped { expr: value, scope: scope.clone(), sel: Vec::new() }),
                     each,
                     final_,
                     ..Default::default()
@@ -390,7 +409,7 @@ impl<'a, 't> Flattener<'a, 't> {
                 {
                     let path: Vec<String> = target.parts.iter().map(|p| p.ident.text.to_string()).collect();
                     let mut sub = self.mods_from_exprs(modifications, each_flags, final_flags, redeclare_flags, scope);
-                    sub.value = Some(Scoped { expr: rhs, scope: scope.clone() });
+                    sub.value = Some(Scoped { expr: rhs, scope: scope.clone(), sel: Vec::new() });
                     sub.each = each;
                     sub.final_ = final_;
                     m.set_path(&path, sub);
@@ -398,7 +417,7 @@ impl<'a, 't> Flattener<'a, 't> {
             }
             E::NamedArgument { name, value, .. } => {
                 let sub = Mod {
-                    value: Some(Scoped { expr: value, scope: scope.clone() }),
+                    value: Some(Scoped { expr: value, scope: scope.clone(), sel: Vec::new() }),
                     each,
                     final_,
                     ..Default::default()
@@ -425,7 +444,7 @@ impl<'a, 't> Flattener<'a, 't> {
             scope,
         );
         if let Some(b) = &comp.binding {
-            m.value = Some(Scoped { expr: b, scope: scope.clone() });
+            m.value = Some(Scoped { expr: b, scope: scope.clone(), sel: Vec::new() });
         }
         if comp.is_final {
             m.final_ = true;
@@ -742,7 +761,7 @@ impl<'a, 't> Flattener<'a, 't> {
                 ast::Subscript::Range { .. } | ast::Subscript::Empty => {
                     // Unknown size `[:]`: derive from the binding value if possible.
                     let d = if let Some(v) = &m.value {
-                        let val = self.translate(v.expr, &v.scope.clone(), &mut Ctx::default())?;
+                        let val = self.translate_scoped(v, &mut Ctx::default())?;
                         match val {
                             Val::A(d, _) => d.get(dims.len()).copied().unwrap_or(0),
                             Val::IA(d, _) => d.get(dims.len()).copied().unwrap_or(0),
@@ -755,9 +774,18 @@ impl<'a, 't> Flattener<'a, 't> {
                 }
             }
         }
-        if let Some(tc) = tclass
-            && let Some(td) = self.tree.def(tc)
+        // Dimensions of the type, along its chain of short definitions and extends
+        // (`type Orientation extends TransformationMatrix`, `type TransformationMatrix = Real[3, 3]`).
+        let mut tcur = tclass;
+        let mut tdepth = 0;
+        while let Some(tc) = tcur
+            && tdepth < 16
         {
+            tdepth += 1;
+            let Some(td) = self.tree.def(tc) else { break };
+            if !matches!(self.tree.class_type(tc), ClassType::Type) && tdepth > 1 {
+                break;
+            }
             let tenv = self.env_of(tc);
             for s in &td.array_subscripts {
                 if let ast::Subscript::Expression(e) = s {
@@ -765,6 +793,7 @@ impl<'a, 't> Flattener<'a, 't> {
                     dims.push(v as usize);
                 }
             }
+            tcur = self.tree.bases(tc).into_iter().next();
         }
         let count: usize = dims.iter().product();
         let base = builtin.or_else(|| tclass.and_then(|c| self.tree.builtin_base(c)));
@@ -786,7 +815,21 @@ impl<'a, 't> Flattener<'a, 't> {
                 "Integer" => VarType::Integer,
                 "Boolean" => VarType::Boolean,
                 "String" => {
-                    self.insts[inst as usize].comps.insert(name, Comp::Removed);
+                    let mut c = Comp::Removed;
+                    if dims.is_empty() {
+                        let src = tm.value.clone().or_else(|| tm.sub("start").and_then(|s| s.value.clone()));
+                        let v = match src {
+                            Some(sc) => match self.translate_scoped(&sc, &mut Ctx::default()) {
+                                Ok(Val::Str(x)) => Some(x),
+                                _ => None,
+                            },
+                            None => Some(String::new()),
+                        };
+                        if let Some(x) = v {
+                            c = Comp::Str(x.into());
+                        }
+                    }
+                    self.insts[inst as usize].comps.insert(name, c);
                     return Ok(());
                 }
                 _ => VarType::Enumeration,
@@ -871,6 +914,9 @@ impl<'a, 't> Flattener<'a, 't> {
             if !matches!(var_prefix, Variability::Empty) {
                 self.propagate_variability(child, &var_prefix);
             }
+            if let Some(v) = &cm.value {
+                self.record_bindings.push((child, v.clone()));
+            }
             elems.push(Comp::Inst(child));
         }
         let c = if dims.is_empty() { elems.pop().unwrap() } else { Comp::Arr(dims, std::rc::Rc::new(elems)) };
@@ -915,7 +961,7 @@ impl<'a, 't> Flattener<'a, 't> {
                     self.propagate_comp(x, v);
                 }
             }
-            Comp::Removed => {}
+            Comp::Removed | Comp::Str(_) => {}
         }
     }
 
@@ -1019,7 +1065,74 @@ impl<'a, 't> Flattener<'a, 't> {
     // Pass 2: translation
     // ------------------------------------------------------------------
 
+    /// Distribute whole-component bindings over the fields (see `record_bindings`).
+    fn translate_record_bindings(&mut self) -> Result<()> {
+        let rb = std::mem::take(&mut self.record_bindings);
+        for (inst, sc) in rb {
+            let v = self.translate_scoped(&sc, &mut Ctx::default())?;
+            let o = self.model.origin(format!("declaration of {}", self.insts[inst as usize].prefix));
+            self.bind_fields(inst, v, o).with_context(|| format!("in declaration of '{}'", self.insts[inst as usize].prefix))?;
+        }
+        Ok(())
+    }
+
+    fn bind_fields(&mut self, inst: InstId, v: Val, o: u32) -> Result<()> {
+        let rec = self.as_record(&v)?;
+        let Val::Rec(fields) = rec else { unreachable!() };
+        let comps: Vec<(String, Comp)> = self.insts[inst as usize].comps.iter().map(|(k, c)| (k.clone(), c.clone())).collect();
+        for (name, c) in comps {
+            let Some((_, fv)) = fields.iter().find(|(n, _)| *n == name) else { continue };
+            self.bind_comp(&c, fv.clone(), o)?;
+        }
+        Ok(())
+    }
+
+    fn bind_comp(&mut self, c: &Comp, v: Val, o: u32) -> Result<()> {
+        match c {
+            Comp::Var(var) => {
+                let e = v.scalar()?;
+                self.bind_var(*var, e, o);
+            }
+            Comp::Arr(_, el) if el.iter().all(|x| matches!(x, Comp::Var(_))) => {
+                let (_, xs) = v.elems()?;
+                for (k, x) in el.iter().enumerate() {
+                    if let Comp::Var(var) = x {
+                        let e = *xs.get(k).or(xs.first()).ok_or_else(|| anyhow!("empty array value"))?;
+                        self.bind_var(*var, e, o);
+                    }
+                }
+            }
+            Comp::Inst(i) => self.bind_fields(*i, v, o)?,
+            Comp::Arr(_, el) => {
+                let parts: Vec<Val> = match v {
+                    Val::IA(_, ids) => ids.into_iter().map(Val::Inst).collect(),
+                    Val::Tuple(t) => t,
+                    other => vec![other],
+                };
+                for (k, x) in el.iter().enumerate() {
+                    if let Some(p) = parts.get(k).or(parts.first()) {
+                        self.bind_comp(x, p.clone(), o)?;
+                    }
+                }
+            }
+            Comp::Removed | Comp::Str(_) => {}
+        }
+        Ok(())
+    }
+
+    fn bind_var(&mut self, var: VarId, e: ExprId, o: u32) {
+        let kind = self.model.vars[var as usize].kind;
+        if matches!(kind, VarKind::Parameter | VarKind::Constant) {
+            self.model.vars[var as usize].binding = Some(e);
+            self.binding_done.insert(var);
+        } else {
+            let lhs = self.model.arena.var(var);
+            self.model.equations.push(Equation { lhs, rhs: e, origin: o });
+        }
+    }
+
     fn translate_pending(&mut self) -> Result<()> {
+        self.translate_record_bindings()?;
         for i in 0..self.pending.len() {
             let v = self.pending[i].var;
             if self.binding_done.contains(&v) {
@@ -1030,6 +1143,15 @@ impl<'a, 't> Flattener<'a, 't> {
             self.translate_attrs(i).with_context(|| format!("in declaration of '{name}'"))?;
         }
         Ok(())
+    }
+
+    /// Translate a modifier value and apply its array-of-components element selection.
+    fn translate_scoped(&mut self, s: &Scoped<'a>, ctx: &mut Ctx) -> Result<Val> {
+        let mut v = self.translate(s.expr, &s.scope.clone(), ctx)?;
+        for &(k, n) in &s.sel {
+            v = slice_leading(v, k, n);
+        }
+        Ok(v)
     }
 
     fn element_of(&self, val: Val, index: usize, count: usize, each: bool) -> Result<ExprId> {
@@ -1059,7 +1181,7 @@ impl<'a, 't> Flattener<'a, 't> {
         let mut ctx = Ctx::default();
         // binding
         if let Some(s) = &m.value {
-            let val = self.translate(s.expr, &s.scope.clone(), &mut ctx)?;
+            let val = self.translate_scoped(s, &mut ctx)?;
             let e = self.element_of(val, index, count, m.each)?;
             if is_param {
                 self.model.vars[var as usize].binding = Some(e);
@@ -1073,7 +1195,7 @@ impl<'a, 't> Flattener<'a, 't> {
             let Some(s) = &sm.value else { continue };
             match attr.as_str() {
                 "start" | "nominal" | "min" | "max" => {
-                    let val = self.translate(s.expr, &s.scope.clone(), &mut ctx)?;
+                    let val = self.translate_scoped(s, &mut ctx)?;
                     let e = self.element_of(val, index, count, sm.each)?;
                     let v = &mut self.model.vars[var as usize];
                     match attr.as_str() {
@@ -1084,7 +1206,7 @@ impl<'a, 't> Flattener<'a, 't> {
                     }
                 }
                 "fixed" => {
-                    let val = self.translate(s.expr, &s.scope.clone(), &mut ctx)?;
+                    let val = self.translate_scoped(s, &mut ctx)?;
                     let e = self.element_of(val, index, count, sm.each)?;
                     let f = self.eval_param_expr(e).unwrap_or(1.0);
                     self.model.vars[var as usize].fixed = Some(f != 0.0);
@@ -1101,7 +1223,7 @@ impl<'a, 't> Flattener<'a, 't> {
                     }
                 }
                 "stateSelect" => {
-                    let val = self.translate(s.expr, &s.scope.clone(), &mut ctx)?;
+                    let val = self.translate_scoped(s, &mut ctx)?;
                     let e = val.scalar()?;
                     if let Some(x) = self.eval_param_expr(e) {
                         self.model.vars[var as usize].state_select = match x as i64 {
@@ -1220,6 +1342,7 @@ impl<'a, 't> Flattener<'a, 't> {
             Comp::Var(v) => Some(Val::S(self.var_ref(*v))),
             Comp::Inst(i) => self.as_record(&Val::Inst(*i)).ok(),
             Comp::Arr(..) => self.comp_to_val(c).ok(),
+            Comp::Str(x) => Some(Val::Str(x.to_string())),
             Comp::Removed => None,
         }
     }
@@ -1342,6 +1465,36 @@ impl<'a, 't> Flattener<'a, 't> {
                     }
                     "terminate" => {
                         self.model.warnings.push("terminate() outside when-clause ignored".into());
+                    }
+                    "Connections.branch" | "Connections.root" | "Connections.potentialRoot" | "Connections.uniqueRoot" => {
+                        self.oc_log.used = true;
+                        let (pos, named) = split_args(args);
+                        let mut nodes = Vec::new();
+                        for a in pos.iter().take(if name == "Connections.branch" { 2 } else { 1 }) {
+                            nodes.push(self.oc_node(a, scope, ctx)?);
+                        }
+                        match name.as_str() {
+                            "Connections.branch" => {
+                                if let [Some(a), Some(b)] = &nodes[..] {
+                                    self.oc_log.branches.push((a.clone(), b.clone()));
+                                }
+                            }
+                            "Connections.potentialRoot" => {
+                                let pe = pos.get(1).copied().or_else(|| named.iter().find(|(n, _)| *n == "priority").map(|(_, e)| *e));
+                                let p = match pe {
+                                    Some(e) => self.eval_structural(e, scope).unwrap_or(0.0) as i64,
+                                    None => 0,
+                                };
+                                if let Some(Some(a)) = nodes.first() {
+                                    self.oc_log.potential.push((a.clone(), p));
+                                }
+                            }
+                            _ => {
+                                if let Some(Some(a)) = nodes.first() {
+                                    self.oc_log.roots.push(a.clone());
+                                }
+                            }
+                        }
                     }
                     _ => {
                         // Function call with no outputs in an equation section: ignore.
@@ -1546,6 +1699,68 @@ impl<'a, 't> Flattener<'a, 't> {
     // Connections
     // ------------------------------------------------------------------
 
+    /// The `equalityConstraint` function of an overconstrained record class, if any.
+    fn oc_function(&mut self, class: ClassId) -> Option<ClassId> {
+        if let Some(&r) = self.oc_class.get(&class) {
+            return r;
+        }
+        let r = self
+            .tree
+            .member_class(class, "equalityConstraint")
+            .filter(|&f| matches!(self.tree.class_type(f), ClassType::Function));
+        self.oc_class.insert(class, r);
+        r
+    }
+
+    /// Overconstrained record instances found at the same place in two connectors.
+    fn oc_pairs(&mut self, a: &Comp, b: &Comp, out: &mut Vec<(InstId, InstId, ClassId)>) {
+        match (a, b) {
+            (Comp::Inst(i), Comp::Inst(j)) => {
+                if let Some(f) = self.oc_function(self.insts[*i as usize].class) {
+                    out.push((*i, *j, f));
+                    return;
+                }
+                let ca: Vec<(String, Comp)> = self.insts[*i as usize].comps.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                for (k, x) in ca {
+                    if let Some(y) = self.insts[*j as usize].comps.get(&k).cloned() {
+                        self.oc_pairs(&x, &y, out);
+                    }
+                }
+            }
+            (Comp::Arr(_, xa), Comp::Arr(_, xb)) => {
+                for (x, y) in xa.iter().zip(xb.iter()) {
+                    self.oc_pairs(x, y, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Node name of a `Connections.*` argument (an overconstrained record instance).
+    fn oc_node(&mut self, e: &'a E, scope: &Scope, ctx: &mut Ctx) -> Result<Option<String>> {
+        let E::ComponentReference(cr) = e else { return Ok(None) };
+        let Some(inst) = scope.inst else { return Ok(None) };
+        let (c, _) = self.resolve_connector(cr, inst, scope, ctx)?;
+        Ok(match c {
+            Some(Comp::Inst(i)) => Some(self.insts[i as usize].prefix.clone()),
+            _ => None,
+        })
+    }
+
+    /// `0 = T.equalityConstraint(a, b)` for a connection that closes a loop.
+    fn equality_constraint(&mut self, i: InstId, j: InstId, f: ClassId) -> Result<()> {
+        let ra = self.as_record(&Val::Inst(i))?;
+        let rb = self.as_record(&Val::Inst(j))?;
+        let outs = self.inline_function(f, vec![ra, rb], vec![], Rc::new(FxHashMap::default()))?;
+        let res = outs.into_iter().next().ok_or_else(|| anyhow!("equalityConstraint has no output"))?;
+        let (_, el) = res.elems()?;
+        let o = self.model.origin(format!("equalityConstraint({}, {})", self.insts[i as usize].prefix, self.insts[j as usize].prefix));
+        for e in el {
+            self.model.equations.push(Equation { lhs: Arena::ZERO, rhs: e, origin: o });
+        }
+        Ok(())
+    }
+
     fn translate_connect(
         &mut self,
         a: &'a ast::ComponentReference,
@@ -1560,7 +1775,7 @@ impl<'a, 't> Flattener<'a, 't> {
             return Ok(()); // conditional connector removed
         };
         let mut pa = Vec::new();
-        let mut pb = Vec::new();
+        let mut pb: Vec<VarId> = Vec::new();
         self.connector_leaves(&ca, &mut pa);
         self.connector_leaves(&cb, &mut pb);
         if pa.len() != pb.len() {
@@ -1571,6 +1786,30 @@ impl<'a, 't> Flattener<'a, 't> {
                 pa.len(),
                 pb.len()
             );
+        }
+        // Overconstrained records (frame orientations, phasor references) in the connectors.
+        let mut ocp = Vec::new();
+        self.oc_pairs(&ca, &cb, &mut ocp);
+        if !ocp.is_empty() {
+            self.oc_log.used = true;
+            let mut skip: FxHashSet<VarId> = FxHashSet::default();
+            for &(i, j, fcls) in &ocp {
+                let (na, nb) = (self.insts[i as usize].prefix.clone(), self.insts[j as usize].prefix.clone());
+                self.oc_log.connects.push((na.clone(), nb.clone()));
+                if let Some(ans) = self.oc_answers.clone()
+                    && ans.is_broken(&na, &nb)
+                {
+                    let mut la = Vec::new();
+                    self.connector_leaves(&Comp::Inst(i), &mut la);
+                    skip.extend(la);
+                    self.equality_constraint(i, j, fcls).with_context(|| format!("equalityConstraint for connect({a}, {b})"))?;
+                }
+            }
+            if !skip.is_empty() {
+                let (fa, fb): (Vec<VarId>, Vec<VarId>) = pa.into_iter().zip(pb).filter(|(va, _)| !skip.contains(va)).unzip();
+                pa = fa;
+                pb = fb;
+            }
         }
         for (va, vb) in pa.into_iter().zip(pb) {
             let flow = self.model.vars[va as usize].is_flow;
@@ -1615,6 +1854,7 @@ impl<'a, 't> Flattener<'a, 't> {
                         Comp::Arr(dims, std::rc::Rc::new(v))
                     }
                     Comp::Removed => return Ok((None, !outside)),
+                    Comp::Str(_) => bail!("cannot access '{}' in a string", p.ident.text),
                     Comp::Var(_) => bail!("cannot access '{}' in a scalar", p.ident.text),
                 };
             }
@@ -1651,7 +1891,7 @@ impl<'a, 't> Flattener<'a, 't> {
                     self.connector_leaves(e, out);
                 }
             }
-            Comp::Removed => {}
+            Comp::Removed | Comp::Str(_) => {}
         }
     }
 
@@ -2253,6 +2493,7 @@ impl<'a, 't> Flattener<'a, 't> {
                     Ok(Val::A(d, out))
                 }
             }
+            Comp::Str(x) => Ok(Val::Str(x.to_string())),
             Comp::Removed => bail!("reference to a conditional component that is not present"),
         }
     }
@@ -2335,7 +2576,7 @@ impl<'a, 't> Flattener<'a, 't> {
                 Ok(Comp::Arr(dims, std::rc::Rc::new(v)))
             }
             Comp::Removed => Ok(Comp::Removed),
-            Comp::Var(_) => bail!("cannot access '.{name}' of a scalar"),
+            Comp::Var(_) | Comp::Str(_) => bail!("cannot access '.{name}' of a scalar"),
         }
     }
 
@@ -2682,6 +2923,54 @@ impl<'a, 't> Flattener<'a, 't> {
                 let (_, e) = arg!(0).elems()?;
                 return Ok(Val::S(e[0]));
             }
+            "diagonal" => {
+                let (_, e) = arg!(0).elems()?;
+                let n = e.len();
+                let mut v = vec![Arena::ZERO; n * n];
+                for (i, x) in e.into_iter().enumerate() {
+                    v[i * n + i] = x;
+                }
+                return Ok(Val::A(vec![n, n], v));
+            }
+            "outerProduct" => {
+                let (_, a) = arg!(0).elems()?;
+                let (_, b) = arg!(1).elems()?;
+                let ar = &mut self.model.arena;
+                let mut v = Vec::with_capacity(a.len() * b.len());
+                for &x in &a {
+                    for &y in &b {
+                        v.push(ar.mul(x, y));
+                    }
+                }
+                return Ok(Val::A(vec![a.len(), b.len()], v));
+            }
+            "symmetric" => {
+                let (d, e) = arg!(0).elems()?;
+                if d.len() != 2 || d[0] != d[1] {
+                    bail!("symmetric expects a square matrix");
+                }
+                let n = d[0];
+                let v = (0..n * n).map(|k| { let (i, j) = (k / n, k % n); if i <= j { e[k] } else { e[j * n + i] } }).collect();
+                return Ok(Val::A(d, v));
+            }
+            "skew" => {
+                let (_, x) = arg!(0).elems()?;
+                if x.len() != 3 {
+                    bail!("skew expects a 3-vector");
+                }
+                let ar = &mut self.model.arena;
+                let n = |ar: &mut Arena, e| ar.neg(e);
+                let v = vec![Arena::ZERO, n(ar, x[2]), x[1], x[2], Arena::ZERO, n(ar, x[0]), n(ar, x[1]), x[0], Arena::ZERO];
+                return Ok(Val::A(vec![3, 3], v));
+            }
+            "matrix" => {
+                let (d, e) = arg!(0).elems()?;
+                let r = d.first().copied().unwrap_or(1);
+                let c = d.get(1).copied().unwrap_or(1);
+                let stride = (e.len() / (r * c).max(1)).max(1);
+                let v: Vec<ExprId> = (0..r * c).map(|k| e[k * stride]).collect();
+                return Ok(Val::A(vec![r, c], v));
+            }
             "vector" => {
                 let (_, e) = arg!(0).elems()?;
                 let n = e.len();
@@ -2720,14 +3009,41 @@ impl<'a, 't> Flattener<'a, 't> {
                 return Ok(Val::S(Arena::ONE));
             }
             "getInstanceName" => return Ok(Val::Str(String::new())),
+            "Connections.isRoot" | "Connections.rooted" => {
+                self.oc_log.used = true;
+                let node = match pos.first() {
+                    Some(a) => self.oc_node(a, scope, ctx)?,
+                    None => None,
+                };
+                let r = match (&self.oc_answers, node) {
+                    (Some(ans), Some(n)) => {
+                        if name == "Connections.isRoot" { ans.is_root(&n) } else { ans.rooted(&n) }
+                    }
+                    _ => false,
+                };
+                return Ok(Val::S(if r { Arena::ONE } else { Arena::ZERO }));
+            }
             _ => {}
         }
         // User-defined function or record constructor.
         let parts: Vec<&str> = comp.parts.iter().map(|p| &*p.ident.text).collect();
         let env = if comp.local { self.env_of(ROOT) } else { scope.env.clone() };
-        let cls = self
-            .lookup_class(&env, &parts)
-            .ok_or_else(|| anyhow!("function '{}' not found", name))?;
+        let (cls, mod_scope) = match self.lookup_class(&env, &parts) {
+            Some(c) => {
+                let penv = self.env_of(self.tree.node(c).parent.unwrap_or(ROOT));
+                (c, Scope { inst: None, env: penv })
+            }
+            None => {
+                // A function declared in a component's class (`world.gravityAcceleration(r)`):
+                // its short-class modifiers refer to that component's parameters.
+                let found = if parts.len() > 1 && !ctx.in_function && let Some(inst) = scope.inst {
+                    self.component_function(inst, &parts)?
+                } else {
+                    None
+                };
+                found.ok_or_else(|| anyhow!("function '{}' not found", name))?
+            }
+        };
         let mut argv = Vec::new();
         for p in &pos {
             argv.push(self.translate(p, scope, ctx)?);
@@ -2735,6 +3051,22 @@ impl<'a, 't> Flattener<'a, 't> {
         let mut nargv = Vec::new();
         for (n, e) in &named {
             nargv.push((n.to_string(), self.translate(e, scope, ctx)?));
+        }
+        // Defaults from a short function definition `function f = g(a = ..)`.
+        if let Some(def) = self.tree.def(cls) {
+            for ext in &def.extends {
+                for em in &ext.modifications {
+                    if let E::Modification { target, value, .. } = &em.expr
+                        && target.parts.len() == 1
+                    {
+                        let n = target.parts[0].ident.text.to_string();
+                        if !nargv.iter().any(|(m, _)| *m == n) {
+                            let v = self.translate(value, &mod_scope, &mut Ctx::default())?;
+                            nargv.push((n, v));
+                        }
+                    }
+                }
+            }
         }
         match self.tree.class_type(cls) {
             ClassType::Function => {
@@ -2744,6 +3076,23 @@ impl<'a, 't> Flattener<'a, 't> {
             ClassType::Record => self.record_constructor(cls, argv, nargv),
             _ => bail!("'{}' is not a function", name),
         }
+    }
+
+    /// Resolve `a.b.f` where `a.b` is a component and `f` a function class of its type.
+    fn component_function(&mut self, inst: InstId, parts: &[&str]) -> Result<Option<(ClassId, Scope)>> {
+        self.ensure_component(inst, parts[0])?;
+        let Some(mut cur) = self.insts[inst as usize].comps.get(parts[0]).cloned() else { return Ok(None) };
+        for p in &parts[1..parts.len() - 1] {
+            cur = match self.child_comp(cur, p) {
+                Ok(c) => c,
+                Err(_) => return Ok(None),
+            };
+        }
+        let Comp::Inst(i) = cur else { return Ok(None) };
+        let class = self.insts[i as usize].class;
+        let Some(f) = self.tree.member_class(class, parts[parts.len() - 1]) else { return Ok(None) };
+        let env = self.env_of(class);
+        Ok(Some((f, Scope { inst: Some(i), env })))
     }
 
     fn sample(&mut self, start: ExprId, interval: ExprId) -> ExprId {
@@ -2895,6 +3244,8 @@ impl<'a, 't> Flattener<'a, 't> {
                         None => bail!("function '{}': missing input '{}'", fname, n),
                     },
                 };
+                // A record argument passed as a component (`f(frame.R)`) becomes a record value.
+                let v = if matches!(v, Val::Inst(_)) { self.as_record(&v).unwrap_or(v) } else { v };
                 ctx.locals.last_mut().unwrap().insert(n.clone(), v);
             }
         }
@@ -3080,7 +3431,7 @@ impl<'a, 't> Flattener<'a, 't> {
             for (k, tv) in frame {
                 let ev = else_locals.get(fi).and_then(|f| f.get(k)).cloned();
                 let m = match ev {
-                    Some(ev) => self.zip2(tv.clone(), ev, &mut |a, x, y| a.if_(c, x, y))?,
+                    Some(ev) => self.merge_branch(c, tv.clone(), ev)?,
                     None => tv.clone(),
                 };
                 merged[fi].insert(k.clone(), m);
@@ -3088,6 +3439,26 @@ impl<'a, 't> Flattener<'a, 't> {
         }
         ctx.locals = merged;
         Ok(())
+    }
+
+    /// Merge the value a local has after the two branches of a time-varying `if`.
+    fn merge_branch(&mut self, c: ExprId, tv: Val, ev: Val) -> Result<Val> {
+        match (tv, ev) {
+            (Val::Rec(tf), Val::Rec(ef)) => {
+                let mut out = Vec::with_capacity(tf.len());
+                for (n, t) in tf {
+                    let m = match ef.iter().find(|(m, _)| *m == n) {
+                        Some((_, e)) => self.merge_branch(c, t, e.clone())?,
+                        None => t,
+                    };
+                    out.push((n, m));
+                }
+                Ok(Val::Rec(out))
+            }
+            (Val::Str(t), _) => Ok(Val::Str(t)),
+            (t @ (Val::Inst(_) | Val::IA(..)), _) => Ok(t),
+            (t, e) => self.zip2(t, e, &mut |a, x, y| if x == y { x } else { a.if_(c, x, y) }),
+        }
     }
 
     fn assign_local(&mut self, target: &'a ast::ComponentReference, v: Val, scope: &Scope, ctx: &mut Ctx) -> Result<()> {
@@ -3275,10 +3646,71 @@ pub fn time_derivative(a: &mut Arena, x: ExprId) -> ExprId {
     a.forward_diff(x, &mut seed, &mut memo)
 }
 
-fn select_mod_element<'a>(m: &Mod<'a>, _k: usize, _n: usize) -> Mod<'a> {
-    // Modifiers on arrays of structured components are applied to each element
-    // (`each` semantics); array-valued distribution is handled at the leaves.
-    m.clone()
+/// The modifier seen by element `k` of an array of `n` structured components: values not
+/// marked `each` are sliced along their leading dimensions when they are evaluated.
+fn select_mod_element<'a>(m: &Mod<'a>, k: usize, n: usize) -> Mod<'a> {
+    let mut r = m.clone();
+    mark_selection(&mut r, k, n);
+    r
+}
+
+fn mark_selection(m: &mut Mod<'_>, k: usize, n: usize) {
+    if m.each {
+        // `each` belongs to this array of components; inside an element the value
+        // distributes over the variable's own dimensions as usual.
+        m.each = false;
+        return;
+    }
+    if let Some(v) = m.value.as_mut() {
+        v.sel.push((k, n));
+    }
+    for (_, sm) in m.subs.iter_mut() {
+        mark_selection(sm, k, n);
+    }
+}
+
+/// Element `k` of `n` along the leading dimensions of an array value; values whose leading
+/// dimensions do not cover `n` elements are left as they are (applied to every element).
+fn slice_leading(v: Val, k: usize, n: usize) -> Val {
+    fn split(d: &[usize], len: usize, n: usize) -> Option<usize> {
+        let mut p = 1;
+        for (j, &x) in d.iter().enumerate() {
+            p *= x;
+            if p == n {
+                return Some(j + 1);
+            }
+            if p > n {
+                return None;
+            }
+        }
+        let _ = len;
+        None
+    }
+    match v {
+        Val::A(d, x) if n > 0 && k < n => match split(&d, x.len(), n) {
+            Some(j) => {
+                let chunk = x.len() / n;
+                let rest = d[j..].to_vec();
+                let part = x[k * chunk..(k + 1) * chunk].to_vec();
+                if rest.is_empty() { Val::S(part[0]) } else { Val::A(rest, part) }
+            }
+            None => Val::A(d, x),
+        },
+        Val::IA(d, x) if n > 0 && k < n => match split(&d, x.len(), n) {
+            Some(j) => {
+                let chunk = x.len() / n;
+                let rest = d[j..].to_vec();
+                let part = x[k * chunk..(k + 1) * chunk].to_vec();
+                if rest.is_empty() { Val::Inst(part[0]) } else { Val::IA(rest, part) }
+            }
+            None => Val::IA(d, x),
+        },
+        Val::Tuple(mut t) if !t.is_empty() => {
+            let first = t.remove(0);
+            slice_leading(first, k, n)
+        }
+        other => other,
+    }
 }
 
 fn dot(prefix: &str) -> String {
