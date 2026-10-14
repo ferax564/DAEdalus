@@ -917,6 +917,19 @@ impl<'a, 't> Flattener<'a, 't> {
             if let Some(v) = &cm.value {
                 self.record_bindings.push((child, v.clone()));
             }
+            // `flow Complex i`: the prefix applies to every field.
+            if matches!(comp.connection, ast::Connection::Flow(_)) {
+                let mut leaves = Vec::new();
+                self.connector_leaves(&Comp::Inst(child), &mut leaves);
+                let in_connector = self.insts[inst as usize].is_connector;
+                for v in leaves {
+                    self.model.vars[v as usize].is_flow = true;
+                    if in_connector {
+                        self.connector_flows.push(v);
+                        self.conn_flow.insert(v, true);
+                    }
+                }
+            }
             elems.push(Comp::Inst(child));
         }
         let c = if dims.is_empty() { elems.pop().unwrap() } else { Comp::Arr(dims, std::rc::Rc::new(elems)) };
@@ -1297,9 +1310,9 @@ impl<'a, 't> Flattener<'a, 't> {
                 }
                 return Ok(());
             }
-            (Val::Inst(_), _) | (_, Val::Inst(_)) => {
-                let lr = self.as_record(&l)?;
-                let rr = self.as_record(&r)?;
+            (Val::Inst(_) | Val::IA(..), _) | (_, Val::Inst(_) | Val::IA(..)) | (Val::Rec(_), _) | (_, Val::Rec(_)) => {
+                let lr = if Self::is_record_like(&l) { self.to_rec(l)? } else { let (a, b) = self.complex_parts(l)?; Self::complex(a, b) };
+                let rr = if Self::is_record_like(&r) { self.to_rec(r)? } else { let (a, b) = self.complex_parts(r)?; Self::complex(a, b) };
                 return self.push_residuals(lr, rr, out, origin);
             }
             _ => {}
@@ -1814,6 +1827,13 @@ impl<'a, 't> Flattener<'a, 't> {
             }
         }
         for (va, vb) in pa.into_iter().zip(pb) {
+            // Parameters and constants in connectors (the phase number m of a plug) are not
+            // connection variables.
+            if matches!(self.model.vars[va as usize].kind, VarKind::Parameter | VarKind::Constant)
+                || matches!(self.model.vars[vb as usize].kind, VarKind::Parameter | VarKind::Constant)
+            {
+                continue;
+            }
             let flow = self.model.vars[va as usize].is_flow;
             self.conn_flow.insert(va, flow);
             self.conn_flow.insert(vb, flow);
@@ -2014,6 +2034,12 @@ impl<'a, 't> Flattener<'a, 't> {
             E::Parenthesized { inner, .. } => self.translate(inner, scope, ctx),
             E::Unary { op, rhs, .. } => {
                 let v = self.translate(rhs, scope, ctx)?;
+                if Self::is_record_like(&v) && matches!(op, OpUnary::Minus | OpUnary::DotMinus) {
+                    let (re, im) = self.complex_parts(v)?;
+                    let re = self.map1(re, &mut |a, x| a.neg(x))?;
+                    let im = self.map1(im, &mut |a, x| a.neg(x))?;
+                    return Ok(Self::complex(re, im));
+                }
                 match op {
                     OpUnary::Minus | OpUnary::DotMinus => self.map1(v, &mut |a, x| a.neg(x)),
                     OpUnary::Not => self.map1(v, &mut |a, x| a.not(x)),
@@ -2092,6 +2118,12 @@ impl<'a, 't> Flattener<'a, 't> {
                 let n = v.len();
                 Ok(Val::A(vec![n], v))
             }
+            E::ArrayComprehension { expr, indices, .. } if self.comprehension_is_record(expr, indices, scope, ctx) => {
+                let mut vals = Vec::new();
+                let mut outer = Vec::new();
+                self.for_loop_vals(indices, scope, ctx, expr, &mut vals, &mut outer)?;
+                self.stack_vals(outer, vals)
+            }
             E::ArrayComprehension { expr, indices, .. } => {
                 let mut out = Vec::new();
                 let mut inner_dims = Vec::new();
@@ -2150,6 +2182,71 @@ impl<'a, 't> Flattener<'a, 't> {
         Ok(())
     }
 
+    /// Does the body of `{body for i in ..}` produce records? (evaluated for the first index)
+    fn comprehension_is_record(&mut self, body: &'a E, indices: &'a [ast::ForIndex], scope: &Scope, ctx: &mut Ctx) -> bool {
+        let mut vals = Vec::new();
+        let mut outer = Vec::new();
+        let first: Vec<ast::ForIndex> = Vec::new();
+        let _ = first;
+        let r = self.for_loop_vals_first(indices, scope, ctx, body, &mut vals, &mut outer);
+        r.is_ok() && vals.first().is_some_and(Self::is_record_like)
+    }
+
+    fn for_loop_vals_first(
+        &mut self,
+        indices: &'a [ast::ForIndex],
+        scope: &Scope,
+        ctx: &mut Ctx,
+        body: &'a E,
+        out: &mut Vec<Val>,
+        outer_dims: &mut Vec<usize>,
+    ) -> Result<()> {
+        if indices.is_empty() {
+            out.push(self.translate(body, scope, ctx)?);
+            return Ok(());
+        }
+        let idx = &indices[0];
+        let range = self.translate(&idx.range, scope, ctx)?;
+        let (_, vals) = range.elems()?;
+        let Some(&v) = vals.first() else { return Ok(()) };
+        outer_dims.push(vals.len());
+        ctx.locals.push(FxHashMap::default());
+        ctx.locals.last_mut().unwrap().insert(idx.ident.text.to_string(), Val::S(v));
+        let r = self.for_loop_vals_first(&indices[1..], scope, ctx, body, out, outer_dims);
+        ctx.locals.pop();
+        r
+    }
+
+    fn for_loop_vals(
+        &mut self,
+        indices: &'a [ast::ForIndex],
+        scope: &Scope,
+        ctx: &mut Ctx,
+        body: &'a E,
+        out: &mut Vec<Val>,
+        outer_dims: &mut Vec<usize>,
+    ) -> Result<()> {
+        if indices.is_empty() {
+            out.push(self.translate(body, scope, ctx)?);
+            return Ok(());
+        }
+        let idx = &indices[0];
+        let range = self.translate(&idx.range, scope, ctx)?;
+        let (_, vals) = range.elems()?;
+        if outer_dims.len() < indices.len() {
+            outer_dims.push(vals.len());
+        }
+        let name = idx.ident.text.to_string();
+        for v in vals {
+            ctx.locals.push(FxHashMap::default());
+            ctx.locals.last_mut().unwrap().insert(name.clone(), Val::S(v));
+            let r = self.for_loop_vals(&indices[1..], scope, ctx, body, out, outer_dims);
+            ctx.locals.pop();
+            r?;
+        }
+        Ok(())
+    }
+
     fn field(&mut self, b: Val, field: &str) -> Result<Val> {
         match b {
             Val::Rec(fields) => fields
@@ -2165,7 +2262,168 @@ impl<'a, 't> Flattener<'a, 't> {
                     .ok_or_else(|| anyhow!("no element '{field}'"))?;
                 self.comp_to_val(&c)
             }
+            Val::IA(dims, ids) => {
+                let mut vals = Vec::with_capacity(ids.len());
+                for i in ids {
+                    vals.push(self.field(Val::Inst(i), field)?);
+                }
+                self.stack_vals(dims, vals)
+            }
             other => bail!("field access '.{field}' on {}", other.kind()),
+        }
+    }
+
+    /// Stack equally shaped values into an array with leading `dims`. Records become
+    /// records of arrays (an array of records is stored field by field).
+    fn stack_vals(&mut self, dims: Vec<usize>, vals: Vec<Val>) -> Result<Val> {
+        if vals.is_empty() {
+            return Ok(Val::A(dims, vec![]));
+        }
+        if vals.iter().all(|v| matches!(v, Val::Inst(_))) {
+            let ids = vals.iter().map(|v| if let Val::Inst(i) = v { *i } else { 0 }).collect();
+            return Ok(Val::IA(dims, ids));
+        }
+        if vals.iter().any(|v| matches!(v, Val::Rec(_) | Val::Inst(_) | Val::IA(..))) {
+            let mut recs = Vec::with_capacity(vals.len());
+            for v in vals {
+                recs.push(self.to_rec(v)?);
+            }
+            let Val::Rec(first) = &recs[0] else { unreachable!() };
+            let names: Vec<String> = first.iter().map(|(n, _)| n.clone()).collect();
+            let mut out = Vec::with_capacity(names.len());
+            for n in names {
+                let mut fv = Vec::with_capacity(recs.len());
+                for r in &recs {
+                    let Val::Rec(f) = r else { unreachable!() };
+                    fv.push(f.iter().find(|(m, _)| *m == n).map(|(_, v)| v.clone()).unwrap_or(Val::S(Arena::ZERO)));
+                }
+                let st = if fv.iter().all(|v| matches!(v, Val::Str(_))) { fv[0].clone() } else { self.stack_vals(dims.clone(), fv)? };
+                out.push((n, st));
+            }
+            return Ok(Val::Rec(out));
+        }
+        let mut inner: Option<Vec<usize>> = None;
+        let mut out = Vec::new();
+        for v in &vals {
+            let (d, e) = v.elems()?;
+            if inner.as_ref().is_some_and(|i| *i != d) {
+                bail!("array of values with inconsistent sizes");
+            }
+            inner = Some(d);
+            out.extend(e);
+        }
+        let mut d = dims;
+        d.extend(inner.unwrap_or_default());
+        Ok(mk_arr(d, out))
+    }
+
+    /// A record value: instances and instance arrays are read field by field.
+    fn to_rec(&mut self, v: Val) -> Result<Val> {
+        match v {
+            Val::Rec(_) => Ok(v),
+            Val::Inst(_) => self.as_record(&v),
+            Val::IA(dims, ids) => {
+                let mut recs = Vec::with_capacity(ids.len());
+                for i in ids {
+                    recs.push(self.as_record(&Val::Inst(i))?);
+                }
+                self.stack_vals(dims, recs)
+            }
+            Val::Tuple(t) if !t.is_empty() => self.to_rec(t[0].clone()),
+            other => bail!("expected a record, found {}", other.kind()),
+        }
+    }
+
+    fn is_record_like(v: &Val) -> bool {
+        matches!(v, Val::Rec(_) | Val::Inst(_) | Val::IA(..))
+    }
+
+    /// Complex view (re, im) of a value: a record with fields re/im, or a real promoted.
+    fn complex_parts(&mut self, v: Val) -> Result<(Val, Val)> {
+        if Self::is_record_like(&v) {
+            let r = self.to_rec(v)?;
+            let re = self.field(r.clone(), "re")?;
+            let im = self.field(r, "im")?;
+            return Ok((re, im));
+        }
+        let z = self.map1(v.clone(), &mut |_, _| Arena::ZERO)?;
+        Ok((v, z))
+    }
+
+    fn complex(re: Val, im: Val) -> Val {
+        Val::Rec(vec![("re".to_string(), re), ("im".to_string(), im)])
+    }
+
+    /// Operators on records: field-wise addition and subtraction, and the Complex
+    /// operator record's multiplication, division and comparison.
+    fn record_binary(&mut self, op: &OpBinary, l: Val, r: Val, ctx: &Ctx) -> Result<Val> {
+        let (a, b) = self.complex_parts(l)?;
+        let (c, d) = self.complex_parts(r)?;
+        let add = |s: &mut Self, x: Val, y: Val| s.zip2(x, y, &mut |ar, p, q| ar.add(p, q));
+        let sub = |s: &mut Self, x: Val, y: Val| s.zip2(x, y, &mut |ar, p, q| ar.sub(p, q));
+        let mul = |s: &mut Self, x: Val, y: Val| s.zip2(x, y, &mut |ar, p, q| ar.mul(p, q));
+        match op {
+            OpBinary::Add | OpBinary::AddElem => {
+                let re = add(self, a, c)?;
+                let im = add(self, b, d)?;
+                Ok(Self::complex(re, im))
+            }
+            OpBinary::Sub | OpBinary::SubElem => {
+                let re = sub(self, a, c)?;
+                let im = sub(self, b, d)?;
+                Ok(Self::complex(re, im))
+            }
+            OpBinary::Mul if matches!((&a, &c), (Val::A(d1, _), Val::A(d2, _)) if d1.len() == 1 && d2.len() == 1) => {
+                // Complex vector * vector: scalar product sum(conj(c1[k])*c2[k]).
+                let ac = mul(self, a.clone(), c.clone())?;
+                let bd = mul(self, b.clone(), d.clone())?;
+                let ad = mul(self, a, d)?;
+                let bc = mul(self, b, c)?;
+                let re = add(self, ac, bd)?;
+                let im = sub(self, ad, bc)?;
+                let (_, re) = re.elems()?;
+                let (_, im) = im.elems()?;
+                let ar = &mut self.model.arena;
+                let mut sr = Arena::ZERO;
+                let mut si = Arena::ZERO;
+                for x in re {
+                    sr = ar.add(sr, x);
+                }
+                for x in im {
+                    si = ar.add(si, x);
+                }
+                Ok(Self::complex(Val::S(sr), Val::S(si)))
+            }
+            OpBinary::Mul | OpBinary::MulElem => {
+                let ac = mul(self, a.clone(), c.clone())?;
+                let bd = mul(self, b.clone(), d.clone())?;
+                let ad = mul(self, a, d)?;
+                let bc = mul(self, b, c)?;
+                let re = sub(self, ac, bd)?;
+                let im = add(self, ad, bc)?;
+                Ok(Self::complex(re, im))
+            }
+            OpBinary::Div | OpBinary::DivElem => {
+                let cc = mul(self, c.clone(), c.clone())?;
+                let dd = mul(self, d.clone(), d.clone())?;
+                let den = add(self, cc, dd)?;
+                let ac = mul(self, a.clone(), c.clone())?;
+                let bd = mul(self, b.clone(), d.clone())?;
+                let bc = mul(self, b, c)?;
+                let ad = mul(self, a, d)?;
+                let nre = add(self, ac, bd)?;
+                let nim = sub(self, bc, ad)?;
+                let re = self.zip2(nre, den.clone(), &mut |ar, p, q| ar.div(p, q))?;
+                let im = self.zip2(nim, den, &mut |ar, p, q| ar.div(p, q))?;
+                Ok(Self::complex(re, im))
+            }
+            OpBinary::Eq | OpBinary::Neq => {
+                let e1 = self.binary(&OpBinary::Eq, a, c, ctx)?;
+                let e2 = self.binary(&OpBinary::Eq, b, d, ctx)?;
+                let both = self.zip2(e1, e2, &mut |ar, p, q| ar.f2(Fn2::And, p, q))?;
+                if matches!(op, OpBinary::Neq) { self.map1(both, &mut |ar, x| ar.not(x)) } else { Ok(both) }
+            }
+            _ => bail!("operator not defined for records"),
         }
     }
 
@@ -2174,6 +2432,15 @@ impl<'a, 't> Flattener<'a, 't> {
             Val::S(x) => Ok(Val::S(f(&mut self.model.arena, x))),
             Val::A(d, xs) => Ok(Val::A(d, xs.into_iter().map(|x| f(&mut self.model.arena, x)).collect())),
             Val::Tuple(t) if !t.is_empty() => self.map1(t[0].clone(), f),
+            v @ (Val::Rec(_) | Val::Inst(_) | Val::IA(..)) => {
+                let Val::Rec(fields) = self.to_rec(v)? else { unreachable!() };
+                let mut out = Vec::with_capacity(fields.len());
+                for (n, x) in fields {
+                    let m = if matches!(x, Val::Str(_)) { x } else { self.map1(x, f)? };
+                    out.push((n, m));
+                }
+                Ok(Val::Rec(out))
+            }
             other => bail!("numeric operation on {}", other.kind()),
         }
     }
@@ -2198,6 +2465,9 @@ impl<'a, 't> Flattener<'a, 't> {
     }
 
     fn binary(&mut self, op: &OpBinary, l: Val, r: Val, ctx: &Ctx) -> Result<Val> {
+        if Self::is_record_like(&l) || Self::is_record_like(&r) {
+            return self.record_binary(op, l, r, ctx);
+        }
         let no_event = ctx.no_event;
         match op {
             OpBinary::Add | OpBinary::AddElem => self.zip2(l, r, &mut |a, x, y| a.add(x, y)),
@@ -2336,6 +2606,10 @@ impl<'a, 't> Flattener<'a, 't> {
                     let v: Vec<InstId> = vals.iter().map(|x| if let Val::Inst(i) = x { *i } else { 0 }).collect();
                     return Ok(Val::IA(vec![v.len()], v));
                 }
+                if vals.iter().any(Self::is_record_like) {
+                    let n = vals.len();
+                    return self.stack_vals(vec![n], vals);
+                }
                 let mut inner: Option<Vec<usize>> = None;
                 let mut out = Vec::new();
                 for v in &vals {
@@ -2469,6 +2743,15 @@ impl<'a, 't> Flattener<'a, 't> {
                 if nd.is_empty() { Ok(Val::Inst(v[0])) } else { Ok(Val::IA(nd, v)) }
             }
             Val::S(e) if subs.iter().all(|s| matches!(s, ast::Subscript::Expression(_))) => Ok(Val::S(e)),
+            Val::Rec(fields) => {
+                // Array of records stored field by field: index every field.
+                let mut out = Vec::with_capacity(fields.len());
+                for (n, v) in fields {
+                    let iv = if matches!(v, Val::Str(_)) { v } else { self.index_val(v, subs, scope, ctx)? };
+                    out.push((n, iv));
+                }
+                Ok(Val::Rec(out))
+            }
             other => bail!("subscript on {}", other.kind()),
         }
     }
@@ -2740,7 +3023,25 @@ impl<'a, 't> Flattener<'a, 't> {
         let is_builtin_ns = !name.contains('.') || name.starts_with("Modelica.Math.");
         if is_builtin_ns && let Some(f) = f1(&short) {
             let v = arg!(0);
-            return self.map1(v, &mut |a, x| a.f1(f, x));
+            if !Self::is_record_like(&v) {
+                return self.map1(v, &mut |a, x| a.f1(f, x));
+            }
+            // A record argument: an imported function of that name (Modelica.ComplexMath.abs)
+            // takes precedence; otherwise abs of a Complex is its modulus.
+            let env = scope.env.clone();
+            let user = self.lookup_class(&env, &[short.as_str()]).filter(|&c| matches!(self.tree.class_type(c), ClassType::Function));
+            if user.is_none() {
+                if short == "abs" {
+                    let (re, im) = self.complex_parts(v)?;
+                    return self.zip2(re, im, &mut |a, x, y| {
+                        let xx = a.mul(x, x);
+                        let yy = a.mul(y, y);
+                        let s = a.add(xx, yy);
+                        a.f1(Fn1::Sqrt, s)
+                    });
+                }
+                return self.map1(v, &mut |a, x| a.f1(f, x));
+            }
         }
         match name.as_str() {
             "der" => {
@@ -2844,7 +3145,22 @@ impl<'a, 't> Flattener<'a, 't> {
                 return Ok(Val::S(r));
             }
             "sum" | "product" => {
-                let (_, e) = arg!(0).elems()?;
+                let v = arg!(0);
+                if name == "sum" && Self::is_record_like(&v) {
+                    // sum of an array of records (Complex): field by field.
+                    let Val::Rec(fields) = self.to_rec(v)? else { unreachable!() };
+                    let mut out = Vec::new();
+                    for (n, x) in fields {
+                        let (_, e) = x.elems()?;
+                        let mut r = Arena::ZERO;
+                        for y in e {
+                            r = self.model.arena.add(r, y);
+                        }
+                        out.push((n, Val::S(r)));
+                    }
+                    return Ok(Val::Rec(out));
+                }
+                let (_, e) = v.elems()?;
                 let a = &mut self.model.arena;
                 let mut r = if name == "sum" { Arena::ZERO } else { Arena::ONE };
                 for x in e {
@@ -2856,6 +3172,10 @@ impl<'a, 't> Flattener<'a, 't> {
                 let v = arg!(0);
                 let dims = match &v {
                     Val::A(d, _) | Val::IA(d, _) => d.clone(),
+                    Val::Rec(f) => match f.first() {
+                        Some((_, Val::A(d, _) | Val::IA(d, _))) => d.clone(),
+                        _ => vec![],
+                    },
                     _ => vec![],
                 };
                 if pos.len() > 1 {
@@ -2874,6 +3194,26 @@ impl<'a, 't> Flattener<'a, 't> {
                     _ => 0,
                 };
                 return Ok(Val::S(self.model.arena.constant(n as f64)));
+            }
+            "fill" if pos.len() > 1 => {
+                let v = arg!(0);
+                if Self::is_record_like(&v) {
+                    let mut dims = Vec::new();
+                    for p in &pos[1..] {
+                        let d = self.translate(p, scope, ctx)?.scalar()?;
+                        dims.push(self.eval_param_expr(d).ok_or_else(|| anyhow!("fill: size must be a parameter"))? as usize);
+                    }
+                    let n: usize = dims.iter().product();
+                    return self.stack_vals(dims, vec![v; n]);
+                }
+                let mut dims = Vec::new();
+                for p in &pos[1..] {
+                    let d = self.translate(p, scope, ctx)?.scalar()?;
+                    dims.push(self.eval_param_expr(d).ok_or_else(|| anyhow!("fill: size must be a parameter"))? as usize);
+                }
+                let n: usize = dims.iter().product();
+                let x = v.scalar()?;
+                return Ok(Val::A(dims, vec![x; n]));
             }
             "zeros" | "ones" | "fill" => {
                 let (val, start) = match name.as_str() {
@@ -3082,7 +3422,7 @@ impl<'a, 't> Flattener<'a, 't> {
                 let outs = self.inline_function(cls, argv, nargv, env.overrides.clone())?;
                 if outs.len() == 1 { Ok(outs.into_iter().next().unwrap()) } else { Ok(Val::Tuple(outs)) }
             }
-            ClassType::Record => self.record_constructor(cls, argv, nargv),
+            ClassType::Record | ClassType::Operator => self.record_constructor(cls, argv, nargv),
             _ => bail!("'{}' is not a function", name),
         }
     }
@@ -3140,6 +3480,45 @@ impl<'a, 't> Flattener<'a, 't> {
         self.when_assigned.insert(next_id);
         let _ = next;
         cond
+    }
+
+    /// A record value of class `cls` with all numeric fields zero (`dims` for arrays of records).
+    fn zero_record(&mut self, cls: ClassId, dims: &[usize], depth: usize) -> Result<Val> {
+        if depth > 8 {
+            bail!("record nesting too deep");
+        }
+        let mut names = Vec::new();
+        self.function_elements(cls, &mut names, 0);
+        let mut fields = Vec::new();
+        for (n, c, owner) in names {
+            if matches!(c.variability, Variability::Constant(_)) {
+                continue;
+            }
+            let env = self.env_of(owner);
+            let sc = Scope { inst: None, env: env.clone() };
+            let mut d = dims.to_vec();
+            for sub in &c.shape_expr {
+                if let ast::Subscript::Expression(e) = sub {
+                    d.push(self.eval_structural(e, &sc).unwrap_or(0.0) as usize);
+                }
+            }
+            let tparts: Vec<&str> = c.type_name.name.iter().map(|t| &*t.text).collect();
+            let sub_rec = if tparts.len() == 1 && builtin_name(tparts[0]).is_some() {
+                None
+            } else {
+                self.lookup_class(&env, &tparts).filter(|&k| matches!(self.tree.class_type(k), ClassType::Record | ClassType::Operator))
+            };
+            let v = match sub_rec {
+                Some(k) => self.zero_record(k, &d, depth + 1)?,
+                None if d.is_empty() => Val::S(Arena::ZERO),
+                None => {
+                    let n: usize = d.iter().product();
+                    Val::A(d, vec![Arena::ZERO; n])
+                }
+            };
+            fields.push((n, v));
+        }
+        Ok(Val::Rec(fields))
     }
 
     fn record_constructor(&mut self, cls: ClassId, argv: Vec<Val>, nargv: Vec<(String, Val)>) -> Result<Val> {
@@ -3285,8 +3664,32 @@ impl<'a, 't> Flattener<'a, 't> {
                     dims.push(self.eval_param_expr(d).ok_or_else(|| anyhow!("function array size must be known"))? as usize);
                 }
             }
+            let tparts: Vec<&str> = c.type_name.name.iter().map(|t| &*t.text).collect();
+            let rcls = if tparts.len() == 1 && builtin_name(tparts[0]).is_some() {
+                None
+            } else {
+                self.lookup_class(&oscope.env, &tparts)
+                    .filter(|&k| matches!(self.tree.class_type(k), ClassType::Record | ClassType::Operator))
+            };
             let init = if let Some(b) = &c.binding {
                 self.translate(b, &oscope, &mut ctx)?
+            } else if let Some(rc) = rcls {
+                // Record-typed output or local: zero fields, then its own modifiers.
+                let mut r = self.zero_record(rc, &dims, 0)?;
+                if let Val::Rec(fields) = &mut r {
+                    for m in &c.source_modifications {
+                        if let E::Modification { target, value, .. } = m
+                            && target.parts.len() == 1
+                        {
+                            let n = &*target.parts[0].ident.text;
+                            let v = self.translate(value, &oscope, &mut ctx)?;
+                            if let Some(f) = fields.iter_mut().find(|(k, _)| k == n) {
+                                f.1 = v;
+                            }
+                        }
+                    }
+                }
+                r
             } else if dims.is_empty() {
                 Val::S(Arena::ZERO)
             } else {
@@ -3479,39 +3882,88 @@ impl<'a, 't> Flattener<'a, 't> {
 
     fn assign_local(&mut self, target: &'a ast::ComponentReference, v: Val, scope: &Scope, ctx: &mut Ctx) -> Result<()> {
         let name = target.parts[0].ident.text.to_string();
-        if target.parts.len() > 1 {
-            // record field assignment r.f := v
-            let frame = ctx.locals.iter().rposition(|f| f.contains_key(&name)).ok_or_else(|| anyhow!("unknown variable '{name}'"))?;
-            let mut cur = ctx.locals[frame][&name].clone();
-            if let Val::Rec(fields) = &mut cur {
-                let f = &*target.parts[1].ident.text;
-                if let Some(pos) = fields.iter().position(|(n, _)| n == f) {
-                    fields[pos].1 = v;
-                } else {
-                    fields.push((f.to_string(), v));
-                }
-            }
-            ctx.locals[frame].insert(name, cur);
+        let frame = ctx.locals.iter().rposition(|f| f.contains_key(&name));
+        if target.parts.len() == 1 && target.parts[0].subs.is_none() {
+            let frame = frame.unwrap_or(ctx.locals.len() - 1);
+            ctx.locals[frame].insert(name, v);
             return Ok(());
         }
-        let frame = ctx.locals.iter().rposition(|f| f.contains_key(&name)).unwrap_or(ctx.locals.len() - 1);
-        match &target.parts[0].subs {
+        let frame = frame.ok_or_else(|| anyhow!("unknown variable '{name}'"))?;
+        let cur = ctx.locals[frame][&name].clone();
+        let new = self.assign_path(cur, target.parts[0].subs.as_deref(), &target.parts[1..], v, scope, ctx)?;
+        ctx.locals[frame].insert(name, new);
+        Ok(())
+    }
+
+    /// `cur[subs].rest := v`, returning the updated value of `cur`.
+    fn assign_path(
+        &mut self,
+        cur: Val,
+        subs: Option<&'a [ast::Subscript]>,
+        rest: &'a [ast::ComponentRefPart],
+        v: Val,
+        scope: &Scope,
+        ctx: &mut Ctx,
+    ) -> Result<Val> {
+        if rest.is_empty() {
+            return match subs {
+                None => Ok(v),
+                Some(s) => self.assign_into(cur, s, v, scope, ctx),
+            };
+        }
+        let cur = if matches!(cur, Val::Inst(_) | Val::IA(..)) { self.to_rec(cur)? } else { cur };
+        let Val::Rec(mut fields) = cur else { bail!("field assignment on a non-record value") };
+        let f = &*rest[0].ident.text;
+        let pos = match fields.iter().position(|(n, _)| n == f) {
+            Some(p) => p,
             None => {
-                ctx.locals[frame].insert(name, v);
+                fields.push((f.to_string(), Val::S(Arena::ZERO)));
+                fields.len() - 1
             }
-            Some(subs) => {
-                let cur = ctx.locals[frame].get(&name).cloned().ok_or_else(|| anyhow!("unknown array '{name}'"))?;
-                let Val::A(dims, mut el) = cur else { bail!("indexed assignment to non-array '{name}'") };
+        };
+        let fv = fields[pos].1.clone();
+        // `c[i].re := x` on an array of records stored field by field: the record subscript
+        // addresses the leading dimensions of the field.
+        let nv = match (subs, rest[0].subs.as_deref()) {
+            (Some(s), None) if rest.len() == 1 => self.assign_into(fv, s, v, scope, ctx)?,
+            (None, fsubs) => self.assign_path(fv, fsubs, &rest[1..], v, scope, ctx)?,
+            _ => bail!("unsupported assignment target"),
+        };
+        fields[pos].1 = nv;
+        Ok(Val::Rec(fields))
+    }
+
+    /// `cur[subs] := v` for arrays, and field by field for arrays of records.
+    fn assign_into(&mut self, cur: Val, subs: &'a [ast::Subscript], v: Val, scope: &Scope, ctx: &mut Ctx) -> Result<Val> {
+        match cur {
+            Val::A(dims, mut el) => {
                 let sel = self.eval_subscripts(subs, &dims, scope, ctx)?;
                 let (_, idx) = select_indices(&dims, &sel);
                 let (_, vals) = v.elems()?;
                 for (k, i) in idx.into_iter().enumerate() {
                     el[i] = *vals.get(k).unwrap_or(&vals[0]);
                 }
-                ctx.locals[frame].insert(name, Val::A(dims, el));
+                Ok(Val::A(dims, el))
             }
+            Val::Rec(fields) => {
+                let vr = if Self::is_record_like(&v) { self.to_rec(v)? } else {
+                    let (re, im) = self.complex_parts(v)?;
+                    Self::complex(re, im)
+                };
+                let mut out = Vec::with_capacity(fields.len());
+                for (n, fv) in fields {
+                    if matches!(fv, Val::Str(_)) {
+                        out.push((n, fv));
+                        continue;
+                    }
+                    let part = self.field(vr.clone(), &n).unwrap_or(Val::S(Arena::ZERO));
+                    let nv = self.assign_into(fv, subs, part, scope, ctx)?;
+                    out.push((n, nv));
+                }
+                Ok(Val::Rec(out))
+            }
+            other => bail!("indexed assignment to a {} value", other.kind()),
         }
-        Ok(())
     }
 
     /// Algorithm section in a model: symbolic execution gives one equation per assigned variable.
@@ -3725,6 +4177,9 @@ fn slice_leading(v: Val, k: usize, n: usize) -> Val {
             let first = t.remove(0);
             slice_leading(first, k, n)
         }
+        Val::Rec(fields) => Val::Rec(
+            fields.into_iter().map(|(f, v)| (f, if matches!(v, Val::Str(_)) { v } else { slice_leading(v, k, n) })).collect(),
+        ),
         other => other,
     }
 }

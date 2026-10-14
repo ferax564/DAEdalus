@@ -123,6 +123,9 @@ impl Library {
         // `Connections.isRoot/rooted` are known and loop-closing connections use
         // `equalityConstraint` instead of potential equality.
         let answers = std::rc::Rc::new(overconstrained::OcAnswers::compute(&f.oc_log));
+        if std::env::var_os("DAEDALUS_OCDEBUG").is_some() {
+            eprintln!("{:#?}\nroots {:?}\nbroken {:?}", f.oc_log, answers.roots, answers.broken);
+        }
         drop(f);
         let mut f = inst::Flattener::new(&tree);
         f.oc_answers = Some(answers);
