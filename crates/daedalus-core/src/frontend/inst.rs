@@ -2679,22 +2679,40 @@ impl<'a, 't> Flattener<'a, 't> {
     }
 
     fn sample(&mut self, start: ExprId, interval: ExprId) -> ExprId {
+        // sample(start, interval): tick counter `n`, condition `time >= start + n*interval`.
+        // Computing the instant from the counter avoids accumulating round-off.
         let k = self.sample_count;
         self.sample_count += 1;
-        let mut v = Variable::new(format!("$sample{k}.next"), VarKind::Discrete, VarType::Real);
+        let mut v = Variable::new(format!("$sample{k}.n"), VarKind::Discrete, VarType::Real);
         v.generated = true;
-        v.start = Some(start);
+        v.start = Some(Arena::ZERO);
         v.is_protected = true;
         let id = self.model.add_var(v);
+        let mut nv = Variable::new(format!("$sample{k}.next"), VarKind::Discrete, VarType::Real);
+        nv.generated = true;
+        nv.is_protected = true;
+        let a = &mut self.model.arena;
+        let n = a.var(id);
+        let ni = a.mul(n, interval);
+        let next = a.add(start, ni);
+        nv.start = Some(start);
+        let next_id = self.model.add_var(nv);
         let a = &mut self.model.arena;
         let t = a.time();
-        let nx = a.var(id);
+        let nx = a.var(next_id);
         let cond = a.relation(Cmp::Ge, t, nx);
         let p = a.pre(id);
-        let upd = a.add(p, interval);
+        let upd = a.add(p, Arena::ONE);
+        let pi = a.mul(upd, interval);
+        let upd_next = a.add(start, pi);
         let o = self.model.origin("sample()");
-        self.model.whens.push(WhenClause { branches: vec![(cond, vec![WhenAction::Assign(id, upd)])], origin: o });
+        self.model.whens.push(WhenClause {
+            branches: vec![(cond, vec![WhenAction::Assign(id, upd), WhenAction::Assign(next_id, upd_next)])],
+            origin: o,
+        });
         self.when_assigned.insert(id);
+        self.when_assigned.insert(next_id);
+        let _ = next;
         cond
     }
 

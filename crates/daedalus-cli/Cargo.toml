@@ -8,3 +8,4 @@ name = "daedalus"
 path = "src/main.rs"
 [dependencies]
 daedalus-core = { path = "../daedalus-core" }
+anyhow = { workspace = true }

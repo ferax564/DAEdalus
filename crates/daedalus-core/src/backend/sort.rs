@@ -52,13 +52,20 @@ impl Work {
 
     /// Try to solve `lhs = rhs` explicitly for `v`. Returns the solution expression.
     pub fn solve_for(&mut self, eq: &Eq, v: VarId) -> Option<ExprId> {
+        self.solve_class(eq, v).map(|(e, _)| e)
+    }
+
+    /// Like [`Work::solve_for`], also returning how safe the solution is:
+    /// 0 = constant coefficient, 1 = coefficient depends on parameters only,
+    /// 2 = division by a time-varying quantity (may vanish).
+    pub fn solve_class(&mut self, eq: &Eq, v: VarId) -> Option<(ExprId, u8)> {
         let target = Node::Var(v);
         let a = &self.arena;
         if a.node(eq.lhs) == target && !a.contains(eq.rhs, target) {
-            return Some(eq.rhs);
+            return Some((eq.rhs, 0));
         }
         if a.node(eq.rhs) == target && !a.contains(eq.lhs, target) {
-            return Some(eq.lhs);
+            return Some((eq.lhs, 0));
         }
         let r = self.arena.sub(eq.lhs, eq.rhs);
         let only: FxHashSet<VarId> = [v].into_iter().collect();
@@ -77,7 +84,24 @@ impl Work {
             return None;
         }
         let num = self.arena.neg(r0);
-        Some(self.arena.div(num, d))
+        let class = if self.arena.as_const(d).is_some() {
+            0
+        } else {
+            let mut varying = false;
+            self.arena.visit_leaves(d, &mut |n| match n {
+                Node::Var(x) => {
+                    if self.unknown[x as usize] || self.vars[x as usize].kind != crate::flat::VarKind::Parameter
+                        && self.vars[x as usize].kind != crate::flat::VarKind::Constant
+                    {
+                        varying = true;
+                    }
+                }
+                Node::Time | Node::Pre(_) | Node::Der(_) => varying = true,
+                _ => {}
+            });
+            if varying { 2 } else { 1 }
+        };
+        Some((self.arena.div(num, d), class))
     }
 
     fn is_linear_in(&mut self, e: ExprId, set: &FxHashSet<VarId>) -> bool {
@@ -187,33 +211,36 @@ fn tear(w: &mut Work, eqs: &[Eq], vars: &[VarId], tearing: bool) -> Block {
     // Cache of failed solve attempts: (eq, var).
     let mut unsolvable: FxHashSet<(usize, VarId)> = FxHashSet::default();
     loop {
-        let mut progress = true;
-        while progress {
-            progress = false;
+        // Propagate: repeatedly solve equations with one remaining unknown, safest first.
+        loop {
+            let mut best: Option<(usize, VarId, ExprId, u8)> = None;
             for i in 0..eqs.len() {
                 if used[i] {
                     continue;
                 }
-                let rem: Vec<VarId> = occ[i].iter().copied().filter(|v| !known.contains(v)).collect();
-                if rem.len() != 1 {
-                    continue;
-                }
-                let v = rem[0];
+                let mut rem = occ[i].iter().copied().filter(|v| !known.contains(v));
+                let (Some(v), None) = (rem.next(), rem.next()) else { continue };
                 if unsolvable.contains(&(i, v)) {
                     continue;
                 }
-                match w.solve_for(&eqs[i], v) {
-                    Some(x) => {
-                        inner.push((v, x));
-                        known.insert(v);
-                        used[i] = true;
-                        progress = true;
+                match w.solve_class(&eqs[i], v) {
+                    Some((x, c)) => {
+                        if best.is_none_or(|b| c < b.3) {
+                            best = Some((i, v, x, c));
+                            if c == 0 {
+                                break;
+                            }
+                        }
                     }
                     None => {
                         unsolvable.insert((i, v));
                     }
                 }
             }
+            let Some((i, v, x, _)) = best else { break };
+            inner.push((v, x));
+            known.insert(v);
+            used[i] = true;
         }
         if known.len() == vars.len() {
             break;

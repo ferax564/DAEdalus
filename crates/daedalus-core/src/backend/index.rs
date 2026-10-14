@@ -314,15 +314,19 @@ pub fn select_states(w: &mut Work) -> Result<Vec<VarId>> {
         }
     }
     if !chains.is_empty() {
-        // Evaluation point: start values + perturbation.
-        let mut point: Vec<f64> = vec![0.0; w.vars.len()];
+        // Evaluation points: start values, and start values + perturbation (to break ties
+        // where the start point is structurally degenerate, e.g. all zeros).
+        let mut point0: Vec<f64> = vec![0.0; w.vars.len()];
+        let mut point1: Vec<f64> = vec![0.0; w.vars.len()];
         for v in 0..w.vars.len() as VarId {
-            point[v as usize] = if w.unknown[v as usize] {
+            if w.unknown[v as usize] {
                 let s = w.start_value(v);
-                s + perturb(v) * (1.0 + s.abs())
+                point0[v as usize] = s;
+                point1[v as usize] = s + perturb(v) * (1.0 + s.abs());
             } else {
-                w.param_values[v as usize]
-            };
+                point0[v as usize] = w.param_values[v as usize];
+                point1[v as usize] = w.param_values[v as usize];
+            }
         }
         let max_c = chains.iter().map(|c| c.len() - 1).max().unwrap();
         // Candidates for step 1: highest derivatives that are derivative variables.
@@ -350,6 +354,7 @@ pub fn select_states(w: &mut Work) -> Result<Vec<VarId>> {
             // Order columns by preference (most willing to become dummy first).
             let mut cols = cols;
             cols.sort_by_key(|&z| -dummy_preference(w, z));
+            let tiers: Vec<i64> = cols.iter().map(|&z| dummy_tier(w, z)).collect();
             // Jacobian H = dg/dz evaluated numerically.
             let mut h = vec![vec![0.0; cols.len()]; g.len()];
             for (ri, &e) in g.iter().enumerate() {
@@ -361,17 +366,24 @@ pub fn select_states(w: &mut Work) -> Result<Vec<VarId>> {
                     if w.arena.is_zero(d) {
                         continue;
                     }
-                    let vals = eval::Values {
-                        var: &|v| point[v as usize],
-                        pre: &|v| point[v as usize],
-                        time: 0.0,
-                        initial: false,
-                        rel: None,
-                    };
-                    h[ri][ci] = eval::eval(&w.arena, d, &vals, &mut FxHashMap::default());
+                    let mut val = 0.0;
+                    for (pt, wgt) in [(&point0, 1.0), (&point1, 1e-4)] {
+                        let vals = eval::Values {
+                            var: &|v| pt[v as usize],
+                            pre: &|v| pt[v as usize],
+                            time: 0.0,
+                            initial: false,
+                            rel: None,
+                        };
+                        let x = eval::eval(&w.arena, d, &vals, &mut FxHashMap::default());
+                        if x.is_finite() {
+                            val += wgt * x;
+                        }
+                    }
+                    h[ri][ci] = val;
                 }
             }
-            let chosen = select_columns(&h, g.len());
+            let chosen = select_columns(&h, &tiers, g.len());
             if chosen.len() < g.len() {
                 let names: Vec<&str> = cols.iter().map(|&z| w.name(z)).collect();
                 bail!(
@@ -407,41 +419,70 @@ pub fn select_states(w: &mut Work) -> Result<Vec<VarId>> {
     Ok(states)
 }
 
-/// Greedy column selection by Gaussian elimination: scan columns in order and keep
-/// those that increase the rank, until `need` columns are selected.
-fn select_columns(h: &[Vec<f64>], need: usize) -> Vec<usize> {
+/// Coarse preference tier (stateSelect of the base variable); pivoting happens within a tier.
+fn dummy_tier(w: &Work, z: VarId) -> i64 {
+    let base = w.base_of[z as usize].unwrap();
+    match w.vars[base as usize].state_select {
+        StateSelect::Never => 4,
+        StateSelect::Avoid => 3,
+        StateSelect::Default => 2,
+        StateSelect::Prefer => 1,
+        StateSelect::Always => 0,
+    }
+}
+
+/// Column selection by Gram-Schmidt with column pivoting: columns are taken tier by tier
+/// (`tiers` is non-increasing along the column order); within a tier the column with the
+/// largest component orthogonal to the already selected ones is chosen first, so the
+/// dummy-derivative Jacobian is as well conditioned as possible at the start point.
+fn select_columns(h: &[Vec<f64>], tiers: &[i64], need: usize) -> Vec<usize> {
     let rows = h.len();
     if rows == 0 {
         return Vec::new();
     }
     let ncols = h[0].len();
     let scale = h.iter().flatten().fold(0.0f64, |m, x| m.max(x.abs())).max(1e-300);
-    // Orthogonal basis of selected columns (modified Gram-Schmidt).
-    let mut basis: Vec<Vec<f64>> = Vec::new();
+    let mut cols: Vec<Vec<f64>> = (0..ncols).map(|c| (0..rows).map(|r| h[r][c]).collect()).collect();
+    let norm0: Vec<f64> = cols.iter().map(|c| c.iter().map(|x| x * x).sum::<f64>().sqrt()).collect();
+    let mut taken = vec![false; ncols];
     let mut chosen = Vec::new();
-    for c in 0..ncols {
-        let mut col: Vec<f64> = (0..rows).map(|r| h[r][c]).collect();
-        let norm0 = col.iter().map(|x| x * x).sum::<f64>().sqrt();
-        if norm0 <= 1e-10 * scale {
-            continue;
+    let mut start = 0;
+    while start < ncols && chosen.len() < need {
+        let mut end = start;
+        while end < ncols && tiers[end] == tiers[start] {
+            end += 1;
         }
-        for b in &basis {
-            let dot: f64 = col.iter().zip(b).map(|(x, y)| x * y).sum();
-            for (x, y) in col.iter_mut().zip(b) {
-                *x -= dot * y;
-            }
-        }
-        let norm = col.iter().map(|x| x * x).sum::<f64>().sqrt();
-        if norm > 1e-8 * norm0 {
-            for x in col.iter_mut() {
-                *x /= norm;
-            }
-            basis.push(col);
-            chosen.push(c);
+        loop {
             if chosen.len() == need {
                 break;
             }
+            let mut best = None;
+            let mut best_n = 0.0;
+            for c in start..end {
+                if taken[c] || norm0[c] <= 1e-10 * scale {
+                    continue;
+                }
+                let n = cols[c].iter().map(|x| x * x).sum::<f64>().sqrt();
+                if n > 1e-8 * norm0[c] && n > best_n * (1.0 + 1e-9) {
+                    best_n = n;
+                    best = Some(c);
+                }
+            }
+            let Some(c) = best else { break };
+            taken[c] = true;
+            chosen.push(c);
+            let q: Vec<f64> = cols[c].iter().map(|x| x / best_n).collect();
+            for (k, col) in cols.iter_mut().enumerate() {
+                if taken[k] {
+                    continue;
+                }
+                let dot: f64 = col.iter().zip(&q).map(|(x, y)| x * y).sum();
+                for (x, y) in col.iter_mut().zip(&q) {
+                    *x -= dot * y;
+                }
+            }
         }
+        start = end;
     }
     chosen
 }
