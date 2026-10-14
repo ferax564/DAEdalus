@@ -104,6 +104,16 @@ impl Work {
         Some((self.arena.div(num, d), class))
     }
 
+    /// The coefficient of `v` in `eq` is non-zero at the guess point `pt`.
+    fn coefficient_nonzero(&mut self, eq: &Eq, v: VarId, pt: &[f64]) -> bool {
+        let r = self.arena.sub(eq.lhs, eq.rhs);
+        let mut memo = FxHashMap::default();
+        let d = self.arena.diff(r, Node::Var(v), &mut memo);
+        let vals = super::eval::Values { var: &|x| pt[x as usize], pre: &|x| pt[x as usize], time: 0.0, initial: false, rel: None };
+        let x = super::eval::eval(&self.arena, d, &vals, &mut FxHashMap::default());
+        x.is_finite() && x.abs() > 1e-12
+    }
+
     fn is_linear_in(&mut self, e: ExprId, set: &FxHashSet<VarId>) -> bool {
         if self.has_branch_on(e, set) {
             return false;
@@ -171,12 +181,23 @@ pub fn causalize(
     }
     let comps = tarjan_blt(&adj, &var_match);
     let mut blocks = Vec::with_capacity(comps.len());
+    // Guess point propagated through the blocks in order (start values, then what the
+    // explicit assignments give from them): tearing checks its pivots against it.
+    let mut pt: Vec<f64> = (0..w.vars.len() as VarId)
+        .map(|x| if w.unknown[x as usize] { w.start_value(x) } else { w.param_values[x as usize] })
+        .collect();
     for comp in comps {
         if comp.len() == 1 {
             let e = comp[0] as usize;
             let v = vars[eq_match[e] as usize];
             match w.solve_for(&eqs[e], v) {
-                Some(x) => blocks.push(Block::Assign { var: v, expr: x }),
+                Some(x) => {
+                    let y = eval_at(w, x, &pt);
+                    if y.is_finite() {
+                        pt[v as usize] = y;
+                    }
+                    blocks.push(Block::Assign { var: v, expr: x })
+                }
                 None => {
                     let r = w.arena.sub(eqs[e].lhs, eqs[e].rhs);
                     let set: FxHashSet<VarId> = [v].into_iter().collect();
@@ -188,14 +209,28 @@ pub fn causalize(
         }
         let ceqs: Vec<Eq> = comp.iter().map(|&e| eqs[e as usize]).collect();
         let cvars: Vec<VarId> = comp.iter().map(|&e| vars[eq_match[e as usize] as usize]).collect();
-        blocks.push(tear(w, &ceqs, &cvars, tearing));
+        let b = tear(w, &ceqs, &cvars, tearing, &pt);
+        if let Block::Solve { inner, .. } = &b {
+            for &(v, x) in inner {
+                let y = eval_at(w, x, &pt);
+                if y.is_finite() {
+                    pt[v as usize] = y;
+                }
+            }
+        }
+        blocks.push(b);
     }
     Ok(blocks)
 }
 
+fn eval_at(w: &Work, e: ExprId, pt: &[f64]) -> f64 {
+    let vals = super::eval::Values { var: &|x| pt[x as usize], pre: &|x| pt[x as usize], time: 0.0, initial: true, rel: None };
+    super::eval::eval(&w.arena, e, &vals, &mut FxHashMap::default())
+}
+
 /// Tear an algebraic loop: greedily assign equations with one remaining unknown that can be
 /// solved explicitly, otherwise pick the variable occurring most often as tear variable.
-fn tear(w: &mut Work, eqs: &[Eq], vars: &[VarId], tearing: bool) -> Block {
+fn tear(w: &mut Work, eqs: &[Eq], vars: &[VarId], tearing: bool, pt: &[f64]) -> Block {
     let set: FxHashSet<VarId> = vars.iter().copied().collect();
     let residual_all: Vec<ExprId> = eqs.iter().map(|e| w.arena.sub(e.lhs, e.rhs)).collect();
     let linear = residual_all.iter().all(|&r| w.is_linear_in(r, &set));
@@ -223,7 +258,11 @@ fn tear(w: &mut Work, eqs: &[Eq], vars: &[VarId], tearing: bool) -> Block {
                 if unsolvable.contains(&(i, v)) {
                     continue;
                 }
-                match w.solve_class(&eqs[i], v) {
+                // Inside a loop only solve through coefficients that are non-zero at the
+                // parameter and start values; a vanishing one (I[1,3] = 0, R.T[2,3] of an
+                // unrotated frame) stays a residual for the Newton/linear solve.
+                let sc = w.solve_class(&eqs[i], v).filter(|&(_, c)| c == 0 || w.coefficient_nonzero(&eqs[i], v, pt));
+                match sc {
                     Some((x, c)) => {
                         if best.is_none_or(|b| c < b.3) {
                             best = Some((i, v, x, c));

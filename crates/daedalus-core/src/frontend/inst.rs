@@ -1069,7 +1069,9 @@ impl<'a, 't> Flattener<'a, 't> {
     fn translate_record_bindings(&mut self) -> Result<()> {
         let rb = std::mem::take(&mut self.record_bindings);
         for (inst, sc) in rb {
-            let v = self.translate_scoped(&sc, &mut Ctx::default())?;
+            let v = self
+                .translate_scoped(&sc, &mut Ctx::default())
+                .with_context(|| format!("in declaration of '{}'", self.insts[inst as usize].prefix))?;
             let o = self.model.origin(format!("declaration of {}", self.insts[inst as usize].prefix));
             self.bind_fields(inst, v, o).with_context(|| format!("in declaration of '{}'", self.insts[inst as usize].prefix))?;
         }
@@ -2044,18 +2046,25 @@ impl<'a, 't> Flattener<'a, 't> {
                 Ok(Val::Tuple(v))
             }
             E::If { branches, else_branch, .. } => {
-                let mut r = self.translate(else_branch, scope, ctx)?;
-                for (c, b) in branches.iter().rev() {
+                // Conditions that are constant pick their branch statically, so the branches
+                // not taken are never translated (they may not even be valid there).
+                let mut live: Vec<(ExprId, &'a E)> = Vec::new();
+                let mut last: &'a E = else_branch;
+                for (c, b) in branches.iter() {
                     let cv = self.translate(c, scope, ctx)?.scalar()?;
-                    // Parameter conditions are resolved statically when possible.
-                    if let Some(x) = self.model.arena.as_const(cv) {
-                        if x != 0.0 {
-                            r = self.translate(b, scope, ctx)?;
+                    match self.model.arena.as_const(cv) {
+                        Some(x) if x != 0.0 => {
+                            last = b;
+                            break;
                         }
-                        continue;
+                        Some(_) => {}
+                        None => live.push((cv, b)),
                     }
+                }
+                let mut r = self.translate(last, scope, ctx)?;
+                for (cv, b) in live.into_iter().rev() {
                     let bv = self.translate(b, scope, ctx)?;
-                    r = self.zip2(bv, r, &mut |a, x, y| a.if_(cv, x, y))?;
+                    r = self.merge_value(cv, bv, r)?;
                 }
                 Ok(r)
             }
@@ -3439,6 +3448,13 @@ impl<'a, 't> Flattener<'a, 't> {
         }
         ctx.locals = merged;
         Ok(())
+    }
+
+    /// `if c then t else e` on values of any shape (records field by field).
+    fn merge_value(&mut self, c: ExprId, t: Val, e: Val) -> Result<Val> {
+        let t = if matches!(t, Val::Inst(_)) && matches!(e, Val::Rec(_) | Val::Inst(_)) { self.as_record(&t)? } else { t };
+        let e = if matches!(e, Val::Inst(_)) && matches!(t, Val::Rec(_)) { self.as_record(&e)? } else { e };
+        self.merge_branch(c, t, e)
     }
 
     /// Merge the value a local has after the two branches of a time-varying `if`.
