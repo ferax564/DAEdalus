@@ -8,6 +8,7 @@ pub mod frontend;
 pub mod linalg;
 pub mod sim;
 pub mod solver;
+pub mod sparse;
 pub mod results;
 
 /// Flatten, analyse and compile `model` from `lib` into an executable model.

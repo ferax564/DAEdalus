@@ -11,6 +11,10 @@
 
 use crate::codegen::Runtime;
 use crate::linalg::{lu_factor, lu_solve};
+use crate::sparse::{Csc, SparseLu, min_degree};
+
+/// Systems larger than this use the sparse LU.
+const DENSE_LIMIT: usize = 48;
 
 #[derive(Clone, Copy, Debug, Default, serde::Serialize)]
 pub struct SolverStats {
@@ -292,6 +296,8 @@ pub struct Bdf {
     error_const: [f64; MAX_ORDER + 2],
     colors: Vec<Vec<usize>>,
     rows_of_col: Vec<Vec<usize>>,
+    /// Sparse iteration matrix `I - c J` (structure = pattern + diagonal).
+    sp: Option<(Csc, Vec<f64>, Vec<bool>, SparseLu)>,
     x: Vec<f64>,
     stats: SolverStats,
 }
@@ -349,11 +355,36 @@ impl Bdf {
             }
             colors[c].push(j);
         }
+        let sp = if n > DENSE_LIMIT {
+            let cols: Vec<Vec<usize>> = (0..n)
+                .map(|j| {
+                    let mut c = rows_of_col[j].clone();
+                    c.push(j);
+                    c.sort_unstable();
+                    c.dedup();
+                    c
+                })
+                .collect();
+            let m = Csc::from_columns(n, &cols);
+            let in_pat: Vec<bool> = (0..n)
+                .flat_map(|j| {
+                    let r = &rows_of_col[j];
+                    cols[j].iter().map(move |i| r.contains(i)).collect::<Vec<_>>()
+                })
+                .collect();
+            let q = min_degree(&m);
+            let nnz = m.nnz();
+            Some((m, vec![0.0; nnz], in_pat, SparseLu::new(q)))
+        } else {
+            None
+        };
+        let dense_n = if sp.is_some() { 0 } else { n };
         Bdf {
             rtol,
             atol,
             max_step,
             n,
+            sp,
             t: 0.0,
             t_old: 0.0,
             h_abs: 0.0,
@@ -363,8 +394,8 @@ impl Bdf {
             n_equal_steps: 0,
             d: vec![vec![0.0; n]; MAX_ORDER + 3],
             d_dense: vec![vec![0.0; n]; MAX_ORDER + 1],
-            jac: vec![0.0; n * n],
-            lu: vec![0.0; n * n],
+            jac: vec![0.0; dense_n * dense_n],
+            lu: vec![0.0; dense_n * dense_n],
             piv: vec![0; n],
             lu_valid: false,
             jac_current: false,
@@ -391,6 +422,7 @@ impl Bdf {
         let mut yp = y.to_vec();
         let mut f1 = vec![0.0; n];
         self.jac.fill(0.0);
+        let dense = self.sp.is_none();
         let eps = f64::EPSILON.sqrt();
         for group in &self.colors {
             let mut hs = Vec::with_capacity(group.len());
@@ -402,8 +434,15 @@ impl Bdf {
             rt.rhs(t, &yp, &mut f1);
             self.stats.rhs_evals += 1;
             for (&j, &h) in group.iter().zip(&hs) {
-                for &i in &self.rows_of_col[j] {
-                    self.jac[i * n + j] = (f1[i] - f0[i]) / h;
+                if dense {
+                    for &i in &self.rows_of_col[j] {
+                        self.jac[i * n + j] = (f1[i] - f0[i]) / h;
+                    }
+                } else if let Some((m, jv, in_pat, _)) = &mut self.sp {
+                    for p in m.colptr[j]..m.colptr[j + 1] {
+                        let i = m.rowidx[p];
+                        jv[p] = if in_pat[p] { (f1[i] - f0[i]) / h } else { 0.0 };
+                    }
                 }
                 yp[j] = y[j];
             }
@@ -414,6 +453,18 @@ impl Bdf {
 
     fn factor(&mut self, c: f64) -> bool {
         let n = self.n;
+        if let Some((m, jv, _, lu)) = &mut self.sp {
+            for j in 0..n {
+                for p in m.colptr[j]..m.colptr[j + 1] {
+                    let i = m.rowidx[p];
+                    m.vals[p] = if i == j { 1.0 } else { 0.0 } - c * jv[p];
+                }
+            }
+            self.stats.lu_factorizations += 1;
+            self.lu_c = c;
+            self.lu_valid = lu.factor(m, 0.1);
+            return self.lu_valid;
+        }
         for i in 0..n {
             for j in 0..n {
                 self.lu[i * n + j] = -c * self.jac[i * n + j];
@@ -603,7 +654,10 @@ impl Integrator for Bdf {
                     for i in 0..n {
                         dy[i] = c * f[i] - psi[i] - dsum[i];
                     }
-                    lu_solve(&self.lu, n, &self.piv, &mut dy);
+                    match &mut self.sp {
+                        Some((_, _, _, lu)) => lu.solve(&mut dy),
+                        None => lu_solve(&self.lu, n, &self.piv, &mut dy),
+                    }
                     let dy_norm = rms(dy.iter().zip(&scale).map(|(a, s)| a / s), n);
                     let rate = dy_norm_old.map(|o| dy_norm / o);
                     if let Some(r) = rate

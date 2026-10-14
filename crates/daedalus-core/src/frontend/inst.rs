@@ -101,7 +101,8 @@ pub fn merge<'a>(outer: &Mod<'a>, inner: &Mod<'a>) -> Mod<'a> {
 pub enum Comp {
     Var(VarId),
     Inst(InstId),
-    Arr(Vec<usize>, Vec<Comp>),
+    /// Array of components (shared: cloning a component reference is O(1)).
+    Arr(Vec<usize>, std::rc::Rc<Vec<Comp>>),
     Removed,
 }
 
@@ -785,7 +786,7 @@ impl<'a, 't> Flattener<'a, 't> {
                     }
                 }
             }
-            let c = if dims.is_empty() { elems.pop().unwrap() } else { Comp::Arr(dims, elems) };
+            let c = if dims.is_empty() { elems.pop().unwrap() } else { Comp::Arr(dims, std::rc::Rc::new(elems)) };
             self.insts[inst as usize].comps.insert(name, c);
             return Ok(());
         }
@@ -812,7 +813,7 @@ impl<'a, 't> Flattener<'a, 't> {
             }
             elems.push(Comp::Inst(child));
         }
-        let c = if dims.is_empty() { elems.pop().unwrap() } else { Comp::Arr(dims, elems) };
+        let c = if dims.is_empty() { elems.pop().unwrap() } else { Comp::Arr(dims, std::rc::Rc::new(elems)) };
         self.insts[inst as usize].comps.insert(name, c);
         Ok(())
     }
@@ -849,8 +850,9 @@ impl<'a, 't> Flattener<'a, 't> {
             }
             Comp::Inst(i) => self.propagate_variability(*i, v),
             Comp::Arr(_, v2) => {
-                for x in v2.clone() {
-                    self.propagate_comp(&x, v);
+                let v2 = v2.clone();
+                for x in v2.iter() {
+                    self.propagate_comp(x, v);
                 }
             }
             Comp::Removed => {}
@@ -1543,14 +1545,14 @@ impl<'a, 't> Flattener<'a, 't> {
                     Comp::Arr(dims, el) => {
                         // Element access on each array member: c[i].p for all i.
                         let mut v = Vec::new();
-                        for e in el {
+                        for e in el.iter() {
                             if let Comp::Inst(id) = e
-                                && let Some(c) = self.insts[id as usize].comps.get(&*p.ident.text)
+                                && let Some(c) = self.insts[*id as usize].comps.get(&*p.ident.text)
                             {
                                 v.push(c.clone());
                             }
                         }
-                        Comp::Arr(dims, v)
+                        Comp::Arr(dims, std::rc::Rc::new(v))
                     }
                     Comp::Removed => return Ok((None, !outside)),
                     Comp::Var(_) => bail!("cannot access '{}' in a scalar", p.ident.text),
@@ -1573,7 +1575,7 @@ impl<'a, 't> Flattener<'a, 't> {
         let sel = self.eval_subscripts(subs, &dims, scope, ctx)?;
         let (nd, idx) = select_indices(&dims, &sel);
         let v: Vec<Comp> = idx.into_iter().map(|i| el[i].clone()).collect();
-        if nd.is_empty() { Ok(v.into_iter().next().unwrap()) } else { Ok(Comp::Arr(nd, v)) }
+        if nd.is_empty() { Ok(v.into_iter().next().unwrap()) } else { Ok(Comp::Arr(nd, std::rc::Rc::new(v))) }
     }
 
     fn connector_leaves(&self, c: &Comp, out: &mut Vec<VarId>) {
@@ -1585,7 +1587,7 @@ impl<'a, 't> Flattener<'a, 't> {
                 }
             }
             Comp::Arr(_, el) => {
-                for e in el {
+                for e in el.iter() {
                     self.connector_leaves(e, out);
                 }
             }
@@ -2180,7 +2182,7 @@ impl<'a, 't> Flattener<'a, 't> {
                     // Arrays of arrays (from field access over component arrays): flatten.
                     let mut out = Vec::new();
                     let mut inner = Vec::new();
-                    for e in el {
+                    for e in el.iter() {
                         let v = self.comp_to_val(e)?;
                         let (d, x) = v.elems()?;
                         inner = d;
@@ -2261,10 +2263,10 @@ impl<'a, 't> Flattener<'a, 't> {
                 .ok_or_else(|| anyhow!("no element '{name}'")),
             Comp::Arr(dims, el) => {
                 let mut v = Vec::new();
-                for e in el {
-                    v.push(self.child_comp(e, name)?);
+                for e in el.iter() {
+                    v.push(self.child_comp(e.clone(), name)?);
                 }
-                Ok(Comp::Arr(dims, v))
+                Ok(Comp::Arr(dims, std::rc::Rc::new(v)))
             }
             Comp::Removed => Ok(Comp::Removed),
             Comp::Var(_) => bail!("cannot access '.{name}' of a scalar"),
