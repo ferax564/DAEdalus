@@ -840,6 +840,37 @@ impl Arena {
     }
 
     /// Collect all variables referenced (Var, Der and Pre leaves) in post-order.
+    /// Look up the node `Var(v)` if it exists (without interning a new one).
+    pub fn var_ref(&self, v: VarId) -> ExprId {
+        self.intern
+            .get(&Node::Var(v))
+            .copied()
+            .unwrap_or(Self::ZERO)
+    }
+
+    /// All variables (including under `der` and `pre`) referenced from `roots`.
+    pub fn vars_in(&self, roots: &[ExprId]) -> rustc_hash::FxHashSet<VarId> {
+        let mut seen = rustc_hash::FxHashSet::default();
+        let mut out = rustc_hash::FxHashSet::default();
+        let mut stack: Vec<ExprId> = roots.to_vec();
+        let mut ch = Vec::new();
+        while let Some(id) = stack.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
+            match self.node(id) {
+                Node::Var(v) | Node::Der(v) | Node::Pre(v) => {
+                    out.insert(v);
+                }
+                _ => {}
+            }
+            ch.clear();
+            self.children(id, &mut ch);
+            stack.extend(ch.iter().copied());
+        }
+        out
+    }
+
     /// Whether `initial()` occurs in the expression.
     pub fn mentions_initial(&self, root: ExprId) -> bool {
         let mut seen = rustc_hash::FxHashSet::default();

@@ -235,6 +235,10 @@ pub struct Flattener<'a, 't> {
     sample_count: usize,
     /// Native stand-ins for the MSL external table objects: (arena table, `columns`).
     ext_tables: Vec<(u32, Vec<usize>)>,
+    /// Instances of expandable connectors (and connectors nested in them).
+    expandable_insts: FxHashSet<InstId>,
+    /// Variables declared inside expandable connectors.
+    expandable_vars: Vec<VarId>,
     when_assigned: FxHashSet<VarId>,
     depth: usize,
     pub var_by_name: FxHashMap<String, VarId>,
@@ -274,6 +278,8 @@ impl<'a, 't> Flattener<'a, 't> {
             binding_mods: FxHashMap::default(),
             sample_count: 0,
             ext_tables: Vec::new(),
+            expandable_insts: FxHashSet::default(),
+            expandable_vars: Vec::new(),
             when_assigned: FxHashSet::default(),
             depth: 0,
             var_by_name: FxHashMap::default(),
@@ -598,8 +604,63 @@ impl<'a, 't> Flattener<'a, 't> {
         }
         self.finish_connections();
         self.finish_discrete();
+        self.drop_unused_expandable();
         let _ = root;
         Ok(())
+    }
+
+    /// Members of expandable connectors that no connection or equation uses are not
+    /// part of the model (MLS 9.1.3). They become hidden constants so ids stay stable.
+    fn drop_unused_expandable(&mut self) {
+        if self.expandable_vars.is_empty() {
+            return;
+        }
+        let used = self.referenced_vars();
+        for &v in &self.expandable_vars {
+            if used.contains(&v) {
+                continue;
+            }
+            let var = &mut self.model.vars[v as usize];
+            var.kind = VarKind::Constant;
+            var.binding = Some(Arena::ZERO);
+            var.start = Some(Arena::ZERO);
+            var.is_protected = true;
+            var.generated = true;
+        }
+    }
+
+    /// Variables referenced by any equation, when-clause, assertion or attribute.
+    fn referenced_vars(&self) -> FxHashSet<VarId> {
+        let m = &self.model;
+        let mut roots: Vec<ExprId> = Vec::new();
+        for e in m.equations.iter().chain(&m.initial_equations) {
+            roots.push(e.lhs);
+            roots.push(e.rhs);
+        }
+        for w in &m.whens {
+            for (c, acts) in &w.branches {
+                roots.push(*c);
+                for a in acts {
+                    match a {
+                        WhenAction::Assign(v, e) | WhenAction::Reinit(v, e) => {
+                            roots.push(m.arena.var_ref(*v));
+                            roots.push(*e);
+                        }
+                        WhenAction::Assert(e, _) => roots.push(*e),
+                        WhenAction::Terminate(_) => {}
+                    }
+                }
+            }
+        }
+        roots.extend(m.asserts.iter().map(|(c, _)| *c));
+        for v in &m.vars {
+            roots.extend(
+                [v.binding, v.start, v.nominal, v.min, v.max]
+                    .into_iter()
+                    .flatten(),
+            );
+        }
+        m.arena.vars_in(&roots)
     }
 
     fn inst_name(&self, i: InstId) -> String {
@@ -679,6 +740,12 @@ impl<'a, 't> Flattener<'a, 't> {
             })
         };
         let is_connector = matches!(self.tree.class_type(class), ClassType::Connector);
+        let expandable = is_connector
+            && (self.tree.def(class).is_some_and(|d| d.expandable)
+                || parent.is_some_and(|p| self.expandable_insts.contains(&p)));
+        if expandable {
+            self.expandable_insts.insert(self.insts.len() as InstId);
+        }
         let id = self.insts.len() as InstId;
         self.insts.push(Instance {
             prefix: prefix.clone(),
@@ -1020,6 +1087,9 @@ impl<'a, 't> Flattener<'a, 't> {
                 v.is_protected = comp.is_protected;
                 v.is_output = causality_output && prefix.is_empty();
                 let vid = self.model.add_var(v);
+                if self.expandable_insts.contains(&inst) {
+                    self.expandable_vars.push(vid);
+                }
                 self.var_by_name.insert(vname, vid);
                 if is_flow && self.insts[inst as usize].is_connector {
                     self.connector_flows.push(vid);
@@ -2375,8 +2445,50 @@ impl<'a, 't> Flattener<'a, 't> {
         }
         let origin = self.model.origin("connection");
         let mut inside_connected: FxHashSet<VarId> = FxHashSet::default();
-        for (_, set) in &sets {
-            if set.len() < 2 {
+        // Bus signals that only link expandable connectors to each other, with no
+        // component writing or reading them, are not part of the model.
+        // A variable can sit in two sets (seen from inside and from outside), so sets that
+        // share a variable are judged together.
+        let mut dead_set = vec![false; sets.len()];
+        if !self.expandable_vars.is_empty() {
+            let expandable: FxHashSet<VarId> = self.expandable_vars.iter().copied().collect();
+            let used = self.referenced_vars();
+            let mut group: Vec<usize> = (0..sets.len()).collect();
+            fn root(g: &mut [usize], mut x: usize) -> usize {
+                while g[x] != x {
+                    g[x] = g[g[x]];
+                    x = g[x];
+                }
+                x
+            }
+            let mut owner: FxHashMap<VarId, usize> = FxHashMap::default();
+            for (k, (_, set)) in sets.iter().enumerate() {
+                for p in set {
+                    if let Some(&j) = owner.get(&p.var) {
+                        let (a, b) = (root(&mut group, j), root(&mut group, k));
+                        group[a] = b;
+                    } else {
+                        owner.insert(p.var, k);
+                    }
+                }
+            }
+            let mut live = vec![false; sets.len()];
+            for (k, (_, set)) in sets.iter().enumerate() {
+                if set
+                    .iter()
+                    .any(|p| !expandable.contains(&p.var) || used.contains(&p.var))
+                {
+                    let r = root(&mut group, k);
+                    live[r] = true;
+                }
+            }
+            for k in 0..sets.len() {
+                let r = root(&mut group, k);
+                dead_set[k] = !live[r];
+            }
+        }
+        for (k, (_, set)) in sets.iter().enumerate() {
+            if set.len() < 2 || dead_set[k] {
                 continue;
             }
             for p in set {

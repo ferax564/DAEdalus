@@ -6,7 +6,7 @@
 //! applies the Mattsson–Söderlind dummy-derivative method to pick the states,
 //! honouring `stateSelect` and checking the choice numerically at start values.
 
-use super::graph::{NONE, augment_traced};
+use super::graph::{NONE, augment, augment_traced};
 use super::{Eq, Work, eval};
 use crate::expr::{Arena, ExprId, Node, VarId};
 use crate::flat::{StateSelect, VarKind, VarType, Variable, WhenAction};
@@ -194,10 +194,64 @@ fn check_balance(w: &Work) -> Result<()> {
             "underdetermined"
         };
         bail!(
-            "model is {what}: {n_eq} equations for {need} unknowns ({n_unknown} variables, {n_diff} of them appear differentiated)"
+            "model is {what}: {n_eq} equations for {need} unknowns ({n_unknown} variables, {n_diff} of them appear differentiated){}",
+            unmatched_hint(w)
         );
     }
     Ok(())
+}
+
+/// Name a few unknowns (or equations) left over by a maximum matching, the way a
+/// structural error is usually tracked down.
+fn unmatched_hint(w: &Work) -> String {
+    let adj: Vec<Vec<u32>> = w.eqs.iter().map(|e| w.eq_unknowns(e)).collect();
+    let mut eq_match = vec![NONE; w.eqs.len()];
+    let mut var_match = vec![NONE; w.vars.len()];
+    let mut visited_eq = vec![0u32; w.eqs.len()];
+    let mut visited_var = vec![0u32; w.vars.len()];
+    let active = |v: u32| w.der_of[v as usize].is_none();
+    let mut free_eqs = Vec::new();
+    for e in 0..w.eqs.len() {
+        let stamp = e as u32 + 1;
+        if !augment(
+            e,
+            &adj,
+            &mut eq_match,
+            &mut var_match,
+            &mut visited_eq,
+            &mut visited_var,
+            stamp,
+            &active,
+        ) {
+            free_eqs.push(e);
+        }
+    }
+    let free_vars: Vec<&str> = (0..w.vars.len())
+        .filter(|&v| w.unknown[v] && w.der_of[v].is_none() && var_match[v] == NONE)
+        .map(|v| w.name(v as VarId))
+        .collect();
+    let list = |items: Vec<String>| {
+        let n = items.len();
+        let mut s = items.into_iter().take(8).collect::<Vec<_>>().join(", ");
+        if n > 8 {
+            s.push_str(&format!(" and {} more", n - 8));
+        }
+        s
+    };
+    let mut out = String::new();
+    if !free_vars.is_empty() {
+        out.push_str(&format!(
+            "; no equation for: {}",
+            list(free_vars.iter().map(|s| s.to_string()).collect())
+        ));
+    }
+    if !free_eqs.is_empty() {
+        out.push_str(&format!(
+            "; redundant: {}",
+            list(free_eqs.iter().map(|&e| w.eq_text(&w.eqs[e])).collect())
+        ));
+    }
+    out
 }
 
 /// Pantelides' algorithm. Differentiated equations are appended to `w.eqs`
