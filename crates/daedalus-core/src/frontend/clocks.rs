@@ -95,6 +95,7 @@ struct ClockSolve {
     def: FxHashMap<VarId, ExprId>,
     memo: FxHashMap<VarId, Option<ClockVal>>,
     busy: FxHashSet<VarId>,
+    rational_base: Option<usize>,
 }
 
 fn uf_find(p: &mut FxHashMap<VarId, VarId>, x: VarId) -> VarId {
@@ -366,6 +367,33 @@ impl<'a, 't> Flattener<'a, 't> {
             }
             Node::Clk(op, a, b) => match op {
                 ClkOp::Inferred => Ok(None),
+                ClkOp::Periodic
+                    if let Node::Clk(ClkOp::Rational, n, d) = self.model.arena.node(a)
+                        && let (Some(n), Some(d)) =
+                            (self.eval_param_expr(n), self.eval_param_expr(d))
+                        && n.fract() == 0.0
+                        && d.fract() == 0.0
+                        && d != 0.0 =>
+                {
+                    // Rational clocks share one exact time base of 1 s, so their
+                    // relative rates are known (MLS 16.3).
+                    let base = match cs.rational_base {
+                        Some(b) => b,
+                        None => {
+                            cs.bases.push(Base {
+                                kind: BaseKind::Periodic(Arena::ONE),
+                                solver: false,
+                            });
+                            cs.rational_base = Some(cs.bases.len() - 1);
+                            cs.bases.len() - 1
+                        }
+                    };
+                    Ok(Some(ClockVal {
+                        base,
+                        period: Rat::new(n as i64, d as i64),
+                        shift: Rat(0, 1),
+                    }))
+                }
                 ClkOp::Periodic | ClkOp::Event => {
                     let base = match cs.base_of_expr.get(&e) {
                         Some(&b) => b,
@@ -762,12 +790,25 @@ impl<'a, 't> Flattener<'a, 't> {
                 .unwrap_or(0)
                 .max(0);
             let base = cs.bases[b].clone();
+            // The finest common tick: the gcd of all intervals and offsets.
+            let mut g = 0i64;
+            if matches!(base.kind, BaseKind::Periodic(_)) {
+                for p in &parts {
+                    let c = clock_of[p];
+                    g = gcd(g, ticks(c.period));
+                    g = gcd(g, ticks(c.shift) - kmin);
+                }
+            } else if q != 1 {
+                bail!("an event clock cannot be super-sampled");
+            }
+            let g = g.max(1);
             let (cond, idx, mut acts, h) = match base.kind {
                 BaseKind::Periodic(t) => {
-                    let qe = self.model.arena.constant(q as f64);
-                    let h = self.model.arena.div(t, qe);
-                    let ke = self.model.arena.constant(kmin as f64);
-                    let start = self.model.arena.mul(ke, h);
+                    let a = &mut self.model.arena;
+                    let qe = a.constant(q as f64 / g as f64);
+                    let h = a.div(t, qe);
+                    let ke = a.constant(kmin as f64 / q as f64);
+                    let start = a.mul(ke, t);
                     let (cond, n) = self.sample_counter(start, h);
                     let idx = self.model.arena.pre(n);
                     (cond, idx, Vec::new(), Some(h))
@@ -790,8 +831,8 @@ impl<'a, 't> Flattener<'a, 't> {
             };
             for p in parts {
                 let c = clock_of[&p];
-                let m = ticks(c.period);
-                let k = ticks(c.shift) - kmin;
+                let m = ticks(c.period) / g;
+                let k = (ticks(c.shift) - kmin) / g;
                 if m <= 0 {
                     bail!("clock with a non-positive interval");
                 }
@@ -1077,6 +1118,13 @@ impl<'a, 't> Flattener<'a, 't> {
         for e in 0..es.len() {
             let mut seen = vec![false; vars.len()];
             if !augment(e, &adj, &mut owner, &mut seen) {
+                if std::env::var("DAEDALUS_DEBUG_CLOCKS").is_ok() {
+                    for q in es {
+                        eprintln!("  {} = {}", self.model.show(q.lhs), self.model.show(q.rhs));
+                    }
+                    let names: Vec<&str> = vars.iter().map(|&v| self.model.var_name(v)).collect();
+                    eprintln!("  unknowns: {}", names.join(", "));
+                }
                 bail!(
                     "clocked partition is singular at '{} = {}'",
                     self.model.show(es[e].lhs),

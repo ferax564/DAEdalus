@@ -4194,21 +4194,36 @@ impl<'a, 't> Flattener<'a, 't> {
                 for p in &pos[1..] {
                     vals.push(self.translate(p, scope, ctx)?);
                 }
-                return self
-                    .array_construct(
-                        vals,
-                        if k == 1 {
-                            ArrayConstructor::Vertical
-                        } else {
-                            ArrayConstructor::Horizontal
-                        },
-                    )
-                    .map(|v| match v {
-                        Val::A(d, e) if k == 1 && d.len() == 2 && d[1] == 1 => {
-                            Val::A(vec![d[0]], e)
-                        }
-                        other => other,
-                    });
+                // cat(k, A, B, ...): concatenation along dimension k (row-major data).
+                let mut parts = Vec::with_capacity(vals.len());
+                for v in vals {
+                    let (d, e) = v.elems()?;
+                    parts.push((if d.is_empty() { vec![1] } else { d }, e));
+                }
+                let Some(first) = parts.first() else {
+                    return Ok(Val::A(vec![0], Vec::new()));
+                };
+                let nd = first.0.len();
+                if k == 0 || k > nd || parts.iter().any(|(d, _)| d.len() != nd) {
+                    bail!("cat({k}, ...): arguments must have the same number of dimensions");
+                }
+                for (d, _) in &parts {
+                    if (0..nd).any(|i| i != k - 1 && d[i] != first.0[i]) {
+                        bail!("cat({k}, ...): sizes differ outside dimension {k}");
+                    }
+                }
+                let outer: usize = first.0[..k - 1].iter().product();
+                let inner: usize = first.0[k..].iter().product();
+                let mut dims = first.0.clone();
+                dims[k - 1] = parts.iter().map(|(d, _)| d[k - 1]).sum();
+                let mut out = Vec::with_capacity(dims.iter().product());
+                for o in 0..outer {
+                    for (d, e) in &parts {
+                        let slab = d[k - 1] * inner;
+                        out.extend_from_slice(&e[o * slab..(o + 1) * slab]);
+                    }
+                }
+                return Ok(Val::A(dims, out));
             }
             "Integer" | "Real" | "Boolean" => return Ok(arg!(0)),
             "String" => return Ok(Val::Str(String::new())),
