@@ -464,7 +464,7 @@ impl Bdf {
             }
             self.stats.lu_factorizations += 1;
             self.lu_c = c;
-            self.lu_valid = lu.factor(m, 0.1);
+            self.lu_valid = lu.factor(m, 0.001);
             return self.lu_valid;
         }
         for i in 0..n {

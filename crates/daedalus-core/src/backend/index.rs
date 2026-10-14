@@ -6,7 +6,7 @@
 //! applies the Mattsson–Söderlind dummy-derivative method to pick the states,
 //! honouring `stateSelect` and checking the choice numerically at start values.
 
-use super::graph::{NONE, augment};
+use super::graph::{NONE, augment_traced};
 use super::{Eq, Work, eval};
 use crate::expr::{Arena, ExprId, Node, VarId};
 use crate::flat::{StateSelect, VarKind, VarType, Variable, WhenAction};
@@ -200,13 +200,24 @@ pub fn pantelides(w: &mut Work) -> Result<()> {
             stamp += 1;
             let der_of = &w.der_of;
             let active = |v: u32| der_of[v as usize].is_none();
-            if augment(i, &adj, &mut eq_match, &mut var_match, &mut visited_eq, &mut visited_var, stamp, &active) {
+            let (mut colored_eqs, mut colored_vars) = (Vec::new(), Vec::new());
+            if augment_traced(
+                i,
+                &adj,
+                &mut eq_match,
+                &mut var_match,
+                &mut visited_eq,
+                &mut visited_var,
+                stamp,
+                &active,
+                Some((&mut colored_eqs, &mut colored_vars)),
+            ) {
                 break;
             }
             level += 1;
-            let colored_vars: Vec<VarId> =
-                (0..visited_var.len() as u32).filter(|&v| visited_var[v as usize] == stamp && active(v)).collect();
-            let colored_eqs: Vec<usize> = (0..visited_eq.len()).filter(|&e| visited_eq[e] == stamp).collect();
+            colored_vars.retain(|&v| active(v));
+            colored_vars.sort_unstable();
+            colored_eqs.sort_unstable();
             let no_unknowns = colored_eqs.iter().all(|&e| adj[e].is_empty());
             if no_unknowns || level > 10 || w.eqs.len() > max_eqs {
                 let mut msg = String::from("structurally singular system; the following equations cannot be solved:\n");
@@ -355,12 +366,18 @@ pub fn select_states(w: &mut Work) -> Result<Vec<VarId>> {
             let mut cols = cols;
             cols.sort_by_key(|&z| -dummy_preference(w, z));
             let tiers: Vec<i64> = cols.iter().map(|&z| dummy_tier(w, z)).collect();
-            // Jacobian H = dg/dz evaluated numerically.
-            let mut h = vec![vec![0.0; cols.len()]; g.len()];
+            // Jacobian H = dg/dz evaluated numerically, stored sparsely: only columns that
+            // occur in an equation can have a nonzero derivative.
+            let col_of: FxHashMap<VarId, usize> = cols.iter().enumerate().map(|(i, &z)| (z, i)).collect();
+            let mut entries: Vec<Vec<(usize, f64)>> = vec![Vec::new(); g.len()];
             for (ri, &e) in g.iter().enumerate() {
                 let eq = w.eqs[e];
                 let r = w.arena.sub(eq.lhs, eq.rhs);
-                for (ci, &z) in cols.iter().enumerate() {
+                let mut occ: Vec<usize> = w.eq_unknowns(&eq).into_iter().filter_map(|v| col_of.get(&v).copied()).collect();
+                occ.sort_unstable();
+                occ.dedup();
+                for ci in occ {
+                    let z = cols[ci];
                     let mut memo = FxHashMap::default();
                     let d = w.arena.diff(r, Node::Var(z), &mut memo);
                     if w.arena.is_zero(d) {
@@ -380,18 +397,71 @@ pub fn select_states(w: &mut Work) -> Result<Vec<VarId>> {
                             val += wgt * x;
                         }
                     }
-                    h[ri][ci] = val;
+                    entries[ri].push((ci, val));
                 }
             }
-            let chosen = select_columns(&h, &tiers, g.len());
-            if chosen.len() < g.len() {
-                let names: Vec<&str> = cols.iter().map(|&z| w.name(z)).collect();
-                bail!(
-                    "index reduction failed: cannot select {} dummy derivatives among [{}] (singular Jacobian at start values)",
-                    g.len(),
-                    names.join(", ")
-                );
+            // H is block diagonal after permutation (one block per group of equations that
+            // share candidate columns, e.g. one per spring in a chain); select per block so
+            // the cost stays linear in the number of blocks.
+            let nr = g.len();
+            let mut parent: Vec<usize> = (0..nr + cols.len()).collect();
+            fn find(p: &mut [usize], mut x: usize) -> usize {
+                while p[x] != x {
+                    p[x] = p[p[x]];
+                    x = p[x];
+                }
+                x
             }
+            for (ri, row) in entries.iter().enumerate() {
+                for &(ci, _) in row {
+                    let (a, b) = (find(&mut parent, ri), find(&mut parent, nr + ci));
+                    if a != b {
+                        parent[a] = b;
+                    }
+                }
+            }
+            let mut block_rows: FxHashMap<usize, Vec<usize>> = FxHashMap::default();
+            let mut block_cols: FxHashMap<usize, Vec<usize>> = FxHashMap::default();
+            for ri in 0..nr {
+                let r = find(&mut parent, ri);
+                block_rows.entry(r).or_default().push(ri);
+            }
+            for ci in 0..cols.len() {
+                let r = find(&mut parent, nr + ci);
+                block_cols.entry(r).or_default().push(ci);
+            }
+            let mut chosen: Vec<usize> = Vec::new();
+            let mut keys: Vec<usize> = block_rows.keys().copied().collect();
+            keys.sort_unstable();
+            for key in keys {
+                let rows = &block_rows[&key];
+                let bcols = block_cols.get(&key).cloned().unwrap_or_default();
+                let local: FxHashMap<usize, usize> = bcols.iter().enumerate().map(|(i, &c)| (c, i)).collect();
+                let btiers: Vec<i64> = bcols.iter().map(|&c| tiers[c]).collect();
+                let pick = if rows.len() <= DENSE_SELECT_MAX {
+                    let mut h = vec![vec![0.0; bcols.len()]; rows.len()];
+                    for (lr, &ri) in rows.iter().enumerate() {
+                        for &(ci, v) in &entries[ri] {
+                            h[lr][local[&ci]] = v;
+                        }
+                    }
+                    select_columns(&h, &btiers, rows.len())
+                } else {
+                    let h: Vec<Vec<(usize, f64)>> =
+                        rows.iter().map(|&ri| entries[ri].iter().map(|&(ci, v)| (local[&ci], v)).collect()).collect();
+                    select_columns_sparse(&h, bcols.len(), rows.len())
+                };
+                if pick.len() < rows.len() {
+                    let names: Vec<&str> = bcols.iter().map(|&c| w.name(cols[c])).collect();
+                    bail!(
+                        "index reduction failed: cannot select {} dummy derivatives among [{}] (singular Jacobian at start values)",
+                        rows.len(),
+                        names.join(", ")
+                    );
+                }
+                chosen.extend(pick.into_iter().map(|l| bcols[l]));
+            }
+            chosen.sort_unstable();
             let sel: Vec<VarId> = chosen.iter().map(|&c| cols[c]).collect();
             for &z in &sel {
                 w.dummy.insert(z);
@@ -417,6 +487,65 @@ pub fn select_states(w: &mut Work) -> Result<Vec<VarId>> {
     }
     let _ = &w.dummy;
     Ok(states)
+}
+
+/// Blocks with more rows than this use the sparse greedy selection instead of the dense
+/// Gram-Schmidt one (which is cubic in the block size).
+const DENSE_SELECT_MAX: usize = 64;
+
+/// Sparse column selection for large blocks: Gaussian elimination over the columns in
+/// preference order, accepting a column when its reduced entries are not negligible and
+/// pivoting on the row with the largest one. This is the greedy matroid basis, so the
+/// preferred columns are taken whenever they are independent of the ones already taken.
+fn select_columns_sparse(h: &[Vec<(usize, f64)>], ncols: usize, need: usize) -> Vec<usize> {
+    let mut rows: Vec<FxHashMap<usize, f64>> = h.iter().map(|r| r.iter().copied().collect()).collect();
+    let mut col_rows: Vec<FxHashSet<usize>> = vec![FxHashSet::default(); ncols];
+    let mut norm0 = vec![0.0f64; ncols];
+    for (ri, r) in h.iter().enumerate() {
+        for &(c, v) in r {
+            col_rows[c].insert(ri);
+            norm0[c] = norm0[c].max(v.abs());
+        }
+    }
+    let scale = norm0.iter().fold(0.0f64, |m, &x| m.max(x)).max(1e-300);
+    let mut done = vec![false; rows.len()];
+    let mut chosen = Vec::new();
+    for c in 0..ncols {
+        if chosen.len() == need {
+            break;
+        }
+        if norm0[c] <= 1e-10 * scale {
+            continue;
+        }
+        let mut best: Option<(usize, f64)> = None;
+        for &r in &col_rows[c] {
+            if done[r] {
+                continue;
+            }
+            let v = rows[r].get(&c).copied().unwrap_or(0.0).abs();
+            if v > 1e-8 * norm0[c] && best.is_none_or(|(br, bv)| v > bv || (v == bv && r < br)) {
+                best = Some((r, v));
+            }
+        }
+        let Some((p, _)) = best else { continue };
+        done[p] = true;
+        chosen.push(c);
+        let prow: Vec<(usize, f64)> = rows[p].iter().map(|(&k, &v)| (k, v)).collect();
+        let pv = rows[p][&c];
+        let mut targets: Vec<usize> = col_rows[c].iter().copied().filter(|&r| !done[r]).collect();
+        targets.sort_unstable();
+        for r in targets {
+            let Some(&rv) = rows[r].get(&c) else { continue };
+            let f = rv / pv;
+            for &(k, v) in &prow {
+                let e = rows[r].entry(k).or_insert(0.0);
+                *e -= f * v;
+                col_rows[k].insert(r);
+            }
+            rows[r].remove(&c);
+        }
+    }
+    chosen
 }
 
 /// Coarse preference tier (stateSelect of the base variable); pivoting happens within a tier.

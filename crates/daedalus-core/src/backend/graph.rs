@@ -110,6 +110,26 @@ pub fn augment(
     stamp: u32,
     active: &dyn Fn(u32) -> bool,
 ) -> bool {
+    augment_traced(e, adj, eq_match, var_match, visited_eq, visited_var, stamp, active, None)
+}
+
+/// [`augment`] that also records the equations and variables it visits (in `trail`), so a
+/// caller can read the visited set of a failed search without scanning every equation.
+#[allow(clippy::too_many_arguments)]
+pub fn augment_traced(
+    e: usize,
+    adj: &[Vec<u32>],
+    eq_match: &mut [u32],
+    var_match: &mut [u32],
+    visited_eq: &mut [u32],
+    visited_var: &mut [u32],
+    stamp: u32,
+    active: &dyn Fn(u32) -> bool,
+    mut trail: Option<(&mut Vec<usize>, &mut Vec<u32>)>,
+) -> bool {
+    if let Some((te, _)) = trail.as_mut() {
+        te.push(e);
+    }
     // Iterative DFS with explicit stack: (eq, next edge index)
     let mut stack: Vec<(usize, usize)> = vec![(e, 0)];
     visited_eq[e] = stamp;
@@ -138,9 +158,15 @@ pub fn augment(
             continue;
         }
         visited_var[v] = stamp;
+        if let Some((_, tv)) = trail.as_mut() {
+            tv.push(v as u32);
+        }
         let m = var_match[v];
         if m != NONE && visited_eq[m as usize] != stamp {
             visited_eq[m as usize] = stamp;
+            if let Some((te, _)) = trail.as_mut() {
+                te.push(m as usize);
+            }
             stack.push((m as usize, 0));
         }
     }
