@@ -12,7 +12,13 @@ fn run(file: &str, model: &str, stop: f64, method: Method) -> Results {
     let errs = lib.set_document(&path, &text);
     assert!(errs.is_empty(), "{errs:?}");
     let m = daedalus_core::translate(&lib, model, &Default::default()).unwrap();
-    let opts = SimOptions { stop_time: stop, method, tolerance: 1e-8, interval: 0.01, ..SimOptions::from_model(&m) };
+    let opts = SimOptions {
+        stop_time: stop,
+        method,
+        tolerance: 1e-8,
+        interval: 0.01,
+        ..SimOptions::from_model(&m)
+    };
     simulate(&m, opts).map_err(|e| e.message).unwrap().0
 }
 
@@ -28,10 +34,18 @@ fn mass_spring_through_connectors() {
         let tol = if method == Method::Rk4 { 1e-3 } else { 1e-5 };
         for t in [0.5, 1.7, 3.0] {
             let s = r.at("mass.s", t).unwrap();
-            assert!(close(s, (w * t).cos(), tol), "{method:?} t={t}: {s} vs {}", (w * t).cos());
+            assert!(
+                close(s, (w * t).cos(), tol),
+                "{method:?} t={t}: {s} vs {}",
+                (w * t).cos()
+            );
         }
         // aliases are reconstructed
-        assert!(close(r.final_value("spring.b.s").unwrap(), r.final_value("mass.s").unwrap(), 1e-12));
+        assert!(close(
+            r.final_value("spring.b.s").unwrap(),
+            r.final_value("mass.s").unwrap(),
+            1e-12
+        ));
     }
 }
 
@@ -51,7 +65,11 @@ fn index3_pendulum_keeps_constraint() {
 fn index2_gear_constraint() {
     let r = run("index.mo", "T.TwoInertias", 2.0, Method::Bdf);
     assert!(close(r.final_value("w1").unwrap(), 10.0 / 3.0 * 2.0, 1e-6));
-    assert!(close(r.final_value("phi2").unwrap() * 3.0, r.final_value("phi1").unwrap(), 1e-9));
+    assert!(close(
+        r.final_value("phi2").unwrap() * 3.0,
+        r.final_value("phi1").unwrap(),
+        1e-9
+    ));
 }
 
 #[test]
@@ -67,7 +85,11 @@ fn bouncing_ball_events() {
     let v3 = v2 * 0.8;
     let dt = 2.0 - t3;
     let h = v3 * dt - 0.5 * g * dt * dt;
-    assert!(close(r.final_value("h").unwrap(), h, 1e-6), "{} vs {h}", r.final_value("h").unwrap());
+    assert!(
+        close(r.final_value("h").unwrap(), h, 1e-6),
+        "{} vs {h}",
+        r.final_value("h").unwrap()
+    );
 }
 
 #[test]

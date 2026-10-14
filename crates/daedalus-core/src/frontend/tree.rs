@@ -76,7 +76,9 @@ impl<'a> ClassTree<'a> {
             order: Vec::new(),
             source,
         });
-        self.nodes[parent as usize].children.insert(name.to_string(), id);
+        self.nodes[parent as usize]
+            .children
+            .insert(name.to_string(), id);
         self.nodes[parent as usize].order.push(id);
         id
     }
@@ -227,7 +229,9 @@ impl<'a> ClassTree<'a> {
                 for imp in &def.imports {
                     match imp {
                         ast::Import::Qualified { path, .. } => {
-                            if path.name.last().is_some_and(|t| &*t.text == name) && path.name.len() >= 2 {
+                            if path.name.last().is_some_and(|t| &*t.text == name)
+                                && path.name.len() >= 2
+                            {
                                 let pkg = self.find_tokens(&path.name[..path.name.len() - 1])?;
                                 return Some((pkg, name.to_string()));
                             }
@@ -262,10 +266,15 @@ impl<'a> ClassTree<'a> {
     }
 
     pub fn has_component(&self, id: ClassId, name: &str) -> bool {
-        if self.def(id).is_some_and(|d| d.components.contains_key(name)) {
+        if self
+            .def(id)
+            .is_some_and(|d| d.components.contains_key(name))
+        {
             return true;
         }
-        self.bases(id).into_iter().any(|b| self.has_component(b, name))
+        self.bases(id)
+            .into_iter()
+            .any(|b| self.has_component(b, name))
     }
 
     /// Find the declaration of component `name` in class `id` or its bases.
@@ -294,7 +303,9 @@ impl<'a> ClassTree<'a> {
     /// The "restriction" (model, connector, ...) of a class, following short-class
     /// definitions.
     pub fn class_type(&self, id: ClassId) -> rumoca_core::ClassType {
-        self.def(id).map(|d| d.class_type.clone()).unwrap_or(rumoca_core::ClassType::Package)
+        self.def(id)
+            .map(|d| d.class_type.clone())
+            .unwrap_or(rumoca_core::ClassType::Package)
     }
 
     /// If `id` (transitively) extends a builtin scalar type, return its name.
@@ -327,7 +338,12 @@ impl<'a> ClassTree<'a> {
 
     /// Walk all classes depth-first (for browsing / search).
     pub fn walk(&self, f: &mut dyn FnMut(ClassId)) {
-        let mut stack: Vec<ClassId> = self.nodes[ROOT as usize].order.iter().rev().copied().collect();
+        let mut stack: Vec<ClassId> = self.nodes[ROOT as usize]
+            .order
+            .iter()
+            .rev()
+            .copied()
+            .collect();
         while let Some(c) = stack.pop() {
             f(c);
             stack.extend(self.nodes[c as usize].order.iter().rev().copied());
@@ -343,6 +359,7 @@ pub fn builtin_name(s: &str) -> Option<&'static str> {
         "String" => Some("String"),
         "StateSelect" => Some("StateSelect"),
         "AssertionLevel" => Some("AssertionLevel"),
+        "ExternalObject" => Some("ExternalObject"),
         _ => None,
     }
 }

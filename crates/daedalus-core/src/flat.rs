@@ -157,7 +157,8 @@ impl FlatModel {
 
     /// Render an expression with variable names.
     pub fn show(&self, e: ExprId) -> String {
-        self.arena.render(e, &|v| self.vars[v as usize].name.clone())
+        self.arena
+            .render(e, &|v| self.vars[v as usize].name.clone())
     }
 
     /// Human-readable dump of the flat model (like `instantiateModel` output).
@@ -186,8 +187,15 @@ impl FlatModel {
             if let Some(f) = v.fixed {
                 attrs.push(format!("fixed = {f}"));
             }
-            let a = if attrs.is_empty() { String::new() } else { format!("({})", attrs.join(", ")) };
-            let b = v.binding.map(|b| format!(" = {}", self.show(b))).unwrap_or_default();
+            let a = if attrs.is_empty() {
+                String::new()
+            } else {
+                format!("({})", attrs.join(", "))
+            };
+            let b = v
+                .binding
+                .map(|b| format!(" = {}", self.show(b)))
+                .unwrap_or_default();
             let _ = writeln!(s, "  {kind}{ty} {}{a}{b};", v.name);
         }
         let _ = writeln!(s, "equation");
@@ -196,14 +204,24 @@ impl FlatModel {
         }
         for w in &self.whens {
             for (i, (c, acts)) in w.branches.iter().enumerate() {
-                let _ = writeln!(s, "  {} {} then", if i == 0 { "when" } else { "elsewhen" }, self.show(*c));
+                let _ = writeln!(
+                    s,
+                    "  {} {} then",
+                    if i == 0 { "when" } else { "elsewhen" },
+                    self.show(*c)
+                );
                 for a in acts {
                     match a {
                         WhenAction::Assign(v, e) => {
                             let _ = writeln!(s, "    {} = {};", self.var_name(*v), self.show(*e));
                         }
                         WhenAction::Reinit(v, e) => {
-                            let _ = writeln!(s, "    reinit({}, {});", self.var_name(*v), self.show(*e));
+                            let _ = writeln!(
+                                s,
+                                "    reinit({}, {});",
+                                self.var_name(*v),
+                                self.show(*e)
+                            );
                         }
                         WhenAction::Terminate(m) => {
                             let _ = writeln!(s, "    terminate({m:?});");

@@ -25,7 +25,12 @@ impl Csc {
             colptr.push(rowidx.len());
         }
         let nnz = rowidx.len();
-        Csc { n, colptr, rowidx, vals: vec![0.0; nnz] }
+        Csc {
+            n,
+            colptr,
+            rowidx,
+            vals: vec![0.0; nnz],
+        }
     }
 
     pub fn nnz(&self) -> usize {
@@ -50,7 +55,8 @@ pub fn min_degree(a: &Csc) -> Vec<usize> {
         l.dedup();
     }
     let mut eliminated = vec![false; n];
-    let mut heap: BinaryHeap<Reverse<(usize, usize)>> = (0..n).map(|i| Reverse((adj[i].len(), i))).collect();
+    let mut heap: BinaryHeap<Reverse<(usize, usize)>> =
+        (0..n).map(|i| Reverse((adj[i].len(), i))).collect();
     let mut order = Vec::with_capacity(n);
     let mut mark = vec![usize::MAX; n];
     while let Some(Reverse((d, p))) = heap.pop() {
@@ -59,13 +65,20 @@ pub fn min_degree(a: &Csc) -> Vec<usize> {
         }
         eliminated[p] = true;
         order.push(p);
-        let nb: Vec<usize> = std::mem::take(&mut adj[p]).into_iter().filter(|&x| !eliminated[x]).collect();
+        let nb: Vec<usize> = std::mem::take(&mut adj[p])
+            .into_iter()
+            .filter(|&x| !eliminated[x])
+            .collect();
         // Form the clique of the neighbours (fill-in), remove p.
         for &u in &nb {
             mark[u] = p;
         }
         for &u in &nb {
-            let mut l: Vec<usize> = adj[u].iter().copied().filter(|&x| x != p && !eliminated[x]).collect();
+            let mut l: Vec<usize> = adj[u]
+                .iter()
+                .copied()
+                .filter(|&x| x != p && !eliminated[x])
+                .collect();
             for &x in &l {
                 if mark[x] == p {
                     // already adjacent
@@ -232,10 +245,18 @@ impl SparseLu {
             let jnew = self.pinv[j];
             if !self.mark[j] {
                 self.mark[j] = true;
-                pos[h] = if jnew < 0 { 0 } else { self.lp[jnew as usize] + 1 };
+                pos[h] = if jnew < 0 {
+                    0
+                } else {
+                    self.lp[jnew as usize] + 1
+                };
             }
             let mut done = true;
-            let end = if jnew < 0 { 0 } else { self.lp[jnew as usize + 1] };
+            let end = if jnew < 0 {
+                0
+            } else {
+                self.lp[jnew as usize + 1]
+            };
             let mut p = pos[h];
             while p < end {
                 let i = self.li[p];
@@ -309,7 +330,9 @@ mod tests {
         let mut dense = vec![0.0; n * n];
         let mut seed = 12345u64;
         let mut rnd = || {
-            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             ((seed >> 33) as f64) / (1u64 << 31) as f64
         };
         for j in 0..n {
@@ -332,7 +355,9 @@ mod tests {
         let mut lu = SparseLu::new(q);
         assert!(lu.factor(&a, 0.1));
         let xs: Vec<f64> = (0..n).map(|i| i as f64 * 0.1 - 1.0).collect();
-        let mut b: Vec<f64> = (0..n).map(|i| (0..n).map(|j| dense[i * n + j] * xs[j]).sum()).collect();
+        let mut b: Vec<f64> = (0..n)
+            .map(|i| (0..n).map(|j| dense[i * n + j] * xs[j]).sum())
+            .collect();
         lu.solve(&mut b);
         for i in 0..n {
             assert!((b[i] - xs[i]).abs() < 1e-9, "{i}: {} vs {}", b[i], xs[i]);

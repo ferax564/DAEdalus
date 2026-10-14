@@ -15,7 +15,12 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 /// Total time derivative of `e` before derivative variables exist:
 /// unknown `v` maps to `der(v)`, known quantities are piecewise constant.
-pub fn total_derivative_raw(a: &mut Arena, e: ExprId, unknown: &[bool], _vars: &[Variable]) -> ExprId {
+pub fn total_derivative_raw(
+    a: &mut Arena,
+    e: ExprId,
+    unknown: &[bool],
+    _vars: &[Variable],
+) -> ExprId {
     let mut memo = FxHashMap::default();
     let mut seed = |ar: &mut Arena, n: Node| -> Option<ExprId> {
         match n {
@@ -34,7 +39,11 @@ impl Work {
             return d;
         }
         let base = &self.vars[v as usize];
-        let mut dv = Variable::new(format!("der({})", base.name), VarKind::Continuous, VarType::Real);
+        let mut dv = Variable::new(
+            format!("der({})", base.name),
+            VarKind::Continuous,
+            VarType::Real,
+        );
         dv.generated = self.base_of[v as usize].is_some() || base.generated;
         if !base.unit.is_empty() {
             dv.unit = format!("{}/s", base.unit);
@@ -93,7 +102,9 @@ pub fn create_derivative_vars(w: &mut Work) {
             roots.push(*c);
             for a in acts {
                 match a {
-                    WhenAction::Assign(_, e) | WhenAction::Reinit(_, e) | WhenAction::Assert(e, _) => roots.push(*e),
+                    WhenAction::Assign(_, e)
+                    | WhenAction::Reinit(_, e)
+                    | WhenAction::Assert(e, _) => roots.push(*e),
                     WhenAction::Terminate(_) => {}
                 }
             }
@@ -145,7 +156,9 @@ pub fn create_derivative_vars(w: &mut Work) {
             *c = w.arena.rewrite(*c, &mut memo, &mut f);
             for a in acts.iter_mut() {
                 match a {
-                    WhenAction::Assign(_, e) | WhenAction::Reinit(_, e) | WhenAction::Assert(e, _) => {
+                    WhenAction::Assign(_, e)
+                    | WhenAction::Reinit(_, e)
+                    | WhenAction::Assert(e, _) => {
                         *e = w.arena.rewrite(*e, &mut memo, &mut f);
                     }
                     WhenAction::Terminate(_) => {}
@@ -169,11 +182,17 @@ pub fn create_derivative_vars(w: &mut Work) {
 /// (unknowns whose derivative appears count as determined by integration).
 fn check_balance(w: &Work) -> Result<()> {
     let n_unknown = w.unknown.iter().filter(|&&u| u).count();
-    let n_diff = (0..w.vars.len()).filter(|&v| w.unknown[v] && w.der_of[v].is_some()).count();
+    let n_diff = (0..w.vars.len())
+        .filter(|&v| w.unknown[v] && w.der_of[v].is_some())
+        .count();
     let n_eq = w.eqs.len();
     let need = n_unknown - n_diff;
     if n_eq != need {
-        let what = if n_eq > need { "overdetermined" } else { "underdetermined" };
+        let what = if n_eq > need {
+            "overdetermined"
+        } else {
+            "underdetermined"
+        };
         bail!(
             "model is {what}: {n_eq} equations for {need} unknowns ({n_unknown} variables, {n_diff} of them appear differentiated)"
         );
@@ -220,7 +239,9 @@ pub fn pantelides(w: &mut Work) -> Result<()> {
             colored_eqs.sort_unstable();
             let no_unknowns = colored_eqs.iter().all(|&e| adj[e].is_empty());
             if no_unknowns || level > 10 || w.eqs.len() > max_eqs {
-                let mut msg = String::from("structurally singular system; the following equations cannot be solved:\n");
+                let mut msg = String::from(
+                    "structurally singular system; the following equations cannot be solved:\n",
+                );
                 for &e in colored_eqs.iter().take(20) {
                     msg.push_str("  ");
                     msg.push_str(&w.eq_text(&w.eqs[e]));
@@ -243,7 +264,13 @@ pub fn pantelides(w: &mut Work) -> Result<()> {
                 let eq = w.eqs[l];
                 let lhs = w.time_derivative(eq.lhs);
                 let rhs = w.time_derivative(eq.rhs);
-                let new = Eq { lhs, rhs, origin: eq.origin, parent: Some(l), derived: None };
+                let new = Eq {
+                    lhs,
+                    rhs,
+                    origin: eq.origin,
+                    parent: Some(l),
+                    derived: None,
+                };
                 w.eqs.push(new);
                 let ni = w.eqs.len() - 1;
                 w.eqs[l].derived = Some(ni);
@@ -311,7 +338,9 @@ fn dummy_preference(w: &Work, z: VarId) -> i64 {
 /// Select the states with the dummy-derivative method. Returns the state variables.
 pub fn select_states(w: &mut Work) -> Result<Vec<VarId>> {
     // Chains of differentiated equations.
-    let roots: Vec<usize> = (0..w.eqs.len()).filter(|&e| w.eqs[e].parent.is_none()).collect();
+    let roots: Vec<usize> = (0..w.eqs.len())
+        .filter(|&e| w.eqs[e].parent.is_none())
+        .collect();
     let mut chains: Vec<Vec<usize>> = Vec::new();
     for &r in &roots {
         let mut c = vec![r];
@@ -343,7 +372,11 @@ pub fn select_states(w: &mut Work) -> Result<Vec<VarId>> {
         // Candidates for step 1: highest derivatives that are derivative variables.
         let mut candidates: Option<Vec<VarId>> = None;
         for k in 1..=max_c {
-            let g: Vec<usize> = chains.iter().filter(|c| c.len() - 1 >= k).map(|c| c[c.len() - k]).collect();
+            let g: Vec<usize> = chains
+                .iter()
+                .filter(|c| c.len() - 1 >= k)
+                .map(|c| c[c.len() - k])
+                .collect();
             if g.is_empty() {
                 break;
             }
@@ -353,14 +386,21 @@ pub fn select_states(w: &mut Work) -> Result<Vec<VarId>> {
                     let mut seen = FxHashSet::default();
                     for &e in &g {
                         for v in w.eq_unknowns(&w.eqs[e]) {
-                            if w.base_of[v as usize].is_some() && w.der_of[v as usize].is_none() && seen.insert(v) {
+                            if w.base_of[v as usize].is_some()
+                                && w.der_of[v as usize].is_none()
+                                && seen.insert(v)
+                            {
                                 set.push(v);
                             }
                         }
                     }
                     set
                 }
-                Some(prev) => prev.iter().filter_map(|&z| w.base_of[z as usize]).filter(|&b| w.base_of[b as usize].is_some()).collect(),
+                Some(prev) => prev
+                    .iter()
+                    .filter_map(|&z| w.base_of[z as usize])
+                    .filter(|&b| w.base_of[b as usize].is_some())
+                    .collect(),
             };
             // Order columns by preference (most willing to become dummy first).
             let mut cols = cols;
@@ -368,12 +408,17 @@ pub fn select_states(w: &mut Work) -> Result<Vec<VarId>> {
             let tiers: Vec<i64> = cols.iter().map(|&z| dummy_tier(w, z)).collect();
             // Jacobian H = dg/dz evaluated numerically, stored sparsely: only columns that
             // occur in an equation can have a nonzero derivative.
-            let col_of: FxHashMap<VarId, usize> = cols.iter().enumerate().map(|(i, &z)| (z, i)).collect();
+            let col_of: FxHashMap<VarId, usize> =
+                cols.iter().enumerate().map(|(i, &z)| (z, i)).collect();
             let mut entries: Vec<Vec<(usize, f64)>> = vec![Vec::new(); g.len()];
             for (ri, &e) in g.iter().enumerate() {
                 let eq = w.eqs[e];
                 let r = w.arena.sub(eq.lhs, eq.rhs);
-                let mut occ: Vec<usize> = w.eq_unknowns(&eq).into_iter().filter_map(|v| col_of.get(&v).copied()).collect();
+                let mut occ: Vec<usize> = w
+                    .eq_unknowns(&eq)
+                    .into_iter()
+                    .filter_map(|v| col_of.get(&v).copied())
+                    .collect();
                 occ.sort_unstable();
                 occ.dedup();
                 for ci in occ {
@@ -436,7 +481,8 @@ pub fn select_states(w: &mut Work) -> Result<Vec<VarId>> {
             for key in keys {
                 let rows = &block_rows[&key];
                 let bcols = block_cols.get(&key).cloned().unwrap_or_default();
-                let local: FxHashMap<usize, usize> = bcols.iter().enumerate().map(|(i, &c)| (c, i)).collect();
+                let local: FxHashMap<usize, usize> =
+                    bcols.iter().enumerate().map(|(i, &c)| (c, i)).collect();
                 let btiers: Vec<i64> = bcols.iter().map(|&c| tiers[c]).collect();
                 let pick = if rows.len() <= DENSE_SELECT_MAX {
                     let mut h = vec![vec![0.0; bcols.len()]; rows.len()];
@@ -447,8 +493,10 @@ pub fn select_states(w: &mut Work) -> Result<Vec<VarId>> {
                     }
                     select_columns(&h, &btiers, rows.len())
                 } else {
-                    let h: Vec<Vec<(usize, f64)>> =
-                        rows.iter().map(|&ri| entries[ri].iter().map(|&(ci, v)| (local[&ci], v)).collect()).collect();
+                    let h: Vec<Vec<(usize, f64)>> = rows
+                        .iter()
+                        .map(|&ri| entries[ri].iter().map(|&(ci, v)| (local[&ci], v)).collect())
+                        .collect();
                     select_columns_sparse(&h, bcols.len(), rows.len())
                 };
                 if pick.len() < rows.len() {
@@ -482,7 +530,10 @@ pub fn select_states(w: &mut Work) -> Result<Vec<VarId>> {
     }
     for &s in &states {
         if w.vars[s as usize].state_select == StateSelect::Never {
-            w.warnings.push(format!("'{}' has stateSelect=never but had to be selected as a state", w.name(s)));
+            w.warnings.push(format!(
+                "'{}' has stateSelect=never but had to be selected as a state",
+                w.name(s)
+            ));
         }
     }
     let _ = &w.dummy;
@@ -498,7 +549,8 @@ const DENSE_SELECT_MAX: usize = 64;
 /// pivoting on the row with the largest one. This is the greedy matroid basis, so the
 /// preferred columns are taken whenever they are independent of the ones already taken.
 fn select_columns_sparse(h: &[Vec<(usize, f64)>], ncols: usize, need: usize) -> Vec<usize> {
-    let mut rows: Vec<FxHashMap<usize, f64>> = h.iter().map(|r| r.iter().copied().collect()).collect();
+    let mut rows: Vec<FxHashMap<usize, f64>> =
+        h.iter().map(|r| r.iter().copied().collect()).collect();
     let mut col_rows: Vec<FxHashSet<usize>> = vec![FxHashSet::default(); ncols];
     let mut norm0 = vec![0.0f64; ncols];
     for (ri, r) in h.iter().enumerate() {
@@ -570,9 +622,18 @@ fn select_columns(h: &[Vec<f64>], tiers: &[i64], need: usize) -> Vec<usize> {
         return Vec::new();
     }
     let ncols = h[0].len();
-    let scale = h.iter().flatten().fold(0.0f64, |m, x| m.max(x.abs())).max(1e-300);
-    let mut cols: Vec<Vec<f64>> = (0..ncols).map(|c| (0..rows).map(|r| h[r][c]).collect()).collect();
-    let norm0: Vec<f64> = cols.iter().map(|c| c.iter().map(|x| x * x).sum::<f64>().sqrt()).collect();
+    let scale = h
+        .iter()
+        .flatten()
+        .fold(0.0f64, |m, x| m.max(x.abs()))
+        .max(1e-300);
+    let mut cols: Vec<Vec<f64>> = (0..ncols)
+        .map(|c| (0..rows).map(|r| h[r][c]).collect())
+        .collect();
+    let norm0: Vec<f64> = cols
+        .iter()
+        .map(|c| c.iter().map(|x| x * x).sum::<f64>().sqrt())
+        .collect();
     let mut taken = vec![false; ncols];
     let mut chosen = Vec::new();
     let mut start = 0;

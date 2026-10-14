@@ -73,7 +73,13 @@ impl Work {
             return self.compatible(x, y).then_some(Found::Pair(x, y, sx * sy));
         }
         // a + b = 0, a - b = 0 (either side zero)
-        let (expr, other) = if a.is_zero(rhs) { (lhs, rhs) } else if a.is_zero(lhs) { (rhs, lhs) } else { (lhs, rhs) };
+        let (expr, other) = if a.is_zero(rhs) {
+            (lhs, rhs)
+        } else if a.is_zero(lhs) {
+            (rhs, lhs)
+        } else {
+            (lhs, rhs)
+        };
         if a.is_zero(other) {
             match a.node(expr) {
                 Node::Add(p, q) => {
@@ -103,13 +109,19 @@ impl Work {
             && unk(x)
             && self.is_known_expr(rhs)
         {
-            return Some(Found::Bound(x, if sx < 0.0 { usize::MAX as ExprId } else { rhs }));
+            return Some(Found::Bound(
+                x,
+                if sx < 0.0 { usize::MAX as ExprId } else { rhs },
+            ));
         }
         if let Some((x, sx)) = var_of(a, rhs)
             && unk(x)
             && self.is_known_expr(lhs)
         {
-            return Some(Found::Bound(x, if sx < 0.0 { usize::MAX as ExprId } else { lhs }));
+            return Some(Found::Bound(
+                x,
+                if sx < 0.0 { usize::MAX as ExprId } else { lhs },
+            ));
         }
         None
     }
@@ -180,7 +192,10 @@ pub fn eliminate(w: &mut Work) -> usize {
                     any = true;
                 }
                 Some(Found::Bound(x, e)) => {
-                    if e == usize::MAX as ExprId || bound.contains_key(&x) || parent.contains_key(&x) {
+                    if e == usize::MAX as ExprId
+                        || bound.contains_key(&x)
+                        || parent.contains_key(&x)
+                    {
                         continue;
                     }
                     // Don't bind variables that are in an alias class this round.
@@ -239,7 +254,10 @@ pub fn eliminate(w: &mut Work) -> usize {
         };
         let mut subst: FxHashMap<VarId, ExprId> = FxHashMap::default();
         for (_, list) in classes {
-            let (rep, rep_sign) = *list.iter().max_by_key(|(v, _)| (score(w, *v), -(*v as i64))).unwrap();
+            let (rep, rep_sign) = *list
+                .iter()
+                .max_by_key(|(v, _)| (score(w, *v), -(*v as i64)))
+                .unwrap();
             // Merge start / fixed attributes into the representative.
             let mut best_start: Option<(VarId, f64)> = None;
             for &(v, s) in &list {
@@ -256,7 +274,8 @@ pub fn eliminate(w: &mut Work) -> usize {
             }
             let rv = &w.vars[rep as usize];
             if let Some((v, rel)) = best_start
-                && (rv.start.is_none() || (rv.fixed != Some(true) && w.vars[v as usize].fixed == Some(true)))
+                && (rv.start.is_none()
+                    || (rv.fixed != Some(true) && w.vars[v as usize].fixed == Some(true)))
             {
                 let st = w.vars[v as usize].start.unwrap();
                 let st = if rel < 0.0 { w.arena.neg(st) } else { st };
@@ -275,13 +294,21 @@ pub fn eliminate(w: &mut Work) -> usize {
                 let rel = s * rep_sign;
                 let e = if rel < 0.0 { w.arena.neg(rep_e) } else { rep_e };
                 subst.insert(v, e);
-                w.aliases.push(Alias { var: v, kind: AliasKind::Var { of: rep, sign: rel }, expr: e });
+                w.aliases.push(Alias {
+                    var: v,
+                    kind: AliasKind::Var { of: rep, sign: rel },
+                    expr: e,
+                });
                 w.unknown[v as usize] = false;
             }
         }
         for (&v, &e) in &bound {
             subst.insert(v, e);
-            w.aliases.push(Alias { var: v, kind: AliasKind::Expr, expr: e });
+            w.aliases.push(Alias {
+                var: v,
+                kind: AliasKind::Expr,
+                expr: e,
+            });
             w.unknown[v as usize] = false;
         }
         // Remove used equations, substitute everywhere.
@@ -299,13 +326,15 @@ pub fn eliminate(w: &mut Work) -> usize {
         let mut keep = Vec::with_capacity(w.eqs.len());
         for eq in std::mem::take(&mut w.eqs) {
             if eq.lhs == eq.rhs {
-                w.warnings.push(format!("redundant equation removed: {}", w.eq_text(&eq)));
+                w.warnings
+                    .push(format!("redundant equation removed: {}", w.eq_text(&eq)));
                 removed_total += 1;
                 continue;
             }
             if let (Some(a), Some(b)) = (w.arena.as_const(eq.lhs), w.arena.as_const(eq.rhs)) {
                 if (a - b).abs() > 1e-12 * (1.0 + a.abs()) {
-                    w.warnings.push(format!("inconsistent equation {} = {}", a, b));
+                    w.warnings
+                        .push(format!("inconsistent equation {} = {}", a, b));
                     keep.push(eq);
                 } else {
                     removed_total += 1;
@@ -376,7 +405,9 @@ pub fn apply_substitution(w: &mut Work, subst: &FxHashMap<VarId, ExprId>) {
             }
         }
     };
-    let mut sub = |ar: &mut Arena, e: ExprId, memo: &mut FxHashMap<ExprId, ExprId>| ar.rewrite(e, memo, &mut f);
+    let mut sub = |ar: &mut Arena, e: ExprId, memo: &mut FxHashMap<ExprId, ExprId>| {
+        ar.rewrite(e, memo, &mut f)
+    };
     for eq in w.eqs.iter_mut().chain(w.init_eqs.iter_mut()) {
         eq.lhs = sub(&mut w.arena, eq.lhs, &mut memo);
         eq.rhs = sub(&mut w.arena, eq.rhs, &mut memo);
@@ -386,7 +417,9 @@ pub fn apply_substitution(w: &mut Work, subst: &FxHashMap<VarId, ExprId>) {
             *c = sub(&mut w.arena, *c, &mut memo);
             for a in acts.iter_mut() {
                 match a {
-                    WhenAction::Assign(_, e) | WhenAction::Reinit(_, e) | WhenAction::Assert(e, _) => {
+                    WhenAction::Assign(_, e)
+                    | WhenAction::Reinit(_, e)
+                    | WhenAction::Assert(e, _) => {
                         *e = sub(&mut w.arena, *e, &mut memo);
                     }
                     WhenAction::Terminate(_) => {}

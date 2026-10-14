@@ -100,13 +100,19 @@ impl Workspace {
     /// Source text of a document.
     #[wasm_bindgen(js_name = documentText)]
     pub fn document_text(&self, uri: &str) -> Option<String> {
-        self.lib.docs.iter().find(|d| d.uri == uri).map(|d| d.text.to_string())
+        self.lib
+            .docs
+            .iter()
+            .find(|d| d.uri == uri)
+            .map(|d| d.text.to_string())
     }
 
     /// JSON: translation statistics, or `{"error": ...}`.
     pub fn check(&self, model: &str) -> String {
         match daedalus_core::translate(&self.lib, model, &Default::default()) {
-            Ok(m) => to_json(&serde_json::json!({"ok": true, "stats": m.stats, "warnings": m.warnings, "states": m.states.len()})),
+            Ok(m) => to_json(
+                &serde_json::json!({"ok": true, "stats": m.stats, "warnings": m.warnings, "states": m.states.len()}),
+            ),
             Err(e) => to_json(&serde_json::json!({"ok": false, "error": format!("{e:#}")})),
         }
     }
@@ -128,12 +134,15 @@ impl Workspace {
             Ok(m) => m,
             Err(e) => {
                 self.results = None;
-                return to_json(&serde_json::json!({"ok": false, "error": format!("{e:#}"), "model": model}));
+                return to_json(
+                    &serde_json::json!({"ok": false, "error": format!("{e:#}"), "model": model}),
+                );
             }
         };
         let translate_ms = now_ms() - t0;
         let mut opts = SimOptions::from_model(&m);
-        if let Ok(serde_json::Value::Object(o)) = serde_json::from_str::<serde_json::Value>(options) {
+        if let Ok(serde_json::Value::Object(o)) = serde_json::from_str::<serde_json::Value>(options)
+        {
             let mut base = serde_json::to_value(&opts).unwrap_or_default();
             if let serde_json::Value::Object(b) = &mut base {
                 for (k, v) in o {
@@ -167,7 +176,13 @@ impl Workspace {
                     K::Param(x) => ("param", Some(x)),
                     K::Alias { .. } => ("alias", None),
                 };
-                VarSummary { name: &v.name, unit: &v.unit, description: &v.description, kind, value }
+                VarSummary {
+                    name: &v.name,
+                    unit: &v.unit,
+                    description: &v.description,
+                    kind,
+                    value,
+                }
             })
             .collect();
         to_json(&SimSummary {
@@ -187,12 +202,18 @@ impl Workspace {
 
     /// Time axis of the last result.
     pub fn time(&self) -> Vec<f64> {
-        self.results.as_ref().map(|r| r.time.clone()).unwrap_or_default()
+        self.results
+            .as_ref()
+            .map(|r| r.time.clone())
+            .unwrap_or_default()
     }
 
     /// Trajectory of one variable of the last result (parameters are expanded to a constant).
     pub fn values(&self, name: &str) -> Vec<f64> {
-        self.results.as_ref().and_then(|r| r.values(name)).unwrap_or_default()
+        self.results
+            .as_ref()
+            .and_then(|r| r.values(name))
+            .unwrap_or_default()
     }
 
     /// The last result as a Dymola-compatible `.mat` file.
@@ -210,7 +231,11 @@ impl Workspace {
     pub fn result_csv(&self, names: &str) -> String {
         let mut out = Vec::new();
         if let Some(r) = &self.results {
-            let sel: Vec<String> = names.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+            let sel: Vec<String> = names
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
             let _ = r.write_csv(&mut out, if sel.is_empty() { None } else { Some(&sel) });
         }
         String::from_utf8(out).unwrap_or_default()

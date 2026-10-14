@@ -113,7 +113,11 @@ impl Results {
         let n2_cols = self.series.len();
         for v in &self.vars {
             names.push(v.name.clone());
-            let d = if v.unit.is_empty() { v.description.clone() } else { format!("{} [{}]", v.description, v.unit) };
+            let d = if v.unit.is_empty() {
+                v.description.clone()
+            } else {
+                format!("{} [{}]", v.description, v.unit)
+            };
             descs.push(d);
             match v.kind {
                 ResultKind::Series(c) => info.push([2, c as i32 + 2, 0, -1]),
@@ -131,7 +135,12 @@ impl Results {
         let t0 = self.time.first().copied().unwrap_or(0.0);
         let tf = self.time.last().copied().unwrap_or(0.0);
         // Aclass
-        write_text(out, "Aclass", &["Atrajectory", "1.1", "", "binTrans"], false)?;
+        write_text(
+            out,
+            "Aclass",
+            &["Atrajectory", "1.1", "", "binTrans"],
+            false,
+        )?;
         let nr: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
         write_text(out, "name", &nr, true)?;
         let dr: Vec<&str> = descs.iter().map(|s| s.as_str()).collect();
@@ -152,7 +161,13 @@ impl Results {
             }
         }
         // data_2: (1 + series) rows x n_time columns.
-        write_header(out, 0, (n2_cols + 1) as i32, self.time.len() as i32, "data_2")?;
+        write_header(
+            out,
+            0,
+            (n2_cols + 1) as i32,
+            self.time.len() as i32,
+            "data_2",
+        )?;
         let mut buf = Vec::with_capacity((n2_cols + 1) * 8);
         for (i, t) in self.time.iter().enumerate() {
             buf.clear();
@@ -170,7 +185,13 @@ fn fmt_num(x: f64) -> String {
     format!("{x}")
 }
 
-fn write_header(out: &mut dyn Write, ty: i32, mrows: i32, ncols: i32, name: &str) -> io::Result<()> {
+fn write_header(
+    out: &mut dyn Write,
+    ty: i32,
+    mrows: i32,
+    ncols: i32,
+    name: &str,
+) -> io::Result<()> {
     out.write_all(&ty.to_le_bytes())?;
     out.write_all(&mrows.to_le_bytes())?;
     out.write_all(&ncols.to_le_bytes())?;
@@ -218,7 +239,9 @@ pub fn read_mat(bytes: &[u8]) -> Result<Results, String> {
     }
     let mut pos = 0;
     let rd_i32 = |b: &[u8], p: usize| -> Result<i32, String> {
-        b.get(p..p + 4).map(|s| i32::from_le_bytes(s.try_into().unwrap())).ok_or("truncated file".into())
+        b.get(p..p + 4)
+            .map(|s| i32::from_le_bytes(s.try_into().unwrap()))
+            .ok_or("truncated file".into())
     };
     let mut mats: Vec<(String, Mat)> = Vec::new();
     while pos + 20 <= bytes.len() {
@@ -267,17 +290,38 @@ pub fn read_mat(bytes: &[u8]) -> Result<Results, String> {
                 })
                 .collect();
         }
-        mats.push((name, Mat { ty, rows, cols, data, text }));
+        mats.push((
+            name,
+            Mat {
+                ty,
+                rows,
+                cols,
+                data,
+                text,
+            },
+        ));
     }
     let get = |n: &str| mats.iter().find(|(m, _)| m == n).map(|(_, m)| m);
     let aclass = get("Aclass").ok_or("not a trajectory file")?;
     let atext = |m: &Mat, idx: usize, transposed: bool| -> String {
-        let (len, count) = if transposed { (m.rows, m.cols) } else { (m.cols, m.rows) };
+        let (len, count) = if transposed {
+            (m.rows, m.cols)
+        } else {
+            (m.cols, m.rows)
+        };
         let _ = count;
         let s: Vec<u8> = (0..len)
-            .map(|i| if transposed { m.text[idx * m.rows + i] } else { m.text[i * m.rows + idx] })
+            .map(|i| {
+                if transposed {
+                    m.text[idx * m.rows + i]
+                } else {
+                    m.text[i * m.rows + idx]
+                }
+            })
             .collect();
-        String::from_utf8_lossy(&s).trim_end_matches([' ', '\0']).to_string()
+        String::from_utf8_lossy(&s)
+            .trim_end_matches([' ', '\0'])
+            .to_string()
     };
     let transposed = aclass.rows >= 4 && atext(aclass, 3, false) == "binTrans";
     let name_m = get("name").ok_or("missing name")?;
@@ -287,11 +331,25 @@ pub fn read_mat(bytes: &[u8]) -> Result<Results, String> {
     let d2 = get("data_2").ok_or("missing data_2")?;
     let nvars = if transposed { name_m.cols } else { name_m.rows };
     let info_at = |var: usize, k: usize| -> i32 {
-        if transposed { info.data[var * info.rows + k] as i32 } else { info.data[k * info.rows + var] as i32 }
+        if transposed {
+            info.data[var * info.rows + k] as i32
+        } else {
+            info.data[k * info.rows + var] as i32
+        }
     };
     // data_2 accessor: (signal row, time col)
-    let (n_sig2, n_t) = if transposed { (d2.rows, d2.cols) } else { (d2.cols, d2.rows) };
-    let d2_at = |sig: usize, t: usize| -> f64 { if transposed { d2.data[t * d2.rows + sig] } else { d2.data[sig * d2.rows + t] } };
+    let (n_sig2, n_t) = if transposed {
+        (d2.rows, d2.cols)
+    } else {
+        (d2.cols, d2.rows)
+    };
+    let d2_at = |sig: usize, t: usize| -> f64 {
+        if transposed {
+            d2.data[t * d2.rows + sig]
+        } else {
+            d2.data[sig * d2.rows + t]
+        }
+    };
     let mut res = Results::default();
     res.time = (0..n_t).map(|t| d2_at(0, t)).collect();
     for s in 1..n_sig2 {
@@ -304,16 +362,29 @@ pub fn read_mat(bytes: &[u8]) -> Result<Results, String> {
         let idx = info_at(v, 1);
         let kind = if which == 2 || (which == 0 && idx.abs() > 1) {
             let col = idx.unsigned_abs() as usize - 2;
-            if idx < 0 { ResultKind::Alias { col, sign: -1.0 } } else { ResultKind::Series(col) }
+            if idx < 0 {
+                ResultKind::Alias { col, sign: -1.0 }
+            } else {
+                ResultKind::Series(col)
+            }
         } else if which == 1 {
             let d1 = d1.ok_or("missing data_1")?;
             let row = idx.unsigned_abs() as usize - 1;
-            let x = if transposed { d1.data[row] } else { d1.data[row * d1.rows] };
+            let x = if transposed {
+                d1.data[row]
+            } else {
+                d1.data[row * d1.rows]
+            };
             ResultKind::Param(if idx < 0 { -x } else { x })
         } else {
             continue;
         };
-        res.vars.push(ResultVar { name, description, unit: String::new(), kind });
+        res.vars.push(ResultVar {
+            name,
+            description,
+            unit: String::new(),
+            kind,
+        });
     }
     let _ = |m: &Mat| m.ty;
     Ok(res)
@@ -328,8 +399,18 @@ mod tests {
         let r = Results {
             model: "M".into(),
             vars: vec![
-                ResultVar { name: "x".into(), description: "pos".into(), unit: "m".into(), kind: ResultKind::Series(0) },
-                ResultVar { name: "k".into(), description: "".into(), unit: "".into(), kind: ResultKind::Param(3.5) },
+                ResultVar {
+                    name: "x".into(),
+                    description: "pos".into(),
+                    unit: "m".into(),
+                    kind: ResultKind::Series(0),
+                },
+                ResultVar {
+                    name: "k".into(),
+                    description: "".into(),
+                    unit: "".into(),
+                    kind: ResultKind::Param(3.5),
+                },
                 ResultVar {
                     name: "y".into(),
                     description: "".into(),

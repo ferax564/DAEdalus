@@ -54,6 +54,12 @@ pub struct WhenCode {
     pub conds: Vec<Slot>,
     /// Actions per branch with the slot holding the new value.
     pub actions: Vec<Vec<Action>>,
+    /// Branches with an action that reads a variable another action of the same branch
+    /// assigns: their actions run in order, each seeing the values assigned before it.
+    pub chained: Vec<bool>,
+    /// Branches whose condition contains `initial()`: they fire at initialization even
+    /// when another part of the condition (`{time >= t_next, initial()}`) is already true.
+    pub at_initial: Vec<bool>,
 }
 
 #[derive(Clone, Debug)]
@@ -146,7 +152,12 @@ impl Emitter<'_> {
     }
 
     /// Emit code computing `root`; returns its slot. `memo` caches already computed nodes.
-    fn emit(&mut self, root: ExprId, memo: &mut FxHashMap<ExprId, Slot>, out: &mut Vec<Ins>) -> Slot {
+    fn emit(
+        &mut self,
+        root: ExprId,
+        memo: &mut FxHashMap<ExprId, Slot>,
+        out: &mut Vec<Ins>,
+    ) -> Slot {
         let mut stack = vec![(root, false)];
         let mut ch = Vec::new();
         while let Some((id, expanded)) = stack.pop() {
@@ -214,14 +225,24 @@ impl Emitter<'_> {
     }
 
     /// Emit `dst := expr`, writing directly into `dst` when possible.
-    fn assign(&mut self, dst: Slot, e: ExprId, memo: &mut FxHashMap<ExprId, Slot>, out: &mut Vec<Ins>) {
+    fn assign(
+        &mut self,
+        dst: Slot,
+        e: ExprId,
+        memo: &mut FxHashMap<ExprId, Slot>,
+        out: &mut Vec<Ins>,
+    ) {
         let before_len = out.len();
         let had = memo.contains_key(&e);
         let s = self.emit(e, memo, out);
         if s == dst {
             return;
         }
-        if !had && out.len() > before_len && s >= self.first_temp() && retarget(out.last_mut().unwrap(), s, dst) {
+        if !had
+            && out.len() > before_len
+            && s >= self.first_temp()
+            && retarget(out.last_mut().unwrap(), s, dst)
+        {
             memo.insert(e, dst);
             return;
         }
@@ -270,14 +291,22 @@ fn compile_blocks(
     for b in blocks {
         match b {
             Block::Assign { var, expr } => em.assign(*var, *expr, &mut memo, out),
-            Block::Solve { tears, inner, residuals, linear } => {
+            Block::Solve {
+                tears,
+                inner,
+                residuals,
+                linear,
+            } => {
                 let mut local = memo.clone();
                 // Forget anything that depends on the block's own unknowns (cannot be in memo yet).
                 let mut body = Vec::new();
                 for (v, e) in inner {
                     em.assign(*v, *e, &mut local, &mut body);
                 }
-                let res: Vec<Slot> = residuals.iter().map(|&r| em.emit(r, &mut local, &mut body)).collect();
+                let res: Vec<Slot> = residuals
+                    .iter()
+                    .map(|&r| em.emit(r, &mut local, &mut body))
+                    .collect();
                 // Jacobian by forward differentiation through the inner assignments.
                 let mut jac_exprs = vec![Arena::ZERO; residuals.len() * tears.len()];
                 for (j, &t) in tears.iter().enumerate() {
@@ -313,8 +342,14 @@ fn compile_blocks(
                 }
                 let mut jac = Vec::new();
                 let mut jlocal = local.clone();
-                let jac_slots: Vec<Slot> = jac_exprs.iter().map(|&e| em.emit(e, &mut jlocal, &mut jac)).collect();
-                let mut nm: Vec<String> = tears.iter().map(|&t| names[t as usize].name.clone()).collect();
+                let jac_slots: Vec<Slot> = jac_exprs
+                    .iter()
+                    .map(|&e| em.emit(e, &mut jlocal, &mut jac))
+                    .collect();
+                let mut nm: Vec<String> = tears
+                    .iter()
+                    .map(|&t| names[t as usize].name.clone())
+                    .collect();
                 nm.extend(inner.iter().map(|(v, _)| names[*v as usize].name.clone()));
                 newton.push(NewtonBlock {
                     tears: tears.clone(),
@@ -358,7 +393,11 @@ pub fn compile(mut sys: System) -> Model {
     let mut params = Vec::new();
     for &p in &sys.params {
         let v = &sys.vars[p as usize];
-        let e = if v.kind == VarKind::Input { v.start } else { v.binding.or(v.start) };
+        let e = if v.kind == VarKind::Input {
+            v.start
+        } else {
+            v.binding.or(v.start)
+        };
         let mut seg = Vec::new();
         if let Some(e) = e {
             em.assign(p, e, &mut FxHashMap::default(), &mut seg);
@@ -423,20 +462,36 @@ pub fn compile(mut sys: System) -> Model {
         for wc in &sys.whens {
             let mut conds = Vec::new();
             let mut actions = Vec::new();
+            let mut at_initial = Vec::new();
+            let mut chained = Vec::new();
             for (c, acts) in &wc.branches {
+                at_initial.push(em.arena.mentions_initial(*c));
                 conds.push(em.emit(*c, &mut memo, &mut when_prog));
+                let (order, chain) = order_actions(em.arena, acts);
+                chained.push(chain);
                 let mut list = Vec::new();
-                for a in acts {
+                for a in order.into_iter().map(|k| &acts[k]) {
                     list.push(match a {
-                        WhenAction::Assign(v, e) => Action::Assign(*v, em.emit(*e, &mut memo, &mut when_prog)),
-                        WhenAction::Reinit(v, e) => Action::Reinit(*v, em.emit(*e, &mut memo, &mut when_prog)),
+                        WhenAction::Assign(v, e) => {
+                            Action::Assign(*v, em.emit(*e, &mut memo, &mut when_prog))
+                        }
+                        WhenAction::Reinit(v, e) => {
+                            Action::Reinit(*v, em.emit(*e, &mut memo, &mut when_prog))
+                        }
                         WhenAction::Terminate(m) => Action::Terminate(m.clone()),
-                        WhenAction::Assert(e, m) => Action::Assert(em.emit(*e, &mut memo, &mut when_prog), m.clone()),
+                        WhenAction::Assert(e, m) => {
+                            Action::Assert(em.emit(*e, &mut memo, &mut when_prog), m.clone())
+                        }
                     });
                 }
                 actions.push(list);
             }
-            whens.push(WhenCode { conds, actions });
+            whens.push(WhenCode {
+                conds,
+                actions,
+                chained,
+                at_initial,
+            });
         }
     }
     // Aliases.
@@ -462,7 +517,10 @@ pub fn compile(mut sys: System) -> Model {
     let tape_len = params.iter().map(|p| p.1.len()).sum::<usize>()
         + init.len()
         + ode.len()
-        + newton.iter().map(|b| b.body.len() + b.jac.len()).sum::<usize>();
+        + newton
+            .iter()
+            .map(|b| b.body.len() + b.jac.len())
+            .sum::<usize>();
     Model {
         name: sys.name,
         layout,
@@ -489,7 +547,11 @@ pub fn compile(mut sys: System) -> Model {
         param_vars: sys.params.clone(),
         inputs: sys.inputs.clone(),
         jac_pattern,
-        aliases: sys.aliases.iter().map(|a| (a.var, a.kind.clone())).collect(),
+        aliases: sys
+            .aliases
+            .iter()
+            .map(|a| (a.var, a.kind.clone()))
+            .collect(),
         experiment: sys.experiment,
         stats: sys.stats,
         warnings: sys.warnings,
@@ -500,7 +562,12 @@ pub fn compile(mut sys: System) -> Model {
 
 /// Structural dependency of each state derivative on the states.
 fn dependency_pattern(sys: &System) -> Vec<Vec<u32>> {
-    let state_index: FxHashMap<VarId, u32> = sys.states.iter().enumerate().map(|(i, &s)| (s, i as u32)).collect();
+    let state_index: FxHashMap<VarId, u32> = sys
+        .states
+        .iter()
+        .enumerate()
+        .map(|(i, &s)| (s, i as u32))
+        .collect();
     let mut deps: FxHashMap<VarId, Vec<u32>> = FxHashMap::default();
     let collect = |e: ExprId, deps: &FxHashMap<VarId, Vec<u32>>, acc: &mut FxHashSet<u32>| {
         let mut push = |v: VarId| {
@@ -526,7 +593,12 @@ fn dependency_pattern(sys: &System) -> Vec<Vec<u32>> {
                 v.sort_unstable();
                 deps.insert(*var, v);
             }
-            Block::Solve { tears, inner, residuals, .. } => {
+            Block::Solve {
+                tears,
+                inner,
+                residuals,
+                ..
+            } => {
                 let mut acc = FxHashSet::default();
                 for (_, e) in inner {
                     collect(*e, &deps, &mut acc);
@@ -542,7 +614,10 @@ fn dependency_pattern(sys: &System) -> Vec<Vec<u32>> {
             }
         }
     }
-    sys.state_derivs.iter().map(|d| deps.get(d).cloned().unwrap_or_default()).collect()
+    sys.state_derivs
+        .iter()
+        .map(|d| deps.get(d).cloned().unwrap_or_default())
+        .collect()
 }
 
 // ----------------------------------------------------------------------------
@@ -578,7 +653,14 @@ impl<'m> Runtime<'m> {
         for &(s, v) in &m.consts {
             r[s as usize] = v;
         }
-        Runtime { m, r, newton_stats: NewtonStats::default(), work: Vec::new(), piv: Vec::new(), error: None }
+        Runtime {
+            m,
+            r,
+            newton_stats: NewtonStats::default(),
+            work: Vec::new(),
+            piv: Vec::new(),
+            error: None,
+        }
     }
 
     #[inline]
@@ -597,12 +679,22 @@ impl<'m> Runtime<'m> {
                 Ins::PowI(d, a, k) => r[d as usize] = r[a as usize].powi(k),
                 Ins::F1(f, d, a) => r[d as usize] = eval_f1(f, r[a as usize]),
                 Ins::F2(f, d, a, b) => r[d as usize] = eval_f2(f, r[a as usize], r[b as usize]),
-                Ins::Cmp(op, d, a, b) => r[d as usize] = f64::from(op.eval(r[a as usize], r[b as usize])),
-                Ins::Select(d, c, a, b) => {
-                    r[d as usize] = if r[c as usize] != 0.0 { r[a as usize] } else { r[b as usize] }
+                Ins::Cmp(op, d, a, b) => {
+                    r[d as usize] = f64::from(op.eval(r[a as usize], r[b as usize]))
                 }
-                Ins::Interp(d, t, c, x) => r[d as usize] = tables[t as usize].interp(c as usize, r[x as usize]),
-                Ins::InterpDer(d, t, c, x) => r[d as usize] = tables[t as usize].slope(c as usize, r[x as usize]),
+                Ins::Select(d, c, a, b) => {
+                    r[d as usize] = if r[c as usize] != 0.0 {
+                        r[a as usize]
+                    } else {
+                        r[b as usize]
+                    }
+                }
+                Ins::Interp(d, t, c, x) => {
+                    r[d as usize] = tables[t as usize].interp(c as usize, r[x as usize])
+                }
+                Ins::InterpDer(d, t, c, x) => {
+                    r[d as usize] = tables[t as usize].slope(c as usize, r[x as usize])
+                }
                 Ins::Newton(i) => self.newton(i as usize),
             }
         }
@@ -626,8 +718,16 @@ impl<'m> Runtime<'m> {
         let max_iter = if b.linear { 3 } else { 50 };
         for it in 0..max_iter {
             self.run(&b.body);
-            let norm = b.residuals.iter().map(|&s| self.r[s as usize].abs()).fold(0.0, f64::max);
-            let scale = b.tears.iter().map(|&s| self.r[s as usize].abs()).fold(1.0, f64::max);
+            let norm = b
+                .residuals
+                .iter()
+                .map(|&s| self.r[s as usize].abs())
+                .fold(0.0, f64::max);
+            let scale = b
+                .tears
+                .iter()
+                .map(|&s| self.r[s as usize].abs())
+                .fold(1.0, f64::max);
             if norm <= 1e-12 * scale || (it > 0 && b.linear && norm <= 1e-9 * scale) {
                 return;
             }
@@ -669,25 +769,42 @@ impl<'m> Runtime<'m> {
                     break;
                 }
                 self.run(&b.body);
-                let nn = b.residuals.iter().map(|&s| self.r[s as usize].abs()).fold(0.0, f64::max);
+                let nn = b
+                    .residuals
+                    .iter()
+                    .map(|&s| self.r[s as usize].abs())
+                    .fold(0.0, f64::max);
                 if nn.is_finite() && nn < norm * (1.0 - 1e-4 * lambda) + 1e-14 {
                     break;
                 }
                 lambda *= 0.5;
             }
-            let step = (0..n).map(|i| (lambda * rhs[i]).abs() / (1.0 + old[i].abs())).fold(0.0, f64::max);
+            let step = (0..n)
+                .map(|i| (lambda * rhs[i]).abs() / (1.0 + old[i].abs()))
+                .fold(0.0, f64::max);
             if step < 1e-13 {
                 self.run(&b.body);
                 return;
             }
         }
         self.run(&b.body);
-        let norm = b.residuals.iter().map(|&s| self.r[s as usize].abs()).fold(0.0, f64::max);
-        let scale = b.tears.iter().map(|&s| self.r[s as usize].abs()).fold(1.0, f64::max);
+        let norm = b
+            .residuals
+            .iter()
+            .map(|&s| self.r[s as usize].abs())
+            .fold(0.0, f64::max);
+        let scale = b
+            .tears
+            .iter()
+            .map(|&s| self.r[s as usize].abs())
+            .fold(1.0, f64::max);
         if !(norm <= 1e-6 * scale) {
             self.newton_stats.failures += 1;
             if self.error.is_none() {
-                self.error = Some(NewtonError { block: bi, residual: norm.min(best) });
+                self.error = Some(NewtonError {
+                    block: bi,
+                    residual: norm.min(best),
+                });
             }
         }
     }
@@ -759,4 +876,57 @@ impl<'m> Runtime<'m> {
         }
         changed
     }
+}
+
+/// Order the actions of one when-branch so that an assignment comes before the actions
+/// that read its variable (`y = f(x); x = g(..)` runs `x` first). Returns the order and
+/// whether any such dependency exists.
+fn order_actions(arena: &Arena, acts: &[WhenAction]) -> (Vec<usize>, bool) {
+    let target = |a: &WhenAction| match a {
+        WhenAction::Assign(v, _) | WhenAction::Reinit(v, _) => Some(*v),
+        _ => None,
+    };
+    let assigned: FxHashMap<VarId, usize> = acts
+        .iter()
+        .enumerate()
+        .filter_map(|(k, a)| target(a).map(|v| (v, k)))
+        .collect();
+    let mut deps: Vec<Vec<usize>> = vec![Vec::new(); acts.len()];
+    let mut chained = false;
+    for (k, a) in acts.iter().enumerate() {
+        let e = match a {
+            WhenAction::Assign(_, e) | WhenAction::Reinit(_, e) | WhenAction::Assert(e, _) => *e,
+            WhenAction::Terminate(_) => continue,
+        };
+        arena.visit_leaves(e, &mut |n| {
+            if let Node::Var(v) = n
+                && let Some(&j) = assigned.get(&v)
+                && j != k
+            {
+                deps[k].push(j);
+                chained = true;
+            }
+        });
+    }
+    if !chained {
+        return ((0..acts.len()).collect(), false);
+    }
+    // Depth-first topological order; a cycle keeps the declared order for its members.
+    let mut state = vec![0u8; acts.len()];
+    let mut order = Vec::with_capacity(acts.len());
+    fn visit(k: usize, deps: &[Vec<usize>], state: &mut [u8], order: &mut Vec<usize>) {
+        if state[k] != 0 {
+            return;
+        }
+        state[k] = 1;
+        for &j in &deps[k] {
+            visit(j, deps, state, order);
+        }
+        state[k] = 2;
+        order.push(k);
+    }
+    for k in 0..acts.len() {
+        visit(k, &deps, &mut state, &mut order);
+    }
+    (order, true)
 }

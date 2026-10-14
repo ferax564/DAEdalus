@@ -77,7 +77,9 @@ fn run() -> anyhow::Result<()> {
     let mut i = 1;
     let next = |i: &mut usize| -> anyhow::Result<String> {
         *i += 1;
-        args.get(*i).cloned().ok_or_else(|| anyhow::anyhow!("missing value for {}", args[*i - 1]))
+        args.get(*i)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("missing value for {}", args[*i - 1]))
     };
     while i < args.len() {
         let a = args[i].as_str();
@@ -100,17 +102,27 @@ fn run() -> anyhow::Result<()> {
             }
             "--method" => {
                 let m = next(&mut i)?;
-                so.method = Method::parse(&m).ok_or_else(|| anyhow::anyhow!("unknown method '{m}'"))?;
+                so.method =
+                    Method::parse(&m).ok_or_else(|| anyhow::anyhow!("unknown method '{m}'"))?;
                 set_method = true;
             }
             "--step" => so.fixed_step = next(&mut i)?.parse()?,
             "-p" | "--param" => {
                 let kv = next(&mut i)?;
-                let (k, v) = kv.split_once('=').ok_or_else(|| anyhow::anyhow!("expected NAME=VALUE"))?;
+                let (k, v) = kv
+                    .split_once('=')
+                    .ok_or_else(|| anyhow::anyhow!("expected NAME=VALUE"))?;
                 so.params.push((k.to_string(), v.parse()?));
             }
             "-o" | "--output" => output = Some(next(&mut i)?),
-            "--vars" => vars = Some(next(&mut i)?.split(',').map(|s| s.trim().to_string()).collect()),
+            "--vars" => {
+                vars = Some(
+                    next(&mut i)?
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .collect(),
+                )
+            }
             "--no-index-reduction" => opts.index_reduction = false,
             "--no-tearing" => opts.tearing = false,
             "--jobs" => jobs = next(&mut i)?.parse::<usize>()?.max(1),
@@ -162,19 +174,46 @@ fn run() -> anyhow::Result<()> {
             } else {
                 let st = &sys.stats;
                 println!("model {}", sys.name);
-                println!("  parse {:.1} ms, flatten {:.1} ms, backend {:.1} ms", ms(t_parse), ms(t_flat), st.backend_ms);
-                println!("  flat: {} variables, {} equations", st.flat_variables, st.flat_equations);
+                println!(
+                    "  parse {:.1} ms, flatten {:.1} ms, backend {:.1} ms",
+                    ms(t_parse),
+                    ms(t_flat),
+                    st.backend_ms
+                );
+                println!(
+                    "  flat: {} variables, {} equations",
+                    st.flat_variables, st.flat_equations
+                );
                 println!("  aliases removed: {}", st.aliases_removed);
-                println!("  states: {} ({} dummy derivatives)", st.states, st.dummy_derivatives);
-                println!("  differentiated equations: {}", st.differentiated_equations);
+                println!(
+                    "  states: {} ({} dummy derivatives)",
+                    st.states, st.dummy_derivatives
+                );
+                println!(
+                    "  differentiated equations: {}",
+                    st.differentiated_equations
+                );
                 println!(
                     "  blocks: {}, algebraic loops: {} (largest {}, {} tearing vars, {} linear)",
-                    st.blocks, st.algebraic_loops, st.largest_loop, st.torn_loop_vars, st.linear_loops
+                    st.blocks,
+                    st.algebraic_loops,
+                    st.largest_loop,
+                    st.torn_loop_vars,
+                    st.linear_loops
                 );
-                println!("  initialization: {} blocks, {} loops", st.init_blocks, st.init_loops);
-                println!("  events: {} relations, {} when-clauses", st.relations, st.when_clauses);
+                println!(
+                    "  initialization: {} blocks, {} loops",
+                    st.init_blocks, st.init_loops
+                );
+                println!(
+                    "  events: {} relations, {} when-clauses",
+                    st.relations, st.when_clauses
+                );
                 let m = daedalus_core::codegen::compile(sys);
-                println!("  tape: {} instructions, {} registers", m.tape_len, m.layout.n_regs);
+                println!(
+                    "  tape: {} instructions, {} registers",
+                    m.tape_len, m.layout.n_regs
+                );
             }
             Ok(())
         }
@@ -233,7 +272,11 @@ fn run() -> anyhow::Result<()> {
                 None => {
                     let names: Vec<String> = match &vars {
                         Some(v) => v.clone(),
-                        None => m.states.iter().map(|&s| m.vars[s as usize].name.clone()).collect(),
+                        None => m
+                            .states
+                            .iter()
+                            .map(|&s| m.vars[s as usize].name.clone())
+                            .collect(),
                     };
                     for n in names {
                         match res.final_value(&n) {
@@ -266,7 +309,10 @@ fn run() -> anyhow::Result<()> {
             let m = match daedalus_core::translate(&lib, &model, &opts) {
                 Ok(m) => m,
                 Err(e) => {
-                    println!("ERR translate: {}", format!("{e:#}").lines().next().unwrap_or(""));
+                    println!(
+                        "ERR translate: {}",
+                        format!("{e:#}").lines().next().unwrap_or("")
+                    );
                     return Ok(());
                 }
             };
@@ -287,7 +333,11 @@ fn run() -> anyhow::Result<()> {
     }
 }
 
-fn write_result(res: &daedalus_core::results::Results, out: &str, vars: Option<&[String]>) -> anyhow::Result<()> {
+fn write_result(
+    res: &daedalus_core::results::Results,
+    out: &str,
+    vars: Option<&[String]>,
+) -> anyhow::Result<()> {
     let f = std::fs::File::create(out)?;
     let mut w = std::io::BufWriter::new(f);
     if out.ends_with(".csv") {
@@ -311,7 +361,13 @@ fn has_experiment(def: &rumoca_ir_ast::ClassDef) -> bool {
     })
 }
 
-fn test_library(lib: &Library, prefix: &str, child_args: &[String], jobs: usize, timeout: f64) -> anyhow::Result<()> {
+fn test_library(
+    lib: &Library,
+    prefix: &str,
+    child_args: &[String],
+    jobs: usize,
+    timeout: f64,
+) -> anyhow::Result<()> {
     use std::io::Read;
     use std::process::{Command, Stdio};
     use std::sync::{Arc, Mutex};
@@ -322,7 +378,10 @@ fn test_library(lib: &Library, prefix: &str, child_args: &[String], jobs: usize,
         if (node.path == prefix || node.path.starts_with(&format!("{prefix}.")))
             && let Some(def) = node.def
             && !def.partial
-            && matches!(def.class_type, rumoca_core::ClassType::Model | rumoca_core::ClassType::Block)
+            && matches!(
+                def.class_type,
+                rumoca_core::ClassType::Model | rumoca_core::ClassType::Block
+            )
             && has_experiment(def)
         {
             models.push(node.path.clone());
@@ -330,7 +389,16 @@ fn test_library(lib: &Library, prefix: &str, child_args: &[String], jobs: usize,
     });
     drop(tree);
     let exe = std::env::current_exe()?;
-    let queue = Arc::new(Mutex::new(models.iter().cloned().enumerate().collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>()));
+    let queue = Arc::new(Mutex::new(
+        models
+            .iter()
+            .cloned()
+            .enumerate()
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>(),
+    ));
     let results: Arc<Mutex<Vec<(usize, String, Result<String, String>)>>> = Arc::default();
     let t_all = Instant::now();
     let workers: Vec<_> = (0..jobs.min(models.len()).max(1))
@@ -339,7 +407,9 @@ fn test_library(lib: &Library, prefix: &str, child_args: &[String], jobs: usize,
             let args = child_args.to_vec();
             std::thread::spawn(move || {
                 loop {
-                    let Some((idx, name)) = queue.lock().unwrap().pop() else { break };
+                    let Some((idx, name)) = queue.lock().unwrap().pop() else {
+                        break;
+                    };
                     let t0 = Instant::now();
                     let child = Command::new(&exe)
                         .arg("probe")
@@ -371,7 +441,9 @@ fn test_library(lib: &Library, prefix: &str, child_args: &[String], jobs: usize,
                                     let _ = ch.wait();
                                     break Err(format!("timeout after {timeout} s"));
                                 }
-                                Ok(None) => std::thread::sleep(std::time::Duration::from_millis(20)),
+                                Ok(None) => {
+                                    std::thread::sleep(std::time::Duration::from_millis(20))
+                                }
                                 Err(e) => break Err(format!("wait: {e}")),
                             }
                         },
@@ -393,7 +465,10 @@ fn test_library(lib: &Library, prefix: &str, child_args: &[String], jobs: usize,
     let mut failures: std::collections::BTreeMap<String, Vec<String>> = Default::default();
     for (_, name, r) in &results {
         if let Err(e) = r {
-            failures.entry(categorize(e)).or_default().push(name.clone());
+            failures
+                .entry(categorize(e))
+                .or_default()
+                .push(name.clone());
         }
     }
     println!(

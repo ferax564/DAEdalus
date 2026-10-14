@@ -73,7 +73,10 @@ impl Library {
             }
         }
         let n = files.len();
-        let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).min(16);
+        let threads = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+            .min(16);
         let next = std::sync::atomic::AtomicUsize::new(0);
         let mut docs: Vec<(usize, Document)> = std::thread::scope(|sc| {
             let handles: Vec<_> = (0..threads)
@@ -94,7 +97,10 @@ impl Library {
                     })
                 })
                 .collect();
-            handles.into_iter().flat_map(|h| h.join().unwrap_or_default()).collect()
+            handles
+                .into_iter()
+                .flat_map(|h| h.join().unwrap_or_default())
+                .collect()
         });
         docs.sort_by_key(|(i, _)| *i);
         for (_, d) in docs {
@@ -104,15 +110,21 @@ impl Library {
     }
 
     pub fn tree(&self) -> tree::ClassTree<'_> {
-        let docs: Vec<(&ast::StoredDefinition, usize)> =
-            self.docs.iter().enumerate().map(|(i, d)| (&d.ast, i)).collect();
+        let docs: Vec<(&ast::StoredDefinition, usize)> = self
+            .docs
+            .iter()
+            .enumerate()
+            .map(|(i, d)| (&d.ast, i))
+            .collect();
         tree::ClassTree::build(&docs)
     }
 
     /// Flatten `model` (full dotted path) into a [`FlatModel`].
     pub fn flatten(&self, model: &str) -> Result<FlatModel> {
         let tree = self.tree();
-        let id = tree.find_path(model).ok_or_else(|| anyhow!("model '{model}' not found"))?;
+        let id = tree
+            .find_path(model)
+            .ok_or_else(|| anyhow!("model '{model}' not found"))?;
         let mut f = inst::Flattener::new(&tree);
         let first = f.flatten(id);
         if !f.oc_log.used {
@@ -124,7 +136,10 @@ impl Library {
         // `equalityConstraint` instead of potential equality.
         let answers = std::rc::Rc::new(overconstrained::OcAnswers::compute(&f.oc_log));
         if std::env::var_os("DAEDALUS_OCDEBUG").is_some() {
-            eprintln!("{:#?}\nroots {:?}\nbroken {:?}", f.oc_log, answers.roots, answers.broken);
+            eprintln!(
+                "{:#?}\nroots {:?}\nbroken {:?}",
+                f.oc_log, answers.roots, answers.broken
+            );
         }
         drop(f);
         let mut f = inst::Flattener::new(&tree);
@@ -137,8 +152,16 @@ impl Library {
 /// Parse one document, keeping the recovered AST on syntax errors.
 pub fn parse_document(uri: &str, text: &str) -> Document {
     let syntax = rumoca_phase_parse::parse_to_syntax(text, uri);
-    let errors: Vec<String> =
-        syntax.parse_errors().iter().map(|e| rumoca_phase_parse::format_parse_error(e, uri, text)).collect();
+    let errors: Vec<String> = syntax
+        .parse_errors()
+        .iter()
+        .map(|e| rumoca_phase_parse::format_parse_error(e, uri, text))
+        .collect();
     let ast = syntax.best_effort().clone();
-    Document { uri: uri.to_string(), text: Arc::from(text), ast, errors }
+    Document {
+        uri: uri.to_string(),
+        text: Arc::from(text),
+        ast,
+        errors,
+    }
 }

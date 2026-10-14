@@ -110,7 +110,17 @@ pub fn augment(
     stamp: u32,
     active: &dyn Fn(u32) -> bool,
 ) -> bool {
-    augment_traced(e, adj, eq_match, var_match, visited_eq, visited_var, stamp, active, None)
+    augment_traced(
+        e,
+        adj,
+        eq_match,
+        var_match,
+        visited_eq,
+        visited_var,
+        stamp,
+        active,
+        None,
+    )
 }
 
 /// [`augment`] that also records the equations and variables it visits (in `trail`), so a
@@ -134,9 +144,13 @@ pub fn augment_traced(
     let mut stack: Vec<(usize, usize)> = vec![(e, 0)];
     visited_eq[e] = stamp;
     loop {
-        let Some(&(cur, idx)) = stack.last() else { return false };
+        let Some(&(cur, idx)) = stack.last() else {
+            return false;
+        };
         if idx == 0
-            && let Some(&v) = adj[cur].iter().find(|&&v| var_match[v as usize] == NONE && active(v))
+            && let Some(&v) = adj[cur]
+                .iter()
+                .find(|&&v| var_match[v as usize] == NONE && active(v))
         {
             let mut vv = v;
             for &(se, _) in stack.iter().rev() {
@@ -249,12 +263,20 @@ mod tests {
     fn matching_and_blt() {
         // e0: x0 ; e1: x0, x1 ; e2: x1, x2 ; e3: x2, x3 ; e4: x3, x2
         let adj = vec![vec![0], vec![0, 1], vec![1, 2], vec![2, 3], vec![3, 2]];
-        let g = Bipartite { n_eq: 5, n_var: 4, adj: &adj };
+        let g = Bipartite {
+            n_eq: 5,
+            n_var: 4,
+            adj: &adj,
+        };
         let (em, vm) = hopcroft_karp(&g);
         assert_eq!(em.iter().filter(|&&v| v != NONE).count(), 4);
         let _ = vm;
         let adj2 = vec![vec![0], vec![0, 1], vec![1, 2, 3], vec![2, 3]];
-        let g2 = Bipartite { n_eq: 4, n_var: 4, adj: &adj2 };
+        let g2 = Bipartite {
+            n_eq: 4,
+            n_var: 4,
+            adj: &adj2,
+        };
         let (_em, vm) = hopcroft_karp(&g2);
         let comps = tarjan_blt(&adj2, &vm);
         assert_eq!(comps.len(), 3);

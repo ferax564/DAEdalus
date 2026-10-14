@@ -105,7 +105,11 @@ fn kind_name(k: &rumoca_core::ClassType) -> &'static str {
 }
 
 fn description(tokens: &[rumoca_core::Token]) -> String {
-    tokens.iter().map(|t| t.text.trim_matches('"').to_string()).collect::<Vec<_>>().join("")
+    tokens
+        .iter()
+        .map(|t| t.text.trim_matches('"').to_string())
+        .collect::<Vec<_>>()
+        .join("")
 }
 
 fn has_annotation(def: &ast::ClassDef, name: &str) -> bool {
@@ -114,7 +118,8 @@ fn has_annotation(def: &ast::ClassDef, name: &str) -> bool {
 
 fn find_annotation<'e>(ann: &'e [ast::Expression], name: &str) -> Option<&'e ast::Expression> {
     ann.iter().find(|a| match a {
-        ast::Expression::ClassModification { target, .. } | ast::Expression::FunctionCall { comp: target, .. } => {
+        ast::Expression::ClassModification { target, .. }
+        | ast::Expression::FunctionCall { comp: target, .. } => {
             target.parts.len() == 1 && &*target.parts[0].ident.text == name
         }
         _ => false,
@@ -133,11 +138,20 @@ pub fn class_tree(lib: &Library) -> Vec<ClassEntry> {
 fn entry(tree: &ClassTree, id: ClassId, depth: usize) -> ClassEntry {
     let node = tree.node(id);
     let def = node.def;
-    let children = if depth < 32 { node.order.iter().map(|&c| entry(tree, c, depth + 1)).collect() } else { Vec::new() };
+    let children = if depth < 32 {
+        node.order
+            .iter()
+            .map(|&c| entry(tree, c, depth + 1))
+            .collect()
+    } else {
+        Vec::new()
+    };
     ClassEntry {
         name: node.name.clone(),
         path: node.path.clone(),
-        kind: def.map_or("package", |d| kind_name(&d.class_type)).to_string(),
+        kind: def
+            .map_or("package", |d| kind_name(&d.class_type))
+            .to_string(),
         partial: def.is_some_and(|d| d.partial),
         description: def.map(|d| description(&d.description)).unwrap_or_default(),
         runnable: def.is_some_and(|d| !d.partial && has_annotation(d, "experiment")),
@@ -163,7 +177,11 @@ pub fn class_info(lib: &Library, path: &str) -> Option<ClassInfo> {
             end: def.location.end as usize,
             line: def.location.start_line,
         }),
-        extends: tree.bases(id).iter().map(|&b| tree.node(b).path.clone()).collect(),
+        extends: tree
+            .bases(id)
+            .iter()
+            .map(|&b| tree.node(b).path.clone())
+            .collect(),
         icon: Layer::default(),
         diagram: Layer::default(),
         components: Vec::new(),
@@ -171,7 +189,9 @@ pub fn class_info(lib: &Library, path: &str) -> Option<ClassInfo> {
         documentation: None,
         experiment: find_annotation(&def.annotation, "experiment").map(|e| expr_json(e, None)),
     };
-    if let Some(ast::Expression::ClassModification { modifications, .. }) = find_annotation(&def.annotation, "Documentation") {
+    if let Some(ast::Expression::ClassModification { modifications, .. }) =
+        find_annotation(&def.annotation, "Documentation")
+    {
         for m in modifications {
             if let ast::Expression::Modification { target, value, .. } = m
                 && target.parts.len() == 1
@@ -198,15 +218,21 @@ fn collect(lib: &Library, tree: &ClassTree, id: ClassId, info: &mut ClassInfo, d
     let Some(def) = node.def else { return };
     let text = lib.docs.get(node.source).map(|d| &*d.text);
     for (name, layer) in [("Icon", &mut info.icon), ("Diagram", &mut info.diagram)] {
-        if let Some(ast::Expression::ClassModification { modifications, .. }) = find_annotation(&def.annotation, name) {
+        if let Some(ast::Expression::ClassModification { modifications, .. }) =
+            find_annotation(&def.annotation, name)
+        {
             for m in modifications {
                 match m {
-                    ast::Expression::Modification { target, value, .. } if &*target.parts[0].ident.text == "graphics" => {
+                    ast::Expression::Modification { target, value, .. }
+                        if &*target.parts[0].ident.text == "graphics" =>
+                    {
                         if let Value::Array(items) = expr_json(value, text) {
                             layer.graphics.extend(items);
                         }
                     }
-                    ast::Expression::ClassModification { target, .. } if &*target.parts[0].ident.text == "coordinateSystem" => {
+                    ast::Expression::ClassModification { target, .. }
+                        if &*target.parts[0].ident.text == "coordinateSystem" =>
+                    {
                         layer.coordinate_system = Some(expr_json(m, text));
                     }
                     _ => {}
@@ -222,8 +248,12 @@ fn collect(lib: &Library, tree: &ClassTree, id: ClassId, info: &mut ClassInfo, d
             .source_modifications
             .iter()
             .filter_map(|m| match m {
-                ast::Expression::Modification { target, value, .. } => Some((cref_text(target), src(text, value.span()))),
-                ast::Expression::ClassModification { target, .. } => Some((cref_text(target), src(text, m.span()))),
+                ast::Expression::Modification { target, value, .. } => {
+                    Some((cref_text(target), src(text, value.span())))
+                }
+                ast::Expression::ClassModification { target, .. } => {
+                    Some((cref_text(target), src(text, m.span())))
+                }
                 _ => None,
             })
             .collect();
@@ -231,7 +261,9 @@ fn collect(lib: &Library, tree: &ClassTree, id: ClassId, info: &mut ClassInfo, d
             name: name.clone(),
             type_name: parts.join("."),
             type_path: resolved.map(|r| tree.node(r).path.clone()),
-            type_kind: resolved.map_or("type", |r| kind_name(&tree.class_type(r))).to_string(),
+            type_kind: resolved
+                .map_or("type", |r| kind_name(&tree.class_type(r)))
+                .to_string(),
             description: description(&c.description),
             causality: match c.causality {
                 rumoca_core::Causality::Input(_) => "input",
@@ -260,17 +292,29 @@ fn collect(lib: &Library, tree: &ClassTree, id: ClassId, info: &mut ClassInfo, d
     }
 }
 
-fn collect_connect(eq: &ast::Equation, text: Option<&str>, declared_in: &str, out: &mut Vec<ConnectionInfo>) {
+fn collect_connect(
+    eq: &ast::Equation,
+    text: Option<&str>,
+    declared_in: &str,
+    out: &mut Vec<ConnectionInfo>,
+) {
     match eq {
         ast::Equation::Connect { lhs, rhs } => {
-            let line = text.and_then(|t| connect_annotation(t, rhs.span.end.0)).and_then(|a| {
-                let v = parse_annotation(&a)?;
-                match v {
-                    Value::Object(o) => o.get("Line").cloned(),
-                    _ => None,
-                }
+            let line = text
+                .and_then(|t| connect_annotation(t, rhs.span.end.0))
+                .and_then(|a| {
+                    let v = parse_annotation(&a)?;
+                    match v {
+                        Value::Object(o) => o.get("Line").cloned(),
+                        _ => None,
+                    }
+                });
+            out.push(ConnectionInfo {
+                from: cref_text(lhs),
+                to: cref_text(rhs),
+                line,
+                declared_in: declared_in.to_string(),
             });
-            out.push(ConnectionInfo { from: cref_text(lhs), to: cref_text(rhs), line, declared_in: declared_in.to_string() });
         }
         ast::Equation::For { equations, .. } => {
             for e in equations {
@@ -332,7 +376,9 @@ fn connect_annotation(text: &str, rhs_end: usize) -> Option<String> {
 }
 
 fn src(text: Option<&str>, span: rumoca_core::Span) -> String {
-    text.and_then(|t| t.get(span.start.0..span.end.0)).map(|s| s.trim().to_string()).unwrap_or_default()
+    text.and_then(|t| t.get(span.start.0..span.end.0))
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default()
 }
 
 fn cref_text(c: &ast::ComponentReference) -> String {
@@ -364,14 +410,22 @@ fn cref_text(c: &ast::ComponentReference) -> String {
 }
 
 fn num(v: f64) -> Value {
-    if v.fract() == 0.0 && v.abs() < 1e15 { json!(v as i64) } else { json!(v) }
+    if v.fract() == 0.0 && v.abs() < 1e15 {
+        json!(v as i64)
+    } else {
+        json!(v)
+    }
 }
 
 /// Convert an annotation expression to JSON.
 pub fn expr_json(e: &ast::Expression, text: Option<&str>) -> Value {
     use ast::Expression as E;
     match e {
-        E::Terminal { terminal_type, token, .. } => match terminal_type {
+        E::Terminal {
+            terminal_type,
+            token,
+            ..
+        } => match terminal_type {
             ast::TerminalType::UnsignedInteger | ast::TerminalType::UnsignedReal => {
                 token.text.parse::<f64>().map(num).unwrap_or(Value::Null)
             }
@@ -409,9 +463,15 @@ pub fn expr_json(e: &ast::Expression, text: Option<&str>) -> Value {
             }
             Value::String(text.map(|t| src(Some(t), e.span())).unwrap_or_default())
         }
-        E::Array { elements, .. } | E::Tuple { elements, .. } => Value::Array(elements.iter().map(|x| expr_json(x, text)).collect()),
+        E::Array { elements, .. } | E::Tuple { elements, .. } => {
+            Value::Array(elements.iter().map(|x| expr_json(x, text)).collect())
+        }
         E::FunctionCall { comp, args, .. } => record(&cref_text(comp), args, text),
-        E::ClassModification { target, modifications, .. } => record(&cref_text(target), modifications, text),
+        E::ClassModification {
+            target,
+            modifications,
+            ..
+        } => record(&cref_text(target), modifications, text),
         E::Parenthesized { inner, .. } => expr_json(inner, text),
         _ => Value::String(text.map(|t| src(Some(t), e.span())).unwrap_or_default()),
     }
@@ -464,7 +524,10 @@ fn unescape(s: &str) -> String {
 /// subset of the grammar: records with named or positional arguments, arrays, numbers,
 /// strings, booleans and dotted names.
 pub fn parse_annotation(s: &str) -> Option<Value> {
-    let mut p = P { b: s.as_bytes(), i: 0 };
+    let mut p = P {
+        b: s.as_bytes(),
+        i: 0,
+    };
     let mut m = Map::new();
     loop {
         p.ws();
@@ -473,7 +536,13 @@ pub fn parse_annotation(s: &str) -> Option<Value> {
         }
         let name = p.name()?;
         p.ws();
-        let v = if p.eat(b'(') { p.args(&name)? } else if p.eat(b'=') { p.value()? } else { Value::Null };
+        let v = if p.eat(b'(') {
+            p.args(&name)?
+        } else if p.eat(b'=') {
+            p.value()?
+        } else {
+            Value::Null
+        };
         m.insert(name, v);
         p.ws();
         if !p.eat(b',') {
@@ -506,7 +575,9 @@ impl P<'_> {
     fn name(&mut self) -> Option<String> {
         self.ws();
         let st = self.i;
-        while self.i < self.b.len() && ((self.b[self.i] as char).is_alphanumeric() || b"._".contains(&self.b[self.i])) {
+        while self.i < self.b.len()
+            && ((self.b[self.i] as char).is_alphanumeric() || b"._".contains(&self.b[self.i]))
+        {
             self.i += 1;
         }
         (self.i > st).then(|| String::from_utf8_lossy(&self.b[st..self.i]).into_owned())
@@ -524,7 +595,10 @@ impl P<'_> {
             let named = self.name().and_then(|n| {
                 self.ws();
                 // `name =` but not `name ==`
-                if self.i < self.b.len() && self.b[self.i] == b'=' && self.b.get(self.i + 1) != Some(&b'=') {
+                if self.i < self.b.len()
+                    && self.b[self.i] == b'='
+                    && self.b.get(self.i + 1) != Some(&b'=')
+                {
                     self.i += 1;
                     Some(n)
                 } else {
@@ -588,7 +662,12 @@ impl P<'_> {
         if c == b'-' || c == b'+' || c.is_ascii_digit() || c == b'.' {
             let st = self.i;
             self.i += 1;
-            while self.i < self.b.len() && (self.b[self.i].is_ascii_digit() || b".eE".contains(&self.b[self.i]) || ((self.b[self.i] == b'-' || self.b[self.i] == b'+') && b"eE".contains(&self.b[self.i - 1]))) {
+            while self.i < self.b.len()
+                && (self.b[self.i].is_ascii_digit()
+                    || b".eE".contains(&self.b[self.i])
+                    || ((self.b[self.i] == b'-' || self.b[self.i] == b'+')
+                        && b"eE".contains(&self.b[self.i - 1])))
+            {
                 self.i += 1;
             }
             let t = String::from_utf8_lossy(&self.b[st..self.i]).into_owned();
@@ -612,7 +691,8 @@ mod tests {
 
     #[test]
     fn connect_line_annotation() {
-        let v = parse_annotation("Line(points={{-60,0},{-40,0}}, color={0,0,127}, thickness=0.5)").unwrap();
+        let v = parse_annotation("Line(points={{-60,0},{-40,0}}, color={0,0,127}, thickness=0.5)")
+            .unwrap();
         assert_eq!(v["Line"]["points"], json!([[-60, 0], [-40, 0]]));
         assert_eq!(v["Line"]["color"], json!([0, 0, 127]));
         assert_eq!(v["Line"]["thickness"], json!(0.5));
@@ -644,10 +724,16 @@ end P;
         assert_eq!(info.components.len(), 2);
         assert_eq!(info.components[0].type_path.as_deref(), Some("P.C"));
         assert_eq!(info.components[0].type_kind, "connector");
-        assert_eq!(info.components[1].placement.as_ref().unwrap()["transformation"]["rotation"], 180);
+        assert_eq!(
+            info.components[1].placement.as_ref().unwrap()["transformation"]["rotation"],
+            180
+        );
         assert_eq!(info.components[1].modifiers[0].0, "e");
         assert_eq!(info.connections[0].from, "a");
-        assert_eq!(info.connections[0].line.as_ref().unwrap()["points"], json!([[-100, 0], [100, 0]]));
+        assert_eq!(
+            info.connections[0].line.as_ref().unwrap()["points"],
+            json!([[-100, 0], [100, 0]])
+        );
         assert_eq!(info.experiment.as_ref().unwrap()["StopTime"], 2);
         let tree = class_tree(&lib);
         assert_eq!(tree[0].children[1].name, "M");

@@ -28,7 +28,12 @@ pub enum Block {
     Assign { var: VarId, expr: ExprId },
     /// Algebraic loop after tearing: Newton on `tears`; `inner` assignments are
     /// evaluated in order from the current tear values, then `residuals` must vanish.
-    Solve { tears: Vec<VarId>, inner: Vec<(VarId, ExprId)>, residuals: Vec<ExprId>, linear: bool },
+    Solve {
+        tears: Vec<VarId>,
+        inner: Vec<(VarId, ExprId)>,
+        residuals: Vec<ExprId>,
+        linear: bool,
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -129,11 +134,16 @@ impl Work {
     }
 
     pub fn show(&self, e: ExprId) -> String {
-        self.arena.render(e, &|v| self.vars[v as usize].name.clone())
+        self.arena
+            .render(e, &|v| self.vars[v as usize].name.clone())
     }
 
     pub fn eq_text(&self, e: &Eq) -> String {
-        let o = self.origins.get(e.origin as usize).cloned().unwrap_or_default();
+        let o = self
+            .origins
+            .get(e.origin as usize)
+            .cloned()
+            .unwrap_or_default();
         format!("{} = {}   ({})", self.show(e.lhs), self.show(e.rhs), o)
     }
 
@@ -195,7 +205,10 @@ pub struct Options {
 
 impl Default for Options {
     fn default() -> Self {
-        Options { index_reduction: true, tearing: true }
+        Options {
+            index_reduction: true,
+            tearing: true,
+        }
     }
 }
 
@@ -208,8 +221,18 @@ pub fn compile(flat: FlatModel, opts: &Options) -> Result<System> {
         when_clauses: flat.whens.len(),
         ..Default::default()
     };
-    let FlatModel { name, arena, vars, equations, initial_equations, whens, asserts, origins, experiment, warnings } =
-        flat;
+    let FlatModel {
+        name,
+        arena,
+        vars,
+        equations,
+        initial_equations,
+        whens,
+        asserts,
+        origins,
+        experiment,
+        warnings,
+    } = flat;
     let n = vars.len();
     let mut when_assigned = FxHashSet::default();
     for w in &whens {
@@ -235,11 +258,23 @@ pub fn compile(flat: FlatModel, opts: &Options) -> Result<System> {
         vars,
         eqs: equations
             .iter()
-            .map(|e| Eq { lhs: e.lhs, rhs: e.rhs, origin: e.origin, parent: None, derived: None })
+            .map(|e| Eq {
+                lhs: e.lhs,
+                rhs: e.rhs,
+                origin: e.origin,
+                parent: None,
+                derived: None,
+            })
             .collect(),
         init_eqs: initial_equations
             .iter()
-            .map(|e| Eq { lhs: e.lhs, rhs: e.rhs, origin: e.origin, parent: None, derived: None })
+            .map(|e| Eq {
+                lhs: e.lhs,
+                rhs: e.rhs,
+                origin: e.origin,
+                parent: None,
+                derived: None,
+            })
             .collect(),
         whens,
         asserts,
@@ -256,8 +291,9 @@ pub fn compile(flat: FlatModel, opts: &Options) -> Result<System> {
 
     // 1. Parameters
     let params = order_parameters(&mut w)?;
-    let inputs: Vec<VarId> =
-        (0..w.vars.len() as VarId).filter(|&v| w.vars[v as usize].kind == VarKind::Input).collect();
+    let inputs: Vec<VarId> = (0..w.vars.len() as VarId)
+        .filter(|&v| w.vars[v as usize].kind == VarKind::Input)
+        .collect();
     let mut discretes: Vec<VarId> = w.when_assigned.iter().copied().collect();
     discretes.sort();
 
@@ -275,20 +311,35 @@ pub fn compile(flat: FlatModel, opts: &Options) -> Result<System> {
     stats.differentiated_equations = w.eqs.len() - n_before;
     let states = index::select_states(&mut w)?;
     stats.dummy_derivatives = w.dummy.len();
-    let state_derivs: Vec<VarId> = states.iter().map(|&s| w.der_of[s as usize].unwrap()).collect();
+    let state_derivs: Vec<VarId> = states
+        .iter()
+        .map(|&s| w.der_of[s as usize].unwrap())
+        .collect();
     stats.states = states.len();
 
     // 4./5. Runtime system: unknowns = all unknown vars except states.
     let state_set: FxHashSet<VarId> = states.iter().copied().collect();
     let eq_list: Vec<Eq> = w.eqs.clone();
-    let blocks = sort::causalize(&mut w, &eq_list, &|v| !state_set.contains(&v), opts.tearing, "simulation")?;
+    let blocks = sort::causalize(
+        &mut w,
+        &eq_list,
+        &|v| !state_set.contains(&v),
+        opts.tearing,
+        "simulation",
+    )?;
 
     // 6. Initialization
     let init_blocks = sort::initialization(&mut w, &states, opts.tearing)?;
 
     for b in &blocks {
         stats.blocks += 1;
-        if let Block::Solve { tears, inner, linear, .. } = b {
+        if let Block::Solve {
+            tears,
+            inner,
+            linear,
+            ..
+        } = b
+        {
             stats.algebraic_loops += 1;
             stats.largest_loop = stats.largest_loop.max(tears.len() + inner.len());
             stats.torn_loop_vars += tears.len();
@@ -298,10 +349,16 @@ pub fn compile(flat: FlatModel, opts: &Options) -> Result<System> {
         }
     }
     stats.init_blocks = init_blocks.len();
-    stats.init_loops = init_blocks.iter().filter(|b| matches!(b, Block::Solve { .. })).count();
+    stats.init_loops = init_blocks
+        .iter()
+        .filter(|b| matches!(b, Block::Solve { .. }))
+        .count();
     stats.backend_ms = (web_time_now() - t0) * 1000.0;
 
-    if states.is_empty() && blocks.is_empty() && w.vars.iter().all(|v| v.kind != VarKind::Continuous) {
+    if states.is_empty()
+        && blocks.is_empty()
+        && w.vars.iter().all(|v| v.kind != VarKind::Continuous)
+    {
         // purely discrete / parametric model is fine
     }
     let der_of = w.der_of.clone();
@@ -330,13 +387,22 @@ pub fn compile(flat: FlatModel, opts: &Options) -> Result<System> {
 /// Topologically order parameters by binding dependencies and evaluate them.
 fn order_parameters(w: &mut Work) -> Result<Vec<VarId>> {
     let params: Vec<VarId> = (0..w.vars.len() as VarId)
-        .filter(|&v| matches!(w.vars[v as usize].kind, VarKind::Parameter | VarKind::Constant | VarKind::Input))
+        .filter(|&v| {
+            matches!(
+                w.vars[v as usize].kind,
+                VarKind::Parameter | VarKind::Constant | VarKind::Input
+            )
+        })
         .collect();
     let is_param: FxHashSet<VarId> = params.iter().copied().collect();
     let mut deps: FxHashMap<VarId, Vec<VarId>> = FxHashMap::default();
     for &p in &params {
         let var = &w.vars[p as usize];
-        let e = if var.kind == VarKind::Input { var.start } else { var.binding.or(var.start) };
+        let e = if var.kind == VarKind::Input {
+            var.start
+        } else {
+            var.binding.or(var.start)
+        };
         let mut d = Vec::new();
         if let Some(e) = e {
             w.arena.visit_leaves(e, &mut |n| {
@@ -349,7 +415,8 @@ fn order_parameters(w: &mut Work) -> Result<Vec<VarId>> {
             });
         }
         if var.binding.is_none() && var.start.is_none() && var.kind == VarKind::Parameter {
-            w.warnings.push(format!("parameter '{}' has no value; using 0", var.name));
+            w.warnings
+                .push(format!("parameter '{}' has no value; using 0", var.name));
         }
         deps.insert(p, d);
     }
@@ -374,7 +441,11 @@ fn order_parameters(w: &mut Work) -> Result<Vec<VarId>> {
                 *i += 1;
                 match state.get(&c).copied().unwrap_or(0) {
                     0 => stack.push((c, 0)),
-                    1 => bail!("cyclic parameter binding involving '{}' and '{}'", w.vars[v as usize].name, w.vars[c as usize].name),
+                    1 => bail!(
+                        "cyclic parameter binding involving '{}' and '{}'",
+                        w.vars[v as usize].name,
+                        w.vars[c as usize].name
+                    ),
                     _ => {}
                 }
             } else {
@@ -386,7 +457,11 @@ fn order_parameters(w: &mut Work) -> Result<Vec<VarId>> {
     }
     for &p in &order {
         let var = &w.vars[p as usize];
-        let e = if var.kind == VarKind::Input { var.start } else { var.binding.or(var.start) };
+        let e = if var.kind == VarKind::Input {
+            var.start
+        } else {
+            var.binding.or(var.start)
+        };
         let val = e.map(|e| w.eval_params(e)).unwrap_or(0.0);
         w.param_values[p as usize] = val;
     }
@@ -396,7 +471,10 @@ fn order_parameters(w: &mut Work) -> Result<Vec<VarId>> {
 #[cfg(not(target_arch = "wasm32"))]
 pub fn web_time_now() -> f64 {
     use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0)
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -410,14 +488,20 @@ impl System {
     }
 
     pub fn show(&self, e: ExprId) -> String {
-        self.arena.render(e, &|v| self.vars[v as usize].name.clone())
+        self.arena
+            .render(e, &|v| self.vars[v as usize].name.clone())
     }
 
     /// Human-readable listing of the sorted system (like Dymola's dsmodel translation log).
     pub fn dump(&self) -> String {
         use std::fmt::Write;
         let mut s = String::new();
-        let names = |vs: &[VarId]| vs.iter().map(|&v| self.name_of(v).to_string()).collect::<Vec<_>>().join(", ");
+        let names = |vs: &[VarId]| {
+            vs.iter()
+                .map(|&v| self.name_of(v).to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
         let _ = writeln!(s, "system {}", self.name);
         let _ = writeln!(s, "  states: {}", names(&self.states));
         let _ = writeln!(s, "  derivatives: {}", names(&self.state_derivs));
@@ -427,7 +511,12 @@ impl System {
                     Block::Assign { var, expr } => {
                         let _ = writeln!(s, "    {} := {}", self.name_of(*var), self.show(*expr));
                     }
-                    Block::Solve { tears, inner, residuals, linear } => {
+                    Block::Solve {
+                        tears,
+                        inner,
+                        residuals,
+                        linear,
+                    } => {
                         let _ = writeln!(
                             s,
                             "    {} loop, tearing vars [{}]",
@@ -448,7 +537,11 @@ impl System {
         dump_blocks(&mut s, &self.init_blocks);
         let _ = writeln!(s, "  simulation:");
         dump_blocks(&mut s, &self.blocks);
-        let _ = writeln!(s, "  stats: {}", serde_json::to_string(&self.stats).unwrap_or_default());
+        let _ = writeln!(
+            s,
+            "  stats: {}",
+            serde_json::to_string(&self.stats).unwrap_or_default()
+        );
         s
     }
 }

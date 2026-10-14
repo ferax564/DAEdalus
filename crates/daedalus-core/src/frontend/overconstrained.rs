@@ -35,7 +35,11 @@ pub struct OcAnswers {
 }
 
 pub fn edge_key(a: &str, b: &str) -> (String, String) {
-    if a <= b { (a.to_string(), b.to_string()) } else { (b.to_string(), a.to_string()) }
+    if a <= b {
+        (a.to_string(), b.to_string())
+    } else {
+        (b.to_string(), a.to_string())
+    }
 }
 
 impl OcAnswers {
@@ -48,12 +52,19 @@ impl OcAnswers {
                 names.len() - 1
             })
         };
-        let branches: Vec<(usize, usize)> =
-            log.branches.iter().map(|(a, b)| (intern(a), intern(b))).collect();
-        let connects: Vec<(usize, usize)> =
-            log.connects.iter().map(|(a, b)| (intern(a), intern(b))).collect();
+        let branches: Vec<(usize, usize)> = log
+            .branches
+            .iter()
+            .map(|(a, b)| (intern(a), intern(b)))
+            .collect();
+        let connects: Vec<(usize, usize)> = log
+            .connects
+            .iter()
+            .map(|(a, b)| (intern(a), intern(b)))
+            .collect();
         let roots: Vec<usize> = log.roots.iter().map(|a| intern(a)).collect();
-        let potential: Vec<(usize, i64)> = log.potential.iter().map(|(a, p)| (intern(a), *p)).collect();
+        let potential: Vec<(usize, i64)> =
+            log.potential.iter().map(|(a, p)| (intern(a), *p)).collect();
         let n = names.len();
         let mut parent: Vec<usize> = (0..n).collect();
         fn find(p: &mut [usize], mut x: usize) -> usize {
@@ -78,8 +89,14 @@ impl OcAnswers {
             }
             adj[a].push(b);
             adj[b].push(a);
-            out.branch_partner.entry(names[a].to_string()).or_default().push(names[b].to_string());
-            out.branch_partner.entry(names[b].to_string()).or_default().push(names[a].to_string());
+            out.branch_partner
+                .entry(names[a].to_string())
+                .or_default()
+                .push(names[b].to_string());
+            out.branch_partner
+                .entry(names[b].to_string())
+                .or_default()
+                .push(names[a].to_string());
         }
         // Connections join trees unless they would close a loop or join two rooted trees.
         for &(a, b) in &connects {
@@ -106,7 +123,10 @@ impl OcAnswers {
                 *e = (p, k);
             }
         }
-        let mut chosen: Vec<(usize, usize)> = best.into_values().map(|(_, k)| (k, potential[k].0)).collect();
+        let mut chosen: Vec<(usize, usize)> = best
+            .into_values()
+            .map(|(_, k)| (k, potential[k].0))
+            .collect();
         chosen.sort_unstable();
         root_nodes.extend(chosen.into_iter().map(|(_, a)| a));
         // Depth from the roots along tree edges.
@@ -143,7 +163,9 @@ impl OcAnswers {
     pub fn rooted(&self, node: &str) -> bool {
         let d = self.depth.get(node).copied().unwrap_or(usize::MAX);
         match self.branch_partner.get(node) {
-            Some(ps) => ps.iter().all(|p| d < self.depth.get(p).copied().unwrap_or(usize::MAX)),
+            Some(ps) => ps
+                .iter()
+                .all(|p| d < self.depth.get(p).copied().unwrap_or(usize::MAX)),
             None => self.is_root(node),
         }
     }
@@ -162,7 +184,11 @@ mod tests {
         // world -- j1 -- b1 -- j2 -- b2 -- j3 -- world (a loop through two joints)
         let s = |x: &str| x.to_string();
         let log = OcLog {
-            branches: vec![(s("j1.a"), s("j1.b")), (s("j2.a"), s("j2.b")), (s("j3.a"), s("j3.b"))],
+            branches: vec![
+                (s("j1.a"), s("j1.b")),
+                (s("j2.a"), s("j2.b")),
+                (s("j3.a"), s("j3.b")),
+            ],
             roots: vec![s("world")],
             potential: vec![(s("b1"), 0), (s("b2"), 0)],
             connects: vec![
@@ -185,7 +211,11 @@ mod tests {
     #[test]
     fn free_body_takes_potential_root() {
         let s = |x: &str| x.to_string();
-        let log = OcLog { potential: vec![(s("body.frame_a"), 0)], used: true, ..Default::default() };
+        let log = OcLog {
+            potential: vec![(s("body.frame_a"), 0)],
+            used: true,
+            ..Default::default()
+        };
         let a = OcAnswers::compute(&log);
         assert!(a.is_root("body.frame_a"));
     }

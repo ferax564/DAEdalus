@@ -47,7 +47,16 @@ fn rms(v: impl Iterator<Item = f64>, n: usize) -> f64 {
 }
 
 /// Hairer's initial step size heuristic.
-fn initial_step(rt: &mut Runtime, t: f64, x: &[f64], f0: &[f64], order: f64, rtol: f64, atol: f64, span: f64) -> f64 {
+fn initial_step(
+    rt: &mut Runtime,
+    t: f64,
+    x: &[f64],
+    f0: &[f64],
+    order: f64,
+    rtol: f64,
+    atol: f64,
+    span: f64,
+) -> f64 {
     let n = x.len();
     if n == 0 {
         return span.max(1e-6);
@@ -55,12 +64,19 @@ fn initial_step(rt: &mut Runtime, t: f64, x: &[f64], f0: &[f64], order: f64, rto
     let scale: Vec<f64> = x.iter().map(|v| atol + rtol * v.abs()).collect();
     let d0 = rms(x.iter().zip(&scale).map(|(a, s)| a / s), n);
     let d1 = rms(f0.iter().zip(&scale).map(|(a, s)| a / s), n);
-    let h0 = if d0 < 1e-5 || d1 < 1e-5 { 1e-6 } else { 0.01 * d0 / d1 };
+    let h0 = if d0 < 1e-5 || d1 < 1e-5 {
+        1e-6
+    } else {
+        0.01 * d0 / d1
+    };
     let h0 = h0.min(span);
     let x1: Vec<f64> = x.iter().zip(f0).map(|(a, f)| a + h0 * f).collect();
     let mut f1 = vec![0.0; n];
     rt.rhs(t + h0, &x1, &mut f1);
-    let d2 = rms(f1.iter().zip(f0).zip(&scale).map(|((a, b), s)| (a - b) / s), n) / h0;
+    let d2 = rms(
+        f1.iter().zip(f0).zip(&scale).map(|((a, b), s)| (a - b) / s),
+        n,
+    ) / h0;
     let h1 = if d1 <= 1e-15 && d2 <= 1e-15 {
         (h0 * 1e-3).max(1e-6)
     } else {
@@ -127,12 +143,40 @@ impl Integrator for Dopri5 {
             [0.2, 0.0, 0.0, 0.0, 0.0, 0.0],
             [3.0 / 40.0, 9.0 / 40.0, 0.0, 0.0, 0.0, 0.0],
             [44.0 / 45.0, -56.0 / 15.0, 32.0 / 9.0, 0.0, 0.0, 0.0],
-            [19372.0 / 6561.0, -25360.0 / 2187.0, 64448.0 / 6561.0, -212.0 / 729.0, 0.0, 0.0],
-            [9017.0 / 3168.0, -355.0 / 33.0, 46732.0 / 5247.0, 49.0 / 176.0, -5103.0 / 18656.0, 0.0],
-            [35.0 / 384.0, 0.0, 500.0 / 1113.0, 125.0 / 192.0, -2187.0 / 6784.0, 11.0 / 84.0],
+            [
+                19372.0 / 6561.0,
+                -25360.0 / 2187.0,
+                64448.0 / 6561.0,
+                -212.0 / 729.0,
+                0.0,
+                0.0,
+            ],
+            [
+                9017.0 / 3168.0,
+                -355.0 / 33.0,
+                46732.0 / 5247.0,
+                49.0 / 176.0,
+                -5103.0 / 18656.0,
+                0.0,
+            ],
+            [
+                35.0 / 384.0,
+                0.0,
+                500.0 / 1113.0,
+                125.0 / 192.0,
+                -2187.0 / 6784.0,
+                11.0 / 84.0,
+            ],
         ];
-        const E: [f64; 7] =
-            [71.0 / 57600.0, 0.0, -71.0 / 16695.0, 71.0 / 1920.0, -17253.0 / 339200.0, 22.0 / 525.0, -1.0 / 40.0];
+        const E: [f64; 7] = [
+            71.0 / 57600.0,
+            0.0,
+            -71.0 / 16695.0,
+            71.0 / 1920.0,
+            -17253.0 / 339200.0,
+            22.0 / 525.0,
+            -1.0 / 40.0,
+        ];
         const D: [f64; 7] = [
             -12715105075.0 / 11282082432.0,
             0.0,
@@ -154,7 +198,16 @@ impl Integrator for Dopri5 {
         }
         if self.h <= 0.0 {
             let f0 = self.k[0].clone();
-            self.h = initial_step(rt, self.t, &self.x, &f0, 4.0, self.rtol, self.atol, span.min(self.max_step));
+            self.h = initial_step(
+                rt,
+                self.t,
+                &self.x,
+                &f0,
+                4.0,
+                self.rtol,
+                self.atol,
+                span.min(self.max_step),
+            );
         }
         let min_h = 1e-14 * self.t.abs().max(1.0);
         loop {
@@ -371,7 +424,10 @@ impl Bdf {
             let in_pat: Vec<bool> = (0..n)
                 .flat_map(|j| {
                     let r = &rows_of_col[j];
-                    cols[j].iter().map(move |i| r.contains(i)).collect::<Vec<_>>()
+                    cols[j]
+                        .iter()
+                        .map(move |i| r.contains(i))
+                        .collect::<Vec<_>>()
                 })
                 .collect();
             let q = min_degree(&m);
@@ -571,7 +627,16 @@ impl Integrator for Bdf {
         }
         if self.h_abs == 0.0 {
             let f0 = self.d[1].clone();
-            let h = initial_step(rt, self.t, &self.x, &f0, 1.0, self.rtol, self.atol, span.min(self.max_step));
+            let h = initial_step(
+                rt,
+                self.t,
+                &self.x,
+                &f0,
+                1.0,
+                self.rtol,
+                self.atol,
+                span.min(self.max_step),
+            );
             self.h_abs = h;
             for v in self.d[1].iter_mut() {
                 *v *= h;
@@ -663,7 +728,9 @@ impl Integrator for Bdf {
                     let dy_norm = rms(dy.iter().zip(&scale).map(|(a, s)| a / s), n);
                     let rate = dy_norm_old.map(|o| dy_norm / o);
                     if let Some(r) = rate
-                        && (r >= 1.0 || r.powi((NEWTON_MAXITER - k) as i32) / (1.0 - r) * dy_norm > self.newton_tol())
+                        && (r >= 1.0
+                            || r.powi((NEWTON_MAXITER - k) as i32) / (1.0 - r) * dy_norm
+                                > self.newton_tol())
                     {
                         break;
                     }
@@ -671,7 +738,9 @@ impl Integrator for Bdf {
                         y_new[i] += dy[i];
                         dsum[i] += dy[i];
                     }
-                    if dy_norm == 0.0 || rate.is_some_and(|r| r / (1.0 - r) * dy_norm < self.newton_tol()) {
+                    if dy_norm == 0.0
+                        || rate.is_some_and(|r| r / (1.0 - r) * dy_norm < self.newton_tol())
+                    {
                         converged = true;
                         break;
                     }
@@ -693,7 +762,8 @@ impl Integrator for Bdf {
                 self.lu_valid = false;
                 continue;
             }
-            let s = 0.9 * (2.0 * NEWTON_MAXITER as f64 + 1.0) / (2.0 * NEWTON_MAXITER as f64 + n_iter as f64);
+            let s = 0.9 * (2.0 * NEWTON_MAXITER as f64 + 1.0)
+                / (2.0 * NEWTON_MAXITER as f64 + n_iter as f64);
             for i in 0..n {
                 scale[i] = self.atol + self.rtol * y_new[i].abs();
             }
@@ -746,7 +816,13 @@ impl Integrator for Bdf {
         };
         let ep = if order < MAX_ORDER {
             let ec = self.error_const[order + 1];
-            rms(self.d[order + 2].iter().zip(&scale).map(|(d, s)| ec * d / s), n)
+            rms(
+                self.d[order + 2]
+                    .iter()
+                    .zip(&scale)
+                    .map(|(d, s)| ec * d / s),
+                n,
+            )
         } else {
             f64::INFINITY
         };
@@ -755,7 +831,11 @@ impl Integrator for Bdf {
         let mut factors = [0.0; 3];
         for (k, &e) in norms.iter().enumerate() {
             let p = (order + k) as f64; // order-1+k+1
-            factors[k] = if e == 0.0 { f64::INFINITY } else { e.powf(-1.0 / p) };
+            factors[k] = if e == 0.0 {
+                f64::INFINITY
+            } else {
+                e.powf(-1.0 / p)
+            };
             if factors[k] > factors[best] {
                 best = k;
             }
@@ -890,7 +970,8 @@ impl Integrator for FixedStep {
                     self.stats.rhs_evals += 1;
                 }
                 for i in 0..n {
-                    self.x[i] += h / 6.0 * (self.k[0][i] + 2.0 * self.k[1][i] + 2.0 * self.k[2][i] + self.k[3][i]);
+                    self.x[i] += h / 6.0
+                        * (self.k[0][i] + 2.0 * self.k[1][i] + 2.0 * self.k[2][i] + self.k[3][i]);
                 }
             }
         }
@@ -927,7 +1008,10 @@ impl Integrator for FixedStep {
         let h01 = s * s * (3.0 - 2.0 * s);
         let h11 = s * s * (s - 1.0);
         for i in 0..out.len() {
-            out[i] = h00 * self.x_old[i] + h10 * h * self.f_old[i] + h01 * self.x[i] + h11 * h * self.f[i];
+            out[i] = h00 * self.x_old[i]
+                + h10 * h * self.f_old[i]
+                + h01 * self.x[i]
+                + h11 * h * self.f[i];
         }
     }
     fn stats(&self) -> SolverStats {

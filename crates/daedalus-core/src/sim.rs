@@ -121,7 +121,8 @@ impl Recorder {
     fn new(m: &Model) -> (Recorder, Vec<usize>) {
         let mut stored = Vec::new();
         let mut col_of: FxHashMap<VarId, usize> = FxHashMap::default();
-        let alias_of: FxHashMap<VarId, &AliasKind> = m.aliases.iter().map(|(v, k)| (*v, k)).collect();
+        let alias_of: FxHashMap<VarId, &AliasKind> =
+            m.aliases.iter().map(|(v, k)| (*v, k)).collect();
         let is_param: Vec<bool> = {
             let mut p = vec![false; m.vars.len()];
             for &v in &m.param_vars {
@@ -152,7 +153,10 @@ impl Recorder {
                 ResultKind::Param(0.0)
             } else if let Some(AliasKind::Var { of, sign }) = alias_of.get(&id) {
                 match col_of.get(of) {
-                    Some(&c) => ResultKind::Alias { col: c, sign: *sign },
+                    Some(&c) => ResultKind::Alias {
+                        col: c,
+                        sign: *sign,
+                    },
                     None => ResultKind::Param(0.0),
                 }
             } else {
@@ -170,7 +174,13 @@ impl Recorder {
         (
             Recorder {
                 stored,
-                res: Results { model: m.name.clone(), vars, time: Vec::new(), series: vec![Vec::new(); n], log: Vec::new() },
+                res: Results {
+                    model: m.name.clone(),
+                    vars,
+                    time: Vec::new(),
+                    series: vec![Vec::new(); n],
+                    log: Vec::new(),
+                },
             },
             order,
         )
@@ -223,7 +233,12 @@ impl<'m> Simulation<'m> {
 
     fn eval_params(&mut self) -> Result<(), String> {
         let m = self.rt.m;
-        let overrides: FxHashMap<&str, f64> = self.opts.params.iter().map(|(n, v)| (n.as_str(), *v)).collect();
+        let overrides: FxHashMap<&str, f64> = self
+            .opts
+            .params
+            .iter()
+            .map(|(n, v)| (n.as_str(), *v))
+            .collect();
         for (p, seg) in &m.params {
             let name = m.vars[*p as usize].name.as_str();
             if let Some(&v) = overrides.get(name) {
@@ -233,7 +248,11 @@ impl<'m> Simulation<'m> {
             }
         }
         for (n, _) in &self.opts.params {
-            if !m.vars.iter().any(|v| &v.name == n && matches!(v.kind, VarKind::Parameter | VarKind::Input)) {
+            if !m
+                .vars
+                .iter()
+                .any(|v| &v.name == n && matches!(v.kind, VarKind::Parameter | VarKind::Input))
+            {
                 return Err(format!("unknown parameter '{n}'"));
             }
         }
@@ -243,7 +262,15 @@ impl<'m> Simulation<'m> {
     fn when_conds(&mut self) -> Vec<Vec<bool>> {
         let m = self.rt.m;
         self.rt.run(&m.when_prog);
-        m.whens.iter().map(|w| w.conds.iter().map(|&s| self.rt.r[s as usize] != 0.0).collect()).collect()
+        m.whens
+            .iter()
+            .map(|w| {
+                w.conds
+                    .iter()
+                    .map(|&s| self.rt.r[s as usize] != 0.0)
+                    .collect()
+            })
+            .collect()
     }
 
     /// Execute fired when-clauses. Returns true if any action ran.
@@ -256,15 +283,26 @@ impl<'m> Simulation<'m> {
             for (bi, acts) in w.actions.iter().enumerate() {
                 if conds[wi][bi] && !prev[wi][bi] {
                     any = true;
-                    for a in acts {
+                    let chained = w.chained[bi];
+                    for (k, a) in acts.iter().enumerate() {
                         match a {
+                            Action::Assign(v, s) | Action::Reinit(v, s) if chained => {
+                                // Later actions of this branch read this value: commit it now.
+                                if k > 0 {
+                                    self.rt.run(&m.when_prog);
+                                }
+                                self.rt.r[*v as usize] = self.rt.r[*s as usize];
+                            }
                             Action::Assign(v, s) | Action::Reinit(v, s) => {
                                 updates.push((*v as usize, self.rt.r[*s as usize]));
                             }
                             Action::Terminate(msg) => self.terminated = Some(msg.clone()),
                             Action::Assert(c, msg) => {
                                 if self.rt.r[*c as usize] == 0.0 {
-                                    self.rt_log(format!("assertion failed at t = {}: {msg}", self.rt.time()));
+                                    self.rt_log(format!(
+                                        "assertion failed at t = {}: {msg}",
+                                        self.rt.time()
+                                    ));
                                 }
                             }
                         }
@@ -309,7 +347,10 @@ impl<'m> Simulation<'m> {
                 return Ok(());
             }
         }
-        Err(format!("event iteration did not converge at t = {}", self.rt.time()))
+        Err(format!(
+            "event iteration did not converge at t = {}",
+            self.rt.time()
+        ))
     }
 
     fn check_newton(&mut self, phase: &str) -> Result<(), String> {
@@ -345,7 +386,17 @@ impl<'m> Simulation<'m> {
         self.rt.r[m.layout.initial] = 0.0;
         let c0 = self.when_conds();
         self.rt.r[m.layout.initial] = 1.0;
-        let fired = self.fire(&c1, &c0);
+        let edge: Vec<Vec<bool>> = c0
+            .iter()
+            .zip(&m.whens)
+            .map(|(c, w)| {
+                c.iter()
+                    .zip(&w.at_initial)
+                    .map(|(&c, &i)| c && !i)
+                    .collect()
+            })
+            .collect();
+        let fired = self.fire(&c1, &edge);
         self.cond_prev = c0;
         self.rt.r[m.layout.initial] = 0.0;
         let _ = fired;
@@ -361,7 +412,10 @@ impl<'m> Simulation<'m> {
         let (mut rec, order) = Recorder::new(m);
         let t_init = crate::backend::web_time_now();
         if let Err(e) = self.initialize() {
-            return Err(SimError { message: e, partial: None });
+            return Err(SimError {
+                message: e,
+                partial: None,
+            });
         }
         // Parameter values into the result.
         for (k, &i) in order.iter().enumerate() {
@@ -383,7 +437,10 @@ impl<'m> Simulation<'m> {
         }
         match r {
             Ok(()) => Ok((rec.res, self.stats)),
-            Err(e) => Err(SimError { message: e, partial: Some(rec.res) }),
+            Err(e) => Err(SimError {
+                message: e,
+                partial: Some(rec.res),
+            }),
         }
     }
 
@@ -392,8 +449,16 @@ impl<'m> Simulation<'m> {
         let o = self.opts.clone();
         let n = m.states.len();
         let span = o.stop_time - o.start_time;
-        let dt = if o.interval > 0.0 { o.interval } else { span / o.intervals.max(1) as f64 };
-        let max_step = if o.max_step > 0.0 { o.max_step } else { span.max(1e-12) };
+        let dt = if o.interval > 0.0 {
+            o.interval
+        } else {
+            span / o.intervals.max(1) as f64
+        };
+        let max_step = if o.max_step > 0.0 {
+            o.max_step
+        } else {
+            span.max(1e-12)
+        };
         let rtol = o.tolerance;
         let atol = o.tolerance;
         let mut solver: Box<dyn Integrator> = match o.method {
@@ -403,10 +468,16 @@ impl<'m> Simulation<'m> {
                 Box::new(b)
             }
             Method::Dopri5 => Box::new(Dopri5::new(n, rtol, atol, max_step)),
-            Method::Rk4 => Box::new(FixedStep::new(n, FixedMethod::Rk4, if o.fixed_step > 0.0 { o.fixed_step } else { dt })),
-            Method::Euler => {
-                Box::new(FixedStep::new(n, FixedMethod::Euler, if o.fixed_step > 0.0 { o.fixed_step } else { dt }))
-            }
+            Method::Rk4 => Box::new(FixedStep::new(
+                n,
+                FixedMethod::Rk4,
+                if o.fixed_step > 0.0 { o.fixed_step } else { dt },
+            )),
+            Method::Euler => Box::new(FixedStep::new(
+                n,
+                FixedMethod::Euler,
+                if o.fixed_step > 0.0 { o.fixed_step } else { dt },
+            )),
         };
         let mut x = vec![0.0; n];
         self.rt.get_states(&mut x);
@@ -424,8 +495,14 @@ impl<'m> Simulation<'m> {
             if guard > 50_000_000 {
                 return Err("too many steps".into());
             }
-            if o.max_wall_time > 0.0 && guard % 64 == 0 && crate::backend::web_time_now() - wall0 > o.max_wall_time {
-                return Err(format!("wall-clock limit of {} s reached at t = {}", o.max_wall_time, t));
+            if o.max_wall_time > 0.0
+                && guard % 64 == 0
+                && crate::backend::web_time_now() - wall0 > o.max_wall_time
+            {
+                return Err(format!(
+                    "wall-clock limit of {} s reached at t = {}",
+                    o.max_wall_time, t
+                ));
             }
             let tn = solver.step(&mut self.rt, o.stop_time)?;
             let tp = solver.t_prev();
@@ -456,7 +533,9 @@ impl<'m> Simulation<'m> {
             }
             let t_end = event_t.unwrap_or(tn);
             // Output points inside the step (before the event).
-            while next_out(k_out) <= t_end * (1.0 + 1e-14) + 1e-300 && next_out(k_out) <= o.stop_time * (1.0 + 1e-14) {
+            while next_out(k_out) <= t_end * (1.0 + 1e-14) + 1e-300
+                && next_out(k_out) <= o.stop_time * (1.0 + 1e-14)
+            {
                 let to = next_out(k_out).min(o.stop_time);
                 if event_t.is_some() && to >= t_end {
                     break;
@@ -493,7 +572,11 @@ impl<'m> Simulation<'m> {
             } else {
                 t = tn;
                 if (tn - o.stop_time).abs() <= 1e-12 * o.stop_time.abs().max(1.0)
-                    && rec.res.time.last().is_none_or(|&l| l < o.stop_time - 1e-12 * o.stop_time.abs().max(1.0))
+                    && rec
+                        .res
+                        .time
+                        .last()
+                        .is_none_or(|&l| l < o.stop_time - 1e-12 * o.stop_time.abs().max(1.0))
                 {
                     let xs = solver.x().to_vec();
                     self.rt.rhs(o.stop_time, &xs, &mut x);
@@ -529,7 +612,14 @@ impl<'m> Simulation<'m> {
     }
 
     /// Locate the first time in `(ta, tb]` where relation `i` changes its raw value.
-    fn locate(&mut self, solver: &dyn Integrator, i: usize, ta: f64, tb: f64, xi: &mut Vec<f64>) -> f64 {
+    fn locate(
+        &mut self,
+        solver: &dyn Integrator,
+        i: usize,
+        ta: f64,
+        tb: f64,
+        xi: &mut Vec<f64>,
+    ) -> f64 {
         let m = self.rt.m;
         let lat = self.rt.r[m.layout.rel0 + i];
         let n = xi.len();
@@ -538,7 +628,10 @@ impl<'m> Simulation<'m> {
             solver.interpolate(t, xi);
             this.rt.rhs(t, xi, &mut dx);
             this.rt.eval_zc();
-            (this.rt.r[m.zc_g[i] as usize], this.rt.r[m.zc_raw[i] as usize])
+            (
+                this.rt.r[m.zc_g[i] as usize],
+                this.rt.r[m.zc_raw[i] as usize],
+            )
         };
         let (mut a, mut b) = (ta, tb);
         let (mut ga, ra) = eval(self, a);
@@ -555,7 +648,11 @@ impl<'m> Simulation<'m> {
                 break;
             }
             // Illinois regula falsi, falling back to bisection.
-            let mut c = if ga != gb && ga.is_finite() && gb.is_finite() { b - gb * (b - a) / (gb - ga) } else { 0.5 * (a + b) };
+            let mut c = if ga != gb && ga.is_finite() && gb.is_finite() {
+                b - gb * (b - a) / (gb - ga)
+            } else {
+                0.5 * (a + b)
+            };
             if !(c > a && c < b) {
                 c = 0.5 * (a + b);
             }

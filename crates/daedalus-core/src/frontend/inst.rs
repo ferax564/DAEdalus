@@ -5,10 +5,10 @@
 //! instance into the flat expression arena, inlining functions by symbolic
 //! execution. Connection sets are resolved last.
 
+use super::overconstrained::{OcAnswers, OcLog};
 use super::tree::{ClassId, ClassTree, ROOT, builtin_name};
 use crate::expr::{Arena, Cmp, ExprId, Fn1, Fn2, Node, Table, VarId};
 use crate::flat::*;
-use super::overconstrained::{OcAnswers, OcLog};
 use anyhow::{Context, Result, anyhow, bail};
 use indexmap::IndexMap;
 use rumoca_core::{ArrayConstructor, Causality, ClassType, OpBinary, OpUnary, Variability};
@@ -183,7 +183,11 @@ impl Val {
 }
 
 fn mk_arr(dims: Vec<usize>, v: Vec<ExprId>) -> Val {
-    if dims.is_empty() { Val::S(v[0]) } else { Val::A(dims, v) }
+    if dims.is_empty() {
+        Val::S(v[0])
+    } else {
+        Val::A(dims, v)
+    }
 }
 
 struct PendingVar<'a> {
@@ -229,6 +233,8 @@ pub struct Flattener<'a, 't> {
     binding_done: FxHashSet<VarId>,
     binding_mods: FxHashMap<VarId, usize>,
     sample_count: usize,
+    /// Native stand-ins for the MSL external table objects: (arena table, `columns`).
+    ext_tables: Vec<(u32, Vec<usize>)>,
     when_assigned: FxHashSet<VarId>,
     depth: usize,
     pub var_by_name: FxHashMap<String, VarId>,
@@ -251,7 +257,10 @@ impl<'a, 't> Flattener<'a, 't> {
     pub fn new(tree: &'t ClassTree<'a>) -> Self {
         Flattener {
             tree,
-            model: FlatModel { arena: Arena::new(), ..Default::default() },
+            model: FlatModel {
+                arena: Arena::new(),
+                ..Default::default()
+            },
             insts: Vec::new(),
             pending: Vec::new(),
             env_cache: FxHashMap::default(),
@@ -264,6 +273,7 @@ impl<'a, 't> Flattener<'a, 't> {
             binding_done: FxHashSet::default(),
             binding_mods: FxHashMap::default(),
             sample_count: 0,
+            ext_tables: Vec::new(),
             when_assigned: FxHashSet::default(),
             depth: 0,
             var_by_name: FxHashMap::default(),
@@ -284,7 +294,11 @@ impl<'a, 't> Flattener<'a, 't> {
             return e.clone();
         }
         let parent = self.tree.node(class).parent.map(|p| self.env_of(p));
-        let e = Rc::new(Env { class, overrides: Rc::new(FxHashMap::default()), parent });
+        let e = Rc::new(Env {
+            class,
+            overrides: Rc::new(FxHashMap::default()),
+            parent,
+        });
         self.env_cache.insert(class, e.clone());
         e
     }
@@ -294,7 +308,11 @@ impl<'a, 't> Flattener<'a, 't> {
             return self.env_of(class);
         }
         let parent = self.tree.node(class).parent.map(|p| self.env_of(p));
-        Rc::new(Env { class, overrides, parent })
+        Rc::new(Env {
+            class,
+            overrides,
+            parent,
+        })
     }
 
     fn lookup_class(&self, env: &Env, parts: &[&str]) -> Option<ClassId> {
@@ -361,10 +379,22 @@ impl<'a, 't> Flattener<'a, 't> {
         m
     }
 
-    fn add_mod_expr(&self, m: &mut Mod<'a>, e: &'a E, each: bool, final_: bool, redeclare: bool, scope: &Scope) {
+    fn add_mod_expr(
+        &self,
+        m: &mut Mod<'a>,
+        e: &'a E,
+        each: bool,
+        final_: bool,
+        redeclare: bool,
+        scope: &Scope,
+    ) {
         match e {
             E::Modification { target, value, .. } => {
-                let path: Vec<String> = target.parts.iter().map(|p| p.ident.text.to_string()).collect();
+                let path: Vec<String> = target
+                    .parts
+                    .iter()
+                    .map(|p| p.ident.text.to_string())
+                    .collect();
                 if let E::ClassModification {
                     target: cls,
                     modifications,
@@ -373,43 +403,94 @@ impl<'a, 't> Flattener<'a, 't> {
                     redeclare_flags,
                     ..
                 } = &**value
-                    && (redeclare || (modifications.is_empty() && self.looks_like_class(cls, scope)))
+                    && (redeclare
+                        || (modifications.is_empty() && self.looks_like_class(cls, scope)))
                 {
                     if path.len() == 1 {
                         m.redeclares.push((path[0].clone(), cls, scope.clone()));
                     }
                     // Component redeclaration: new type plus its modifications.
-                    let mut sub = self.mods_from_exprs(modifications, each_flags, final_flags, redeclare_flags, scope);
+                    let mut sub = self.mods_from_exprs(
+                        modifications,
+                        each_flags,
+                        final_flags,
+                        redeclare_flags,
+                        scope,
+                    );
                     sub.retype = Some((cls, scope.clone()));
                     sub.each = each;
                     m.set_path(&path, sub);
                     return;
                 }
                 let sub = Mod {
-                    value: Some(Scoped { expr: value, scope: scope.clone(), sel: Vec::new() }),
+                    value: Some(Scoped {
+                        expr: value,
+                        scope: scope.clone(),
+                        sel: Vec::new(),
+                    }),
                     each,
                     final_,
                     ..Default::default()
                 };
                 m.set_path(&path, sub);
             }
-            E::ClassModification { target, modifications, each_flags, final_flags, redeclare_flags, .. } => {
-                let path: Vec<String> = target.parts.iter().map(|p| p.ident.text.to_string()).collect();
-                let mut sub = self.mods_from_exprs(modifications, each_flags, final_flags, redeclare_flags, scope);
+            E::ClassModification {
+                target,
+                modifications,
+                each_flags,
+                final_flags,
+                redeclare_flags,
+                ..
+            } => {
+                let path: Vec<String> = target
+                    .parts
+                    .iter()
+                    .map(|p| p.ident.text.to_string())
+                    .collect();
+                let mut sub = self.mods_from_exprs(
+                    modifications,
+                    each_flags,
+                    final_flags,
+                    redeclare_flags,
+                    scope,
+                );
                 sub.each = each;
                 sub.final_ = final_;
                 m.set_path(&path, sub);
             }
             // `field(attr = ..) = value`
-            E::Binary { op: rumoca_core::OpBinary::Assign, lhs, rhs, .. }
-                if matches!(lhs.as_ref(), E::ClassModification { .. }) =>
-            {
-                if let E::ClassModification { target, modifications, each_flags, final_flags, redeclare_flags, .. } =
-                    lhs.as_ref()
+            E::Binary {
+                op: rumoca_core::OpBinary::Assign,
+                lhs,
+                rhs,
+                ..
+            } if matches!(lhs.as_ref(), E::ClassModification { .. }) => {
+                if let E::ClassModification {
+                    target,
+                    modifications,
+                    each_flags,
+                    final_flags,
+                    redeclare_flags,
+                    ..
+                } = lhs.as_ref()
                 {
-                    let path: Vec<String> = target.parts.iter().map(|p| p.ident.text.to_string()).collect();
-                    let mut sub = self.mods_from_exprs(modifications, each_flags, final_flags, redeclare_flags, scope);
-                    sub.value = Some(Scoped { expr: rhs, scope: scope.clone(), sel: Vec::new() });
+                    let path: Vec<String> = target
+                        .parts
+                        .iter()
+                        .map(|p| p.ident.text.to_string())
+                        .collect();
+                    let mut sub = self.mods_from_exprs(
+                        modifications,
+                        each_flags,
+                        final_flags,
+                        redeclare_flags,
+                        scope,
+                    );
+                    sub.value = Some(Scoped {
+                        expr: rhs,
+                        scope: scope.clone(),
+                        sel: Vec::new(),
+                    });
                     sub.each = each;
                     sub.final_ = final_;
                     m.set_path(&path, sub);
@@ -417,7 +498,11 @@ impl<'a, 't> Flattener<'a, 't> {
             }
             E::NamedArgument { name, value, .. } => {
                 let sub = Mod {
-                    value: Some(Scoped { expr: value, scope: scope.clone(), sel: Vec::new() }),
+                    value: Some(Scoped {
+                        expr: value,
+                        scope: scope.clone(),
+                        sel: Vec::new(),
+                    }),
                     each,
                     final_,
                     ..Default::default()
@@ -430,9 +515,8 @@ impl<'a, 't> Flattener<'a, 't> {
 
     fn looks_like_class(&self, cref: &ast::ComponentReference, scope: &Scope) -> bool {
         let parts: Vec<&str> = cref.parts.iter().map(|p| &*p.ident.text).collect();
-        self.lookup_class(&scope.env, &parts).is_some_and(|c| {
-            !matches!(self.tree.class_type(c), ClassType::Function)
-        })
+        self.lookup_class(&scope.env, &parts)
+            .is_some_and(|c| !matches!(self.tree.class_type(c), ClassType::Function))
     }
 
     fn component_mod(&self, comp: &'a ast::Component, scope: &Scope) -> Mod<'a> {
@@ -444,7 +528,11 @@ impl<'a, 't> Flattener<'a, 't> {
             scope,
         );
         if let Some(b) = &comp.binding {
-            m.value = Some(Scoped { expr: b, scope: scope.clone(), sel: Vec::new() });
+            m.value = Some(Scoped {
+                expr: b,
+                scope: scope.clone(),
+                sel: Vec::new(),
+            });
         }
         if comp.is_final {
             m.final_ = true;
@@ -516,18 +604,31 @@ impl<'a, 't> Flattener<'a, 't> {
 
     fn inst_name(&self, i: InstId) -> String {
         let p = &self.insts[i as usize].prefix;
-        if p.is_empty() { self.model.name.clone() } else { p.clone() }
+        if p.is_empty() {
+            self.model.name.clone()
+        } else {
+            p.clone()
+        }
     }
 
     fn read_experiment(&mut self, ann: &[E]) {
         for a in ann {
-            if let E::ClassModification { target, modifications, .. } = a
+            if let E::ClassModification {
+                target,
+                modifications,
+                ..
+            } = a
                 && target.parts.len() == 1
                 && &*target.parts[0].ident.text == "experiment"
             {
                 for m in modifications {
                     if let E::Modification { target, value, .. } = m {
-                        let key = target.parts.iter().map(|p| p.ident.text.to_string()).collect::<Vec<_>>().join(".");
+                        let key = target
+                            .parts
+                            .iter()
+                            .map(|p| p.ident.text.to_string())
+                            .collect::<Vec<_>>()
+                            .join(".");
                         let num = literal_number(value);
                         match key.as_str() {
                             "StartTime" => self.model.experiment.start_time = num,
@@ -536,7 +637,8 @@ impl<'a, 't> Flattener<'a, 't> {
                             "Interval" => self.model.experiment.interval = num,
                             "__Dymola_Algorithm" | "__Daedalus_Algorithm" => {
                                 if let E::Terminal { token, .. } = &**value {
-                                    self.model.experiment.algorithm = Some(token.text.trim_matches('"').to_string());
+                                    self.model.experiment.algorithm =
+                                        Some(token.text.trim_matches('"').to_string());
                                 }
                             }
                             _ => {}
@@ -570,7 +672,11 @@ impl<'a, 't> Flattener<'a, 't> {
         let env = if overrides.len() == env.overrides.len() && m.redeclares.is_empty() {
             env
         } else {
-            Rc::new(Env { class: env.class, overrides: Rc::new(overrides), parent: env.parent.clone() })
+            Rc::new(Env {
+                class: env.class,
+                overrides: Rc::new(overrides),
+                parent: env.parent.clone(),
+            })
         };
         let is_connector = matches!(self.tree.class_type(class), ClassType::Connector);
         let id = self.insts.len() as InstId;
@@ -593,7 +699,8 @@ impl<'a, 't> Flattener<'a, 't> {
         let names: Vec<&'a str> = elems.iter().map(|(c, _, _)| c.name.as_str()).collect();
         for (comp, cenv, cm) in elems.into_iter().rev() {
             // first declaration wins (later duplicates come from inherited classes)
-            self.deferred.insert((id, comp.name.clone()), (comp, cenv, cm));
+            self.deferred
+                .insert((id, comp.name.clone()), (comp, cenv, cm));
         }
         for name in names {
             self.ensure_component(id, name)?;
@@ -631,7 +738,10 @@ impl<'a, 't> Flattener<'a, 't> {
         let Some(def) = self.tree.def(class) else {
             return Ok(());
         };
-        let scope = Scope { inst: Some(inst), env: env.clone() };
+        let scope = Scope {
+            inst: Some(inst),
+            env: env.clone(),
+        };
         for ext in &def.extends {
             let parts: Vec<&str> = ext.base_name.name.iter().map(|t| &*t.text).collect();
             if parts.len() == 1 && builtin_name(parts[0]).is_some() {
@@ -639,7 +749,11 @@ impl<'a, 't> Flattener<'a, 't> {
             }
             // Extends names are resolved in the enclosing scope (with overrides).
             let lookup_env = match &env.parent {
-                Some(p) => Rc::new(Env { class: p.class, overrides: env.overrides.clone(), parent: p.parent.clone() }),
+                Some(p) => Rc::new(Env {
+                    class: p.class,
+                    overrides: env.overrides.clone(),
+                    parent: p.parent.clone(),
+                }),
                 None => env.clone(),
             };
             let base = self
@@ -669,7 +783,11 @@ impl<'a, 't> Flattener<'a, 't> {
                     for (k, v) in benv.overrides.iter() {
                         ov2.entry(k.clone()).or_insert(*v);
                     }
-                    let ne = Rc::new(Env { class: ienv.class, overrides: Rc::new(ov2), parent: ienv.parent.clone() });
+                    let ne = Rc::new(Env {
+                        class: ienv.class,
+                        overrides: Rc::new(ov2),
+                        parent: ienv.parent.clone(),
+                    });
                     self.insts[inst as usize].env = ne;
                 }
             }
@@ -704,7 +822,10 @@ impl<'a, 't> Flattener<'a, 't> {
         m: Mod<'a>,
     ) -> Result<()> {
         let name = comp.name.clone();
-        let scope = Scope { inst: Some(inst), env: env.clone() };
+        let scope = Scope {
+            inst: Some(inst),
+            env: env.clone(),
+        };
         if let Some(cond) = &comp.condition {
             let v = self.eval_structural(cond, &scope)?;
             if v == 0.0 {
@@ -735,14 +856,21 @@ impl<'a, 't> Flattener<'a, 't> {
         }
         // Type resolution
         let tparts: Vec<&str> = comp.type_name.name.iter().map(|t| &*t.text).collect();
-        let builtin = if tparts.len() == 1 { builtin_name(tparts[0]) } else { None };
+        let builtin = if tparts.len() == 1 {
+            builtin_name(tparts[0])
+        } else {
+            None
+        };
         let tclass = if builtin.is_some() {
             None
         } else {
             match &m.retype {
                 Some((cls, sc)) => {
                     let parts: Vec<&str> = cls.parts.iter().map(|p| &*p.ident.text).collect();
-                    Some(self.lookup_class(&sc.env, &parts).ok_or_else(|| anyhow!("type '{}' not found", cls))?)
+                    Some(
+                        self.lookup_class(&sc.env, &parts)
+                            .ok_or_else(|| anyhow!("type '{}' not found", cls))?,
+                    )
                 }
                 None => Some(
                     self.lookup_class(&env, &tparts)
@@ -789,7 +917,13 @@ impl<'a, 't> Flattener<'a, 't> {
             let tenv = self.env_of(tc);
             for s in &td.array_subscripts {
                 if let ast::Subscript::Expression(e) = s {
-                    let v = self.eval_structural(e, &Scope { inst: None, env: tenv.clone() })?;
+                    let v = self.eval_structural(
+                        e,
+                        &Scope {
+                            inst: None,
+                            env: tenv.clone(),
+                        },
+                    )?;
                     dims.push(v as usize);
                 }
             }
@@ -797,9 +931,12 @@ impl<'a, 't> Flattener<'a, 't> {
         }
         let count: usize = dims.iter().product();
         let base = builtin.or_else(|| tclass.and_then(|c| self.tree.builtin_base(c)));
-        let is_connector_type = tclass.is_some_and(|c| matches!(self.tree.class_type(c), ClassType::Connector));
+        let is_connector_type =
+            tclass.is_some_and(|c| matches!(self.tree.class_type(c), ClassType::Connector));
         if is_connector_type {
-            self.insts[inst as usize].connector_comps.insert(name.clone());
+            self.insts[inst as usize]
+                .connector_comps
+                .insert(name.clone());
         }
         let prefix = self.insts[inst as usize].prefix.clone();
         let full = format!("{}{}", dot(&prefix), name);
@@ -817,7 +954,10 @@ impl<'a, 't> Flattener<'a, 't> {
                 "String" => {
                     let mut c = Comp::Removed;
                     if dims.is_empty() {
-                        let src = tm.value.clone().or_else(|| tm.sub("start").and_then(|s| s.value.clone()));
+                        let src = tm
+                            .value
+                            .clone()
+                            .or_else(|| tm.sub("start").and_then(|s| s.value.clone()));
                         let v = match src {
                             Some(sc) => match self.translate_scoped(&sc, &mut Ctx::default()) {
                                 Ok(Val::Str(x)) => Some(x),
@@ -832,9 +972,12 @@ impl<'a, 't> Flattener<'a, 't> {
                     self.insts[inst as usize].comps.insert(name, c);
                     return Ok(());
                 }
+                "ExternalObject" => VarType::Integer,
                 _ => VarType::Enumeration,
             };
             let mut kind = match &comp.variability {
+                // An external object (table handle) is fixed for the whole simulation.
+                _ if b == "ExternalObject" => VarKind::Parameter,
                 Variability::Constant(_) => VarKind::Constant,
                 Variability::Parameter(_) => VarKind::Parameter,
                 Variability::Discrete(_) => VarKind::Discrete,
@@ -852,15 +995,25 @@ impl<'a, 't> Flattener<'a, 't> {
             let causality_output = matches!(comp.causality, Causality::Output(_))
                 || tclass.is_some_and(|c| self.type_is_output(c));
             let at_top = prefix.is_empty() || self.is_top_connector(inst);
-            if causality_input && at_top && matches!(kind, VarKind::Continuous | VarKind::Discrete) {
+            if causality_input && at_top && matches!(kind, VarKind::Continuous | VarKind::Discrete)
+            {
                 kind = VarKind::Input;
             }
             let is_flow = matches!(comp.connection, ast::Connection::Flow(_));
-            let desc: String = comp.description.iter().map(|t| t.text.trim_matches('"').to_string()).collect::<Vec<_>>().join("");
+            let desc: String = comp
+                .description
+                .iter()
+                .map(|t| t.text.trim_matches('"').to_string())
+                .collect::<Vec<_>>()
+                .join("");
             let mut elems = Vec::with_capacity(count.max(1));
             let n = if dims.is_empty() { 1 } else { count };
             for k in 0..n {
-                let vname = if dims.is_empty() { full.clone() } else { format!("{}[{}]", full, index_str(&dims, k)) };
+                let vname = if dims.is_empty() {
+                    full.clone()
+                } else {
+                    format!("{}[{}]", full, index_str(&dims, k))
+                };
                 let mut v = Variable::new(vname.clone(), kind, ty);
                 v.is_flow = is_flow;
                 v.description = desc.clone();
@@ -875,7 +1028,13 @@ impl<'a, 't> Flattener<'a, 't> {
                     self.conn_flow.insert(vid, true);
                 }
                 let is_param = matches!(kind, VarKind::Parameter | VarKind::Constant);
-                self.pending.push(PendingVar { var: vid, m: tm.clone(), index: k, count: n, is_param });
+                self.pending.push(PendingVar {
+                    var: vid,
+                    m: tm.clone(),
+                    index: k,
+                    count: n,
+                    is_param,
+                });
                 if is_param {
                     self.binding_mods.insert(vid, self.pending.len() - 1);
                 }
@@ -889,27 +1048,50 @@ impl<'a, 't> Flattener<'a, 't> {
                     }
                 }
             }
-            let c = if dims.is_empty() { elems.pop().unwrap() } else { Comp::Arr(dims, std::rc::Rc::new(elems)) };
+            let c = if dims.is_empty() {
+                elems.pop().unwrap()
+            } else {
+                Comp::Arr(dims, std::rc::Rc::new(elems))
+            };
             self.insts[inst as usize].comps.insert(name, c);
             return Ok(());
         }
         let tc = tclass.unwrap();
-        if matches!(self.tree.class_type(tc), ClassType::Function | ClassType::Package) {
+        if matches!(
+            self.tree.class_type(tc),
+            ClassType::Function | ClassType::Package
+        ) {
             self.insts[inst as usize].comps.insert(name, Comp::Removed);
             return Ok(());
         }
         let tenv = {
             let te = self.env_of(tc);
             let ov = env.overrides.clone();
-            if ov.is_empty() { te } else { Rc::new(Env { class: tc, overrides: ov, parent: te.parent.clone() }) }
+            if ov.is_empty() {
+                te
+            } else {
+                Rc::new(Env {
+                    class: tc,
+                    overrides: ov,
+                    parent: te.parent.clone(),
+                })
+            }
         };
         // Record parameters (`parameter Rec r`) propagate variability to fields.
         let var_prefix = comp.variability.clone();
         let mut elems = Vec::new();
         let n = if dims.is_empty() { 1 } else { count };
         for k in 0..n {
-            let cprefix = if dims.is_empty() { full.clone() } else { format!("{}[{}]", full, index_str(&dims, k)) };
-            let cm = if n > 1 { select_mod_element(&m, k, n) } else { m.clone() };
+            let cprefix = if dims.is_empty() {
+                full.clone()
+            } else {
+                format!("{}[{}]", full, index_str(&dims, k))
+            };
+            let cm = if n > 1 {
+                select_mod_element(&m, k, n)
+            } else {
+                m.clone()
+            };
             let child = self.instantiate(tc, cprefix, &cm, tenv.clone(), Some(inst))?;
             if !matches!(var_prefix, Variability::Empty) {
                 self.propagate_variability(child, &var_prefix);
@@ -932,7 +1114,11 @@ impl<'a, 't> Flattener<'a, 't> {
             }
             elems.push(Comp::Inst(child));
         }
-        let c = if dims.is_empty() { elems.pop().unwrap() } else { Comp::Arr(dims, std::rc::Rc::new(elems)) };
+        let c = if dims.is_empty() {
+            elems.pop().unwrap()
+        } else {
+            Comp::Arr(dims, std::rc::Rc::new(elems))
+        };
         self.insts[inst as usize].comps.insert(name, c);
         Ok(())
     }
@@ -1007,7 +1193,9 @@ impl<'a, 't> Flattener<'a, 't> {
 
     fn is_top_connector(&self, inst: InstId) -> bool {
         let i = &self.insts[inst as usize];
-        i.is_connector && i.parent.is_some_and(|p| self.insts[p as usize].prefix.is_empty())
+        i.is_connector
+            && i.parent
+                .is_some_and(|p| self.insts[p as usize].prefix.is_empty())
     }
 
     // ------------------------------------------------------------------
@@ -1019,7 +1207,10 @@ impl<'a, 't> Flattener<'a, 't> {
         let v = self.translate(e, scope, &mut Ctx::default())?;
         let x = v.scalar()?;
         self.eval_param_expr(x).ok_or_else(|| {
-            anyhow!("expression '{}' must be a constant or parameter expression", self.model.show(x))
+            anyhow!(
+                "expression '{}' must be a constant or parameter expression",
+                self.model.show(x)
+            )
         })
     }
 
@@ -1041,8 +1232,15 @@ impl<'a, 't> Flattener<'a, 't> {
             }
         }
         let arena = &mut self.model.arena;
-        let consts: FxHashMap<VarId, ExprId> = map.iter().map(|(&k, &v)| (k, arena.constant(v))).collect();
-        let r = arena.substitute(e, &|n| if let Node::Var(v) = n { consts.get(&v).copied() } else { None });
+        let consts: FxHashMap<VarId, ExprId> =
+            map.iter().map(|(&k, &v)| (k, arena.constant(v))).collect();
+        let r = arena.substitute(e, &|n| {
+            if let Node::Var(v) = n {
+                consts.get(&v).copied()
+            } else {
+                None
+            }
+        });
         arena.as_const(r)
     }
 
@@ -1084,19 +1282,34 @@ impl<'a, 't> Flattener<'a, 't> {
         for (inst, sc) in rb {
             let v = self
                 .translate_scoped(&sc, &mut Ctx::default())
-                .with_context(|| format!("in declaration of '{}'", self.insts[inst as usize].prefix))?;
-            let o = self.model.origin(format!("declaration of {}", self.insts[inst as usize].prefix));
-            self.bind_fields(inst, v, o).with_context(|| format!("in declaration of '{}'", self.insts[inst as usize].prefix))?;
+                .with_context(|| {
+                    format!("in declaration of '{}'", self.insts[inst as usize].prefix)
+                })?;
+            let o = self.model.origin(format!(
+                "declaration of {}",
+                self.insts[inst as usize].prefix
+            ));
+            self.bind_fields(inst, v, o).with_context(|| {
+                format!("in declaration of '{}'", self.insts[inst as usize].prefix)
+            })?;
         }
         Ok(())
     }
 
     fn bind_fields(&mut self, inst: InstId, v: Val, o: u32) -> Result<()> {
         let rec = self.as_record(&v)?;
-        let Val::Rec(fields) = rec else { unreachable!() };
-        let comps: Vec<(String, Comp)> = self.insts[inst as usize].comps.iter().map(|(k, c)| (k.clone(), c.clone())).collect();
+        let Val::Rec(fields) = rec else {
+            unreachable!()
+        };
+        let comps: Vec<(String, Comp)> = self.insts[inst as usize]
+            .comps
+            .iter()
+            .map(|(k, c)| (k.clone(), c.clone()))
+            .collect();
         for (name, c) in comps {
-            let Some((_, fv)) = fields.iter().find(|(n, _)| *n == name) else { continue };
+            let Some((_, fv)) = fields.iter().find(|(n, _)| *n == name) else {
+                continue;
+            };
             self.bind_comp(&c, fv.clone(), o)?;
         }
         Ok(())
@@ -1112,7 +1325,10 @@ impl<'a, 't> Flattener<'a, 't> {
                 let (_, xs) = v.elems()?;
                 for (k, x) in el.iter().enumerate() {
                     if let Comp::Var(var) = x {
-                        let e = *xs.get(k).or(xs.first()).ok_or_else(|| anyhow!("empty array value"))?;
+                        let e = *xs
+                            .get(k)
+                            .or(xs.first())
+                            .ok_or_else(|| anyhow!("empty array value"))?;
                         self.bind_var(*var, e, o);
                     }
                 }
@@ -1142,7 +1358,11 @@ impl<'a, 't> Flattener<'a, 't> {
             self.binding_done.insert(var);
         } else {
             let lhs = self.model.arena.var(var);
-            self.model.equations.push(Equation { lhs, rhs: e, origin: o });
+            self.model.equations.push(Equation {
+                lhs,
+                rhs: e,
+                origin: o,
+            });
         }
     }
 
@@ -1155,7 +1375,8 @@ impl<'a, 't> Flattener<'a, 't> {
             }
             self.binding_done.insert(v);
             let name = self.model.vars[v as usize].name.clone();
-            self.translate_attrs(i).with_context(|| format!("in declaration of '{name}'"))?;
+            self.translate_attrs(i)
+                .with_context(|| format!("in declaration of '{name}'"))?;
         }
         Ok(())
     }
@@ -1174,13 +1395,21 @@ impl<'a, 't> Flattener<'a, 't> {
             Val::S(e) => Ok(e),
             Val::A(_, v) => {
                 if each || count == 1 {
-                    if v.len() == 1 { Ok(v[0]) } else { bail!("array value for scalar attribute") }
+                    if v.len() == 1 {
+                        Ok(v[0])
+                    } else {
+                        bail!("array value for scalar attribute")
+                    }
                 } else if v.len() == count {
                     Ok(v[index])
                 } else if v.len() == 1 {
                     Ok(v[0])
                 } else {
-                    bail!("array value of size {} does not match {} elements", v.len(), count)
+                    bail!(
+                        "array value of size {} does not match {} elements",
+                        v.len(),
+                        count
+                    )
                 }
             }
             Val::Tuple(v) if !v.is_empty() => self.element_of(v[0].clone(), index, count, each),
@@ -1202,8 +1431,15 @@ impl<'a, 't> Flattener<'a, 't> {
                 self.model.vars[var as usize].binding = Some(e);
             } else {
                 let lhs = self.model.arena.var(var);
-                let o = self.model.origin(format!("declaration of {}", self.model.vars[var as usize].name));
-                self.model.equations.push(Equation { lhs, rhs: e, origin: o });
+                let o = self.model.origin(format!(
+                    "declaration of {}",
+                    self.model.vars[var as usize].name
+                ));
+                self.model.equations.push(Equation {
+                    lhs,
+                    rhs: e,
+                    origin: o,
+                });
             }
         }
         for (attr, sm) in &m.subs {
@@ -1227,7 +1463,12 @@ impl<'a, 't> Flattener<'a, 't> {
                     self.model.vars[var as usize].fixed = Some(f != 0.0);
                 }
                 "unit" | "displayUnit" | "quantity" => {
-                    if let E::Terminal { token, terminal_type: TerminalType::String, .. } = s.expr {
+                    if let E::Terminal {
+                        token,
+                        terminal_type: TerminalType::String,
+                        ..
+                    } = s.expr
+                    {
                         let t = token.text.trim_matches('"').to_string();
                         let v = &mut self.model.vars[var as usize];
                         match attr.as_str() {
@@ -1259,7 +1500,10 @@ impl<'a, 't> Flattener<'a, 't> {
     fn translate_instance(&mut self, id: InstId) -> Result<()> {
         let eqs = std::mem::take(&mut self.insts[id as usize].equations);
         for (eq, env) in &eqs {
-            let scope = Scope { inst: Some(id), env: env.clone() };
+            let scope = Scope {
+                inst: Some(id),
+                env: env.clone(),
+            };
             let mut ctx = Ctx::default();
             let mut out = Vec::new();
             self.translate_equation(eq, &scope, &mut ctx, &mut out, false)?;
@@ -1267,7 +1511,10 @@ impl<'a, 't> Flattener<'a, 't> {
         }
         let ieqs = std::mem::take(&mut self.insts[id as usize].initial_equations);
         for (eq, env) in &ieqs {
-            let scope = Scope { inst: Some(id), env: env.clone() };
+            let scope = Scope {
+                inst: Some(id),
+                env: env.clone(),
+            };
             let mut ctx = Ctx::default();
             let mut out = Vec::new();
             self.translate_equation(eq, &scope, &mut ctx, &mut out, true)?;
@@ -1275,12 +1522,18 @@ impl<'a, 't> Flattener<'a, 't> {
         }
         let algs = std::mem::take(&mut self.insts[id as usize].algorithms);
         for (alg, env) in &algs {
-            let scope = Scope { inst: Some(id), env: env.clone() };
+            let scope = Scope {
+                inst: Some(id),
+                env: env.clone(),
+            };
             self.translate_algorithm(alg, &scope, false)?;
         }
         let ialgs = std::mem::take(&mut self.insts[id as usize].initial_algorithms);
         for (alg, env) in &ialgs {
-            let scope = Scope { inst: Some(id), env: env.clone() };
+            let scope = Scope {
+                inst: Some(id),
+                env: env.clone(),
+            };
             self.translate_algorithm(alg, &scope, true)?;
         }
         Ok(())
@@ -1291,7 +1544,13 @@ impl<'a, 't> Flattener<'a, 't> {
         self.model.origin(format!("{what} in {name}"))
     }
 
-    fn push_residuals(&mut self, l: Val, r: Val, out: &mut Vec<Equation>, origin: u32) -> Result<()> {
+    fn push_residuals(
+        &mut self,
+        l: Val,
+        r: Val,
+        out: &mut Vec<Equation>,
+        origin: u32,
+    ) -> Result<()> {
         match (&l, &r) {
             (Val::Tuple(ls), Val::Tuple(rs)) => {
                 for (a, b) in ls.iter().zip(rs.iter()) {
@@ -1310,9 +1569,22 @@ impl<'a, 't> Flattener<'a, 't> {
                 }
                 return Ok(());
             }
-            (Val::Inst(_) | Val::IA(..), _) | (_, Val::Inst(_) | Val::IA(..)) | (Val::Rec(_), _) | (_, Val::Rec(_)) => {
-                let lr = if Self::is_record_like(&l) { self.to_rec(l)? } else { let (a, b) = self.complex_parts(l)?; Self::complex(a, b) };
-                let rr = if Self::is_record_like(&r) { self.to_rec(r)? } else { let (a, b) = self.complex_parts(r)?; Self::complex(a, b) };
+            (Val::Inst(_) | Val::IA(..), _)
+            | (_, Val::Inst(_) | Val::IA(..))
+            | (Val::Rec(_), _)
+            | (_, Val::Rec(_)) => {
+                let lr = if Self::is_record_like(&l) {
+                    self.to_rec(l)?
+                } else {
+                    let (a, b) = self.complex_parts(l)?;
+                    Self::complex(a, b)
+                };
+                let rr = if Self::is_record_like(&r) {
+                    self.to_rec(r)?
+                } else {
+                    let (a, b) = self.complex_parts(r)?;
+                    Self::complex(a, b)
+                };
                 return self.push_residuals(lr, rr, out, origin);
             }
             _ => {}
@@ -1322,14 +1594,22 @@ impl<'a, 't> Flattener<'a, 't> {
         if le.len() != re.len() {
             if re.len() == 1 {
                 for &x in &le {
-                    out.push(Equation { lhs: x, rhs: re[0], origin });
+                    out.push(Equation {
+                        lhs: x,
+                        rhs: re[0],
+                        origin,
+                    });
                 }
                 return Ok(());
             }
             bail!("equation size mismatch: {:?} vs {:?}", ld, rd);
         }
         for (a, b) in le.into_iter().zip(re) {
-            out.push(Equation { lhs: a, rhs: b, origin });
+            out.push(Equation {
+                lhs: a,
+                rhs: b,
+                origin,
+            });
         }
         Ok(())
     }
@@ -1338,8 +1618,11 @@ impl<'a, 't> Flattener<'a, 't> {
         match v {
             Val::Inst(i) => {
                 let mut fields = Vec::new();
-                let comps: Vec<(String, Comp)> =
-                    self.insts[*i as usize].comps.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                let comps: Vec<(String, Comp)> = self.insts[*i as usize]
+                    .comps
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
                 for (n, c) in comps {
                     if let Some(val) = self.comp_value(&c) {
                         fields.push((n, val));
@@ -1391,7 +1674,10 @@ impl<'a, 't> Flattener<'a, 't> {
                     Ok(())
                 })?;
             }
-            ast::Equation::If { cond_blocks, else_block } => {
+            ast::Equation::If {
+                cond_blocks,
+                else_block,
+            } => {
                 // Parameter conditions select a branch at translation time.
                 let mut conds = Vec::new();
                 for b in cond_blocks {
@@ -1416,7 +1702,10 @@ impl<'a, 't> Flattener<'a, 't> {
                 if all_param {
                     let branch: Vec<&'a ast::Equation> = match chosen.unwrap_or(None) {
                         Some(i) => cond_blocks[i].eqs.iter().collect(),
-                        None => else_block.as_ref().map(|v| v.iter().collect()).unwrap_or_default(),
+                        None => else_block
+                            .as_ref()
+                            .map(|v| v.iter().collect())
+                            .unwrap_or_default(),
                     };
                     for e in branch {
                         self.translate_equation(e, scope, ctx, out, initial)?;
@@ -1439,7 +1728,9 @@ impl<'a, 't> Flattener<'a, 't> {
                     }
                     let n = ev.len();
                     if branches.iter().any(|b| b.len() != n) {
-                        bail!("if-equation branches with non-parameter conditions must have the same number of equations");
+                        bail!(
+                            "if-equation branches with non-parameter conditions must have the same number of equations"
+                        );
                     }
                     let o = self.eq_origin(scope, "if-equation");
                     for k in 0..n {
@@ -1451,7 +1742,11 @@ impl<'a, 't> Flattener<'a, 't> {
                             let r = self.model.arena.sub(b[k].lhs, b[k].rhs);
                             res = self.model.arena.if_(conds[bi], r, res);
                         }
-                        out.push(Equation { lhs: res, rhs: Arena::ZERO, origin: o });
+                        out.push(Equation {
+                            lhs: res,
+                            rhs: Arena::ZERO,
+                            origin: o,
+                        });
                     }
                 }
             }
@@ -1466,26 +1761,46 @@ impl<'a, 't> Flattener<'a, 't> {
                     branches.push((c, acts));
                 }
                 let o = self.eq_origin(scope, "when-equation");
-                self.model.whens.push(WhenClause { branches, origin: o });
+                self.model.whens.push(WhenClause {
+                    branches,
+                    origin: o,
+                });
             }
             ast::Equation::FunctionCall { comp, args, .. } => {
                 let name = cref_name(comp);
                 match name.as_str() {
                     "assert" => {
                         if let Some(c) = args.first() {
-                            let c = self.translate(c, scope, &mut Ctx { no_event: true, ..ctx.clone() })?.scalar()?;
+                            let c = self
+                                .translate(
+                                    c,
+                                    scope,
+                                    &mut Ctx {
+                                        no_event: true,
+                                        ..ctx.clone()
+                                    },
+                                )?
+                                .scalar()?;
                             let msg = args.get(1).map(|m| expr_string(m)).unwrap_or_default();
                             self.model.asserts.push((c, msg));
                         }
                     }
                     "terminate" => {
-                        self.model.warnings.push("terminate() outside when-clause ignored".into());
+                        self.model
+                            .warnings
+                            .push("terminate() outside when-clause ignored".into());
                     }
-                    "Connections.branch" | "Connections.root" | "Connections.potentialRoot" | "Connections.uniqueRoot" => {
+                    "Connections.branch"
+                    | "Connections.root"
+                    | "Connections.potentialRoot"
+                    | "Connections.uniqueRoot" => {
                         self.oc_log.used = true;
                         let (pos, named) = split_args(args);
                         let mut nodes = Vec::new();
-                        for a in pos.iter().take(if name == "Connections.branch" { 2 } else { 1 }) {
+                        for a in pos
+                            .iter()
+                            .take(if name == "Connections.branch" { 2 } else { 1 })
+                        {
                             nodes.push(self.oc_node(a, scope, ctx)?);
                         }
                         match name.as_str() {
@@ -1495,7 +1810,12 @@ impl<'a, 't> Flattener<'a, 't> {
                                 }
                             }
                             "Connections.potentialRoot" => {
-                                let pe = pos.get(1).copied().or_else(|| named.iter().find(|(n, _)| *n == "priority").map(|(_, e)| *e));
+                                let pe = pos.get(1).copied().or_else(|| {
+                                    named
+                                        .iter()
+                                        .find(|(n, _)| *n == "priority")
+                                        .map(|(_, e)| *e)
+                                });
                                 let p = match pe {
                                     Some(e) => self.eval_structural(e, scope).unwrap_or(0.0) as i64,
                                     None => 0,
@@ -1516,8 +1836,19 @@ impl<'a, 't> Flattener<'a, 't> {
                     }
                 }
             }
-            ast::Equation::Assert { condition, message, .. } => {
-                let c = self.translate(condition, scope, &mut Ctx { no_event: true, ..ctx.clone() })?.scalar()?;
+            ast::Equation::Assert {
+                condition, message, ..
+            } => {
+                let c = self
+                    .translate(
+                        condition,
+                        scope,
+                        &mut Ctx {
+                            no_event: true,
+                            ..ctx.clone()
+                        },
+                    )?
+                    .scalar()?;
                 self.model.asserts.push((c, expr_string(message)));
             }
         }
@@ -1544,7 +1875,13 @@ impl<'a, 't> Flattener<'a, 't> {
         }
     }
 
-    fn when_actions(&mut self, e: &'a ast::Equation, scope: &Scope, ctx: &mut Ctx, acts: &mut Vec<WhenAction>) -> Result<()> {
+    fn when_actions(
+        &mut self,
+        e: &'a ast::Equation,
+        scope: &Scope,
+        ctx: &mut Ctx,
+        acts: &mut Vec<WhenAction>,
+    ) -> Result<()> {
         match e {
             ast::Equation::Simple { lhs, rhs } => {
                 let l = self.translate(lhs, scope, ctx)?;
@@ -1573,7 +1910,11 @@ impl<'a, 't> Flattener<'a, 't> {
                     let Node::Var(v) = self.model.arena.node(*t) else {
                         bail!("left-hand side of a when-equation must be a variable");
                     };
-                    let val = values.get(i).or(values.first()).copied().unwrap_or(Arena::ZERO);
+                    let val = values
+                        .get(i)
+                        .or(values.first())
+                        .copied()
+                        .unwrap_or(Arena::ZERO);
                     self.when_assigned.insert(v);
                     acts.push(WhenAction::Assign(v, val));
                 }
@@ -1597,16 +1938,24 @@ impl<'a, 't> Flattener<'a, 't> {
                         }
                     }
                     "terminate" => {
-                        acts.push(WhenAction::Terminate(args.first().map(expr_string).unwrap_or_default()));
+                        acts.push(WhenAction::Terminate(
+                            args.first().map(expr_string).unwrap_or_default(),
+                        ));
                     }
                     "assert" => {
                         let c = self.translate(&args[0], scope, ctx)?.scalar()?;
-                        acts.push(WhenAction::Assert(c, args.get(1).map(expr_string).unwrap_or_default()));
+                        acts.push(WhenAction::Assert(
+                            c,
+                            args.get(1).map(expr_string).unwrap_or_default(),
+                        ));
                     }
                     _ => {}
                 }
             }
-            ast::Equation::If { cond_blocks, else_block } => {
+            ast::Equation::If {
+                cond_blocks,
+                else_block,
+            } => {
                 // Conditional assignments inside when: v = if c then a else b (else keeps pre(v)).
                 let mut per_branch: Vec<(ExprId, Vec<WhenAction>)> = Vec::new();
                 for b in cond_blocks {
@@ -1625,7 +1974,10 @@ impl<'a, 't> Flattener<'a, 't> {
                 }
                 // Merge assignments by variable.
                 let mut vars: Vec<VarId> = Vec::new();
-                for (_, a) in per_branch.iter().chain(std::iter::once(&(Arena::ZERO, else_acts.clone()))) {
+                for (_, a) in per_branch
+                    .iter()
+                    .chain(std::iter::once(&(Arena::ZERO, else_acts.clone())))
+                {
                     for x in a {
                         if let WhenAction::Assign(v, _) | WhenAction::Reinit(v, _) = x
                             && !vars.contains(v)
@@ -1643,17 +1995,26 @@ impl<'a, 't> Flattener<'a, 't> {
                         })
                     };
                     for reinit in [false, true] {
-                        let any = per_branch.iter().any(|(_, a)| find(a, reinit).is_some()) || find(&else_acts, reinit).is_some();
+                        let any = per_branch.iter().any(|(_, a)| find(a, reinit).is_some())
+                            || find(&else_acts, reinit).is_some();
                         if !any {
                             continue;
                         }
-                        let keep = if reinit { self.model.arena.var(v) } else { self.model.arena.pre(v) };
+                        let keep = if reinit {
+                            self.model.arena.var(v)
+                        } else {
+                            self.model.arena.pre(v)
+                        };
                         let mut r = find(&else_acts, reinit).unwrap_or(keep);
                         for (c, a) in per_branch.iter().rev() {
                             let x = find(a, reinit).unwrap_or(keep);
                             r = self.model.arena.if_(*c, x, r);
                         }
-                        acts.push(if reinit { WhenAction::Reinit(v, r) } else { WhenAction::Assign(v, r) });
+                        acts.push(if reinit {
+                            WhenAction::Reinit(v, r)
+                        } else {
+                            WhenAction::Assign(v, r)
+                        });
                         if !reinit {
                             self.when_assigned.insert(v);
                         }
@@ -1677,7 +2038,9 @@ impl<'a, 't> Flattener<'a, 't> {
                 })?;
                 acts.extend(tmp);
             }
-            ast::Equation::Assert { condition, message, .. } => {
+            ast::Equation::Assert {
+                condition, message, ..
+            } => {
                 let c = self.translate(condition, scope, ctx)?.scalar()?;
                 acts.push(WhenAction::Assert(c, expr_string(message)));
             }
@@ -1702,7 +2065,10 @@ impl<'a, 't> Flattener<'a, 't> {
         let name = idx.ident.text.to_string();
         for v in vals {
             ctx.locals.push(FxHashMap::default());
-            ctx.locals.last_mut().unwrap().insert(name.clone(), Val::S(v));
+            ctx.locals
+                .last_mut()
+                .unwrap()
+                .insert(name.clone(), Val::S(v));
             let r = self.for_loop(&indices[1..], scope, ctx, body);
             ctx.locals.pop();
             r?;
@@ -1735,7 +2101,11 @@ impl<'a, 't> Flattener<'a, 't> {
                     out.push((*i, *j, f));
                     return;
                 }
-                let ca: Vec<(String, Comp)> = self.insts[*i as usize].comps.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                let ca: Vec<(String, Comp)> = self.insts[*i as usize]
+                    .comps
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
                 for (k, x) in ca {
                     if let Some(y) = self.insts[*j as usize].comps.get(&k).cloned() {
                         self.oc_pairs(&x, &y, out);
@@ -1753,8 +2123,12 @@ impl<'a, 't> Flattener<'a, 't> {
 
     /// Node name of a `Connections.*` argument (an overconstrained record instance).
     fn oc_node(&mut self, e: &'a E, scope: &Scope, ctx: &mut Ctx) -> Result<Option<String>> {
-        let E::ComponentReference(cr) = e else { return Ok(None) };
-        let Some(inst) = scope.inst else { return Ok(None) };
+        let E::ComponentReference(cr) = e else {
+            return Ok(None);
+        };
+        let Some(inst) = scope.inst else {
+            return Ok(None);
+        };
         let (c, _) = self.resolve_connector(cr, inst, scope, ctx)?;
         Ok(match c {
             Some(Comp::Inst(i)) => Some(self.insts[i as usize].prefix.clone()),
@@ -1767,11 +2141,21 @@ impl<'a, 't> Flattener<'a, 't> {
         let ra = self.as_record(&Val::Inst(i))?;
         let rb = self.as_record(&Val::Inst(j))?;
         let outs = self.inline_function(f, vec![ra, rb], vec![], Rc::new(FxHashMap::default()))?;
-        let res = outs.into_iter().next().ok_or_else(|| anyhow!("equalityConstraint has no output"))?;
+        let res = outs
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow!("equalityConstraint has no output"))?;
         let (_, el) = res.elems()?;
-        let o = self.model.origin(format!("equalityConstraint({}, {})", self.insts[i as usize].prefix, self.insts[j as usize].prefix));
+        let o = self.model.origin(format!(
+            "equalityConstraint({}, {})",
+            self.insts[i as usize].prefix, self.insts[j as usize].prefix
+        ));
         for e in el {
-            self.model.equations.push(Equation { lhs: Arena::ZERO, rhs: e, origin: o });
+            self.model.equations.push(Equation {
+                lhs: Arena::ZERO,
+                rhs: e,
+                origin: o,
+            });
         }
         Ok(())
     }
@@ -1783,7 +2167,9 @@ impl<'a, 't> Flattener<'a, 't> {
         scope: &Scope,
         ctx: &mut Ctx,
     ) -> Result<()> {
-        let inst = scope.inst.ok_or_else(|| anyhow!("connect outside of a model"))?;
+        let inst = scope
+            .inst
+            .ok_or_else(|| anyhow!("connect outside of a model"))?;
         let (ca, ia) = self.resolve_connector(a, inst, scope, ctx)?;
         let (cb, ib) = self.resolve_connector(b, inst, scope, ctx)?;
         let (Some(ca), Some(cb)) = (ca, cb) else {
@@ -1809,7 +2195,10 @@ impl<'a, 't> Flattener<'a, 't> {
             self.oc_log.used = true;
             let mut skip: FxHashSet<VarId> = FxHashSet::default();
             for &(i, j, fcls) in &ocp {
-                let (na, nb) = (self.insts[i as usize].prefix.clone(), self.insts[j as usize].prefix.clone());
+                let (na, nb) = (
+                    self.insts[i as usize].prefix.clone(),
+                    self.insts[j as usize].prefix.clone(),
+                );
                 self.oc_log.connects.push((na.clone(), nb.clone()));
                 if let Some(ans) = self.oc_answers.clone()
                     && ans.is_broken(&na, &nb)
@@ -1817,11 +2206,16 @@ impl<'a, 't> Flattener<'a, 't> {
                     let mut la = Vec::new();
                     self.connector_leaves(&Comp::Inst(i), &mut la);
                     skip.extend(la);
-                    self.equality_constraint(i, j, fcls).with_context(|| format!("equalityConstraint for connect({a}, {b})"))?;
+                    self.equality_constraint(i, j, fcls)
+                        .with_context(|| format!("equalityConstraint for connect({a}, {b})"))?;
                 }
             }
             if !skip.is_empty() {
-                let (fa, fb): (Vec<VarId>, Vec<VarId>) = pa.into_iter().zip(pb).filter(|(va, _)| !skip.contains(va)).unzip();
+                let (fa, fb): (Vec<VarId>, Vec<VarId>) = pa
+                    .into_iter()
+                    .zip(pb)
+                    .filter(|(va, _)| !skip.contains(va))
+                    .unzip();
                 pa = fa;
                 pb = fb;
             }
@@ -1829,15 +2223,28 @@ impl<'a, 't> Flattener<'a, 't> {
         for (va, vb) in pa.into_iter().zip(pb) {
             // Parameters and constants in connectors (the phase number m of a plug) are not
             // connection variables.
-            if matches!(self.model.vars[va as usize].kind, VarKind::Parameter | VarKind::Constant)
-                || matches!(self.model.vars[vb as usize].kind, VarKind::Parameter | VarKind::Constant)
-            {
+            if matches!(
+                self.model.vars[va as usize].kind,
+                VarKind::Parameter | VarKind::Constant
+            ) || matches!(
+                self.model.vars[vb as usize].kind,
+                VarKind::Parameter | VarKind::Constant
+            ) {
                 continue;
             }
             let flow = self.model.vars[va as usize].is_flow;
             self.conn_flow.insert(va, flow);
             self.conn_flow.insert(vb, flow);
-            self.union(ConnPoint { var: va, inside: ia }, ConnPoint { var: vb, inside: ib });
+            self.union(
+                ConnPoint {
+                    var: va,
+                    inside: ia,
+                },
+                ConnPoint {
+                    var: vb,
+                    inside: ib,
+                },
+            );
         }
         Ok(())
     }
@@ -1890,14 +2297,24 @@ impl<'a, 't> Flattener<'a, 't> {
         Ok((Some(cur), !outside))
     }
 
-    fn subscript_comp(&mut self, c: Comp, subs: &'a [ast::Subscript], scope: &Scope, ctx: &mut Ctx) -> Result<Comp> {
+    fn subscript_comp(
+        &mut self,
+        c: Comp,
+        subs: &'a [ast::Subscript],
+        scope: &Scope,
+        ctx: &mut Ctx,
+    ) -> Result<Comp> {
         let Comp::Arr(dims, el) = c else {
             bail!("subscript on a non-array component");
         };
         let sel = self.eval_subscripts(subs, &dims, scope, ctx)?;
         let (nd, idx) = select_indices(&dims, &sel);
         let v: Vec<Comp> = idx.into_iter().map(|i| el[i].clone()).collect();
-        if nd.is_empty() { Ok(v.into_iter().next().unwrap()) } else { Ok(Comp::Arr(nd, std::rc::Rc::new(v))) }
+        if nd.is_empty() {
+            Ok(v.into_iter().next().unwrap())
+        } else {
+            Ok(Comp::Arr(nd, std::rc::Rc::new(v)))
+        }
     }
 
     fn connector_leaves(&self, c: &Comp, out: &mut Vec<VarId>) {
@@ -1972,9 +2389,17 @@ impl<'a, 't> Flattener<'a, 't> {
                 let mut sum = Arena::ZERO;
                 for p in set {
                     let v = self.model.arena.var(p.var);
-                    sum = if p.inside { self.model.arena.add(sum, v) } else { self.model.arena.sub(sum, v) };
+                    sum = if p.inside {
+                        self.model.arena.add(sum, v)
+                    } else {
+                        self.model.arena.sub(sum, v)
+                    };
                 }
-                self.model.equations.push(Equation { lhs: sum, rhs: Arena::ZERO, origin });
+                self.model.equations.push(Equation {
+                    lhs: sum,
+                    rhs: Arena::ZERO,
+                    origin,
+                });
             } else {
                 let v0 = self.model.arena.var(set[0].var);
                 for p in &set[1..] {
@@ -1982,7 +2407,11 @@ impl<'a, 't> Flattener<'a, 't> {
                         continue;
                     }
                     let v = self.model.arena.var(p.var);
-                    self.model.equations.push(Equation { lhs: v0, rhs: v, origin });
+                    self.model.equations.push(Equation {
+                        lhs: v0,
+                        rhs: v,
+                        origin,
+                    });
                 }
             }
         }
@@ -1998,7 +2427,11 @@ impl<'a, 't> Flattener<'a, 't> {
                 continue;
             }
             let v = self.model.arena.var(f);
-            self.model.equations.push(Equation { lhs: v, rhs: Arena::ZERO, origin: o2 });
+            self.model.equations.push(Equation {
+                lhs: v,
+                rhs: Arena::ZERO,
+                origin: o2,
+            });
         }
     }
 
@@ -2018,15 +2451,28 @@ impl<'a, 't> Flattener<'a, 't> {
     pub fn translate(&mut self, e: &'a E, scope: &Scope, ctx: &mut Ctx) -> Result<Val> {
         match e {
             E::Empty { .. } => Ok(Val::S(Arena::ZERO)),
-            E::Terminal { terminal_type, token, .. } => match terminal_type {
+            E::Terminal {
+                terminal_type,
+                token,
+                ..
+            } => match terminal_type {
                 TerminalType::UnsignedReal | TerminalType::UnsignedInteger => {
-                    let v: f64 = token.text.parse().map_err(|_| anyhow!("bad number '{}'", token.text))?;
+                    let v: f64 = token
+                        .text
+                        .parse()
+                        .map_err(|_| anyhow!("bad number '{}'", token.text))?;
                     Ok(Val::S(self.model.arena.constant(v)))
                 }
-                TerminalType::Bool => Ok(Val::S(if &*token.text == "true" { Arena::ONE } else { Arena::ZERO })),
+                TerminalType::Bool => Ok(Val::S(if &*token.text == "true" {
+                    Arena::ONE
+                } else {
+                    Arena::ZERO
+                })),
                 TerminalType::String => Ok(Val::Str(token.text.trim_matches('"').to_string())),
                 TerminalType::End => {
-                    let v = ctx.end_value.ok_or_else(|| anyhow!("'end' outside of a subscript"))?;
+                    let v = ctx
+                        .end_value
+                        .ok_or_else(|| anyhow!("'end' outside of a subscript"))?;
                     Ok(Val::S(self.model.arena.constant(v as f64)))
                 }
                 TerminalType::Empty => Ok(Val::S(Arena::ZERO)),
@@ -2071,7 +2517,11 @@ impl<'a, 't> Flattener<'a, 't> {
                 }
                 Ok(Val::Tuple(v))
             }
-            E::If { branches, else_branch, .. } => {
+            E::If {
+                branches,
+                else_branch,
+                ..
+            } => {
                 // Conditions that are constant pick their branch statically, so the branches
                 // not taken are never translated (they may not even be valid there).
                 let mut live: Vec<(ExprId, &'a E)> = Vec::new();
@@ -2094,7 +2544,9 @@ impl<'a, 't> Flattener<'a, 't> {
                 }
                 Ok(r)
             }
-            E::Range { start, step, end, .. } => {
+            E::Range {
+                start, step, end, ..
+            } => {
                 let s = self.translate(start, scope, ctx)?.scalar()?;
                 let en = self.translate(end, scope, ctx)?.scalar()?;
                 let st = match step {
@@ -2102,9 +2554,12 @@ impl<'a, 't> Flattener<'a, 't> {
                     None => Arena::ONE,
                 };
                 let (s, en, st) = (
-                    self.eval_param_expr(s).ok_or_else(|| anyhow!("range start must be a parameter expression"))?,
-                    self.eval_param_expr(en).ok_or_else(|| anyhow!("range end must be a parameter expression"))?,
-                    self.eval_param_expr(st).ok_or_else(|| anyhow!("range step must be a parameter expression"))?,
+                    self.eval_param_expr(s)
+                        .ok_or_else(|| anyhow!("range start must be a parameter expression"))?,
+                    self.eval_param_expr(en)
+                        .ok_or_else(|| anyhow!("range end must be a parameter expression"))?,
+                    self.eval_param_expr(st)
+                        .ok_or_else(|| anyhow!("range step must be a parameter expression"))?,
                 );
                 let mut v = Vec::new();
                 if st != 0.0 {
@@ -2118,7 +2573,9 @@ impl<'a, 't> Flattener<'a, 't> {
                 let n = v.len();
                 Ok(Val::A(vec![n], v))
             }
-            E::ArrayComprehension { expr, indices, .. } if self.comprehension_is_record(expr, indices, scope, ctx) => {
+            E::ArrayComprehension { expr, indices, .. }
+                if self.comprehension_is_record(expr, indices, scope, ctx) =>
+            {
                 let mut vals = Vec::new();
                 let mut outer = Vec::new();
                 self.for_loop_vals(indices, scope, ctx, expr, &mut vals, &mut outer)?;
@@ -2128,12 +2585,22 @@ impl<'a, 't> Flattener<'a, 't> {
                 let mut out = Vec::new();
                 let mut inner_dims = Vec::new();
                 let mut outer = Vec::new();
-                self.for_loop_collect(indices, scope, ctx, expr, &mut out, &mut inner_dims, &mut outer)?;
+                self.for_loop_collect(
+                    indices,
+                    scope,
+                    ctx,
+                    expr,
+                    &mut out,
+                    &mut inner_dims,
+                    &mut outer,
+                )?;
                 let mut dims = outer;
                 dims.extend(inner_dims);
                 Ok(mk_arr(dims, out))
             }
-            E::ArrayIndex { base, subscripts, .. } => {
+            E::ArrayIndex {
+                base, subscripts, ..
+            } => {
                 let b = self.translate(base, scope, ctx)?;
                 self.index_val(b, subscripts, scope, ctx)
             }
@@ -2174,8 +2641,12 @@ impl<'a, 't> Flattener<'a, 't> {
         let name = idx.ident.text.to_string();
         for v in vals {
             ctx.locals.push(FxHashMap::default());
-            ctx.locals.last_mut().unwrap().insert(name.clone(), Val::S(v));
-            let r = self.for_loop_collect(&indices[1..], scope, ctx, body, out, inner_dims, outer_dims);
+            ctx.locals
+                .last_mut()
+                .unwrap()
+                .insert(name.clone(), Val::S(v));
+            let r =
+                self.for_loop_collect(&indices[1..], scope, ctx, body, out, inner_dims, outer_dims);
             ctx.locals.pop();
             r?;
         }
@@ -2183,7 +2654,13 @@ impl<'a, 't> Flattener<'a, 't> {
     }
 
     /// Does the body of `{body for i in ..}` produce records? (evaluated for the first index)
-    fn comprehension_is_record(&mut self, body: &'a E, indices: &'a [ast::ForIndex], scope: &Scope, ctx: &mut Ctx) -> bool {
+    fn comprehension_is_record(
+        &mut self,
+        body: &'a E,
+        indices: &'a [ast::ForIndex],
+        scope: &Scope,
+        ctx: &mut Ctx,
+    ) -> bool {
         let mut vals = Vec::new();
         let mut outer = Vec::new();
         let first: Vec<ast::ForIndex> = Vec::new();
@@ -2208,10 +2685,15 @@ impl<'a, 't> Flattener<'a, 't> {
         let idx = &indices[0];
         let range = self.translate(&idx.range, scope, ctx)?;
         let (_, vals) = range.elems()?;
-        let Some(&v) = vals.first() else { return Ok(()) };
+        let Some(&v) = vals.first() else {
+            return Ok(());
+        };
         outer_dims.push(vals.len());
         ctx.locals.push(FxHashMap::default());
-        ctx.locals.last_mut().unwrap().insert(idx.ident.text.to_string(), Val::S(v));
+        ctx.locals
+            .last_mut()
+            .unwrap()
+            .insert(idx.ident.text.to_string(), Val::S(v));
         let r = self.for_loop_vals_first(&indices[1..], scope, ctx, body, out, outer_dims);
         ctx.locals.pop();
         r
@@ -2239,7 +2721,10 @@ impl<'a, 't> Flattener<'a, 't> {
         let name = idx.ident.text.to_string();
         for v in vals {
             ctx.locals.push(FxHashMap::default());
-            ctx.locals.last_mut().unwrap().insert(name.clone(), Val::S(v));
+            ctx.locals
+                .last_mut()
+                .unwrap()
+                .insert(name.clone(), Val::S(v));
             let r = self.for_loop_vals(&indices[1..], scope, ctx, body, out, outer_dims);
             ctx.locals.pop();
             r?;
@@ -2280,24 +2765,41 @@ impl<'a, 't> Flattener<'a, 't> {
             return Ok(Val::A(dims, vec![]));
         }
         if vals.iter().all(|v| matches!(v, Val::Inst(_))) {
-            let ids = vals.iter().map(|v| if let Val::Inst(i) = v { *i } else { 0 }).collect();
+            let ids = vals
+                .iter()
+                .map(|v| if let Val::Inst(i) = v { *i } else { 0 })
+                .collect();
             return Ok(Val::IA(dims, ids));
         }
-        if vals.iter().any(|v| matches!(v, Val::Rec(_) | Val::Inst(_) | Val::IA(..))) {
+        if vals
+            .iter()
+            .any(|v| matches!(v, Val::Rec(_) | Val::Inst(_) | Val::IA(..)))
+        {
             let mut recs = Vec::with_capacity(vals.len());
             for v in vals {
                 recs.push(self.to_rec(v)?);
             }
-            let Val::Rec(first) = &recs[0] else { unreachable!() };
+            let Val::Rec(first) = &recs[0] else {
+                unreachable!()
+            };
             let names: Vec<String> = first.iter().map(|(n, _)| n.clone()).collect();
             let mut out = Vec::with_capacity(names.len());
             for n in names {
                 let mut fv = Vec::with_capacity(recs.len());
                 for r in &recs {
                     let Val::Rec(f) = r else { unreachable!() };
-                    fv.push(f.iter().find(|(m, _)| *m == n).map(|(_, v)| v.clone()).unwrap_or(Val::S(Arena::ZERO)));
+                    fv.push(
+                        f.iter()
+                            .find(|(m, _)| *m == n)
+                            .map(|(_, v)| v.clone())
+                            .unwrap_or(Val::S(Arena::ZERO)),
+                    );
                 }
-                let st = if fv.iter().all(|v| matches!(v, Val::Str(_))) { fv[0].clone() } else { self.stack_vals(dims.clone(), fv)? };
+                let st = if fv.iter().all(|v| matches!(v, Val::Str(_))) {
+                    fv[0].clone()
+                } else {
+                    self.stack_vals(dims.clone(), fv)?
+                };
                 out.push((n, st));
             }
             return Ok(Val::Rec(out));
@@ -2373,7 +2875,8 @@ impl<'a, 't> Flattener<'a, 't> {
                 let im = sub(self, b, d)?;
                 Ok(Self::complex(re, im))
             }
-            OpBinary::Mul if matches!((&a, &c), (Val::A(d1, _), Val::A(d2, _)) if d1.len() == 1 && d2.len() == 1) => {
+            OpBinary::Mul if matches!((&a, &c), (Val::A(d1, _), Val::A(d2, _)) if d1.len() == 1 && d2.len() == 1) =>
+            {
                 // Complex vector * vector: scalar product sum(conj(c1[k])*c2[k]).
                 let ac = mul(self, a.clone(), c.clone())?;
                 let bd = mul(self, b.clone(), d.clone())?;
@@ -2421,7 +2924,11 @@ impl<'a, 't> Flattener<'a, 't> {
                 let e1 = self.binary(&OpBinary::Eq, a, c, ctx)?;
                 let e2 = self.binary(&OpBinary::Eq, b, d, ctx)?;
                 let both = self.zip2(e1, e2, &mut |ar, p, q| ar.f2(Fn2::And, p, q))?;
-                if matches!(op, OpBinary::Neq) { self.map1(both, &mut |ar, x| ar.not(x)) } else { Ok(both) }
+                if matches!(op, OpBinary::Neq) {
+                    self.map1(both, &mut |ar, x| ar.not(x))
+                } else {
+                    Ok(both)
+                }
             }
             _ => bail!("operator not defined for records"),
         }
@@ -2430,13 +2937,24 @@ impl<'a, 't> Flattener<'a, 't> {
     fn map1(&mut self, v: Val, f: &mut dyn FnMut(&mut Arena, ExprId) -> ExprId) -> Result<Val> {
         match v {
             Val::S(x) => Ok(Val::S(f(&mut self.model.arena, x))),
-            Val::A(d, xs) => Ok(Val::A(d, xs.into_iter().map(|x| f(&mut self.model.arena, x)).collect())),
+            Val::A(d, xs) => Ok(Val::A(
+                d,
+                xs.into_iter()
+                    .map(|x| f(&mut self.model.arena, x))
+                    .collect(),
+            )),
             Val::Tuple(t) if !t.is_empty() => self.map1(t[0].clone(), f),
             v @ (Val::Rec(_) | Val::Inst(_) | Val::IA(..)) => {
-                let Val::Rec(fields) = self.to_rec(v)? else { unreachable!() };
+                let Val::Rec(fields) = self.to_rec(v)? else {
+                    unreachable!()
+                };
                 let mut out = Vec::with_capacity(fields.len());
                 for (n, x) in fields {
-                    let m = if matches!(x, Val::Str(_)) { x } else { self.map1(x, f)? };
+                    let m = if matches!(x, Val::Str(_)) {
+                        x
+                    } else {
+                        self.map1(x, f)?
+                    };
                     out.push((n, m));
                 }
                 Ok(Val::Rec(out))
@@ -2445,20 +2963,35 @@ impl<'a, 't> Flattener<'a, 't> {
         }
     }
 
-    fn zip2(&mut self, a: Val, b: Val, f: &mut dyn FnMut(&mut Arena, ExprId, ExprId) -> ExprId) -> Result<Val> {
+    fn zip2(
+        &mut self,
+        a: Val,
+        b: Val,
+        f: &mut dyn FnMut(&mut Arena, ExprId, ExprId) -> ExprId,
+    ) -> Result<Val> {
         let (ad, ae) = a.elems()?;
         let (bd, be) = b.elems()?;
         if ae.len() == be.len() {
             let dims = if ad.len() >= bd.len() { ad } else { bd };
-            let v = ae.into_iter().zip(be).map(|(x, y)| f(&mut self.model.arena, x, y)).collect();
+            let v = ae
+                .into_iter()
+                .zip(be)
+                .map(|(x, y)| f(&mut self.model.arena, x, y))
+                .collect();
             return Ok(mk_arr(dims, v));
         }
         if ae.len() == 1 && ad.is_empty() {
-            let v = be.into_iter().map(|y| f(&mut self.model.arena, ae[0], y)).collect();
+            let v = be
+                .into_iter()
+                .map(|y| f(&mut self.model.arena, ae[0], y))
+                .collect();
             return Ok(mk_arr(bd, v));
         }
         if be.len() == 1 && bd.is_empty() {
-            let v = ae.into_iter().map(|x| f(&mut self.model.arena, x, be[0])).collect();
+            let v = ae
+                .into_iter()
+                .map(|x| f(&mut self.model.arena, x, be[0]))
+                .collect();
             return Ok(mk_arr(ad, v));
         }
         bail!("array size mismatch {:?} vs {:?}", ad, bd)
@@ -2478,7 +3011,12 @@ impl<'a, 't> Flattener<'a, 't> {
             OpBinary::Mul => self.mul_val(l, r),
             OpBinary::And => self.zip2(l, r, &mut |a, x, y| a.f2(Fn2::And, x, y)),
             OpBinary::Or => self.zip2(l, r, &mut |a, x, y| a.f2(Fn2::Or, x, y)),
-            OpBinary::Lt | OpBinary::Le | OpBinary::Gt | OpBinary::Ge | OpBinary::Eq | OpBinary::Neq => {
+            OpBinary::Lt
+            | OpBinary::Le
+            | OpBinary::Gt
+            | OpBinary::Ge
+            | OpBinary::Eq
+            | OpBinary::Neq => {
                 let c = match op {
                     OpBinary::Lt => Cmp::Lt,
                     OpBinary::Le => Cmp::Le,
@@ -2506,7 +3044,10 @@ impl<'a, 't> Flattener<'a, 't> {
 
     /// Relation: event-generating unless inside noEvent or time-invariant / discrete.
     fn relation(&mut self, c: Cmp, x: ExprId, y: ExprId, no_event: bool) -> ExprId {
-        if no_event || matches!(c, Cmp::Eq | Cmp::Ne) || (self.is_discrete_expr(x) && self.is_discrete_expr(y)) {
+        if no_event
+            || matches!(c, Cmp::Eq | Cmp::Ne)
+            || (self.is_discrete_expr(x) && self.is_discrete_expr(y))
+        {
             return self.model.arena.cmp(c, x, y);
         }
         self.model.arena.relation(c, x, y)
@@ -2533,7 +3074,11 @@ impl<'a, 't> Flattener<'a, 't> {
         let (rd, re) = r.elems()?;
         let a = &mut self.model.arena;
         match (ld.len(), rd.len()) {
-            (0, _) | (_, 0) => self.zip2(Val::A(ld, le).normalize(), Val::A(rd, re).normalize(), &mut |a, x, y| a.mul(x, y)),
+            (0, _) | (_, 0) => self.zip2(
+                Val::A(ld, le).normalize(),
+                Val::A(rd, re).normalize(),
+                &mut |a, x, y| a.mul(x, y),
+            ),
             (1, 1) => {
                 if ld[0] != rd[0] {
                     bail!("vector size mismatch in product");
@@ -2603,7 +3148,10 @@ impl<'a, 't> Flattener<'a, 't> {
         match kind {
             ArrayConstructor::Array => {
                 if vals.iter().all(|v| matches!(v, Val::Inst(_))) && !vals.is_empty() {
-                    let v: Vec<InstId> = vals.iter().map(|x| if let Val::Inst(i) = x { *i } else { 0 }).collect();
+                    let v: Vec<InstId> = vals
+                        .iter()
+                        .map(|x| if let Val::Inst(i) = x { *i } else { 0 })
+                        .collect();
                     return Ok(Val::IA(vec![v.len()], v));
                 }
                 if vals.iter().any(Self::is_record_like) {
@@ -2707,7 +3255,10 @@ impl<'a, 't> Flattener<'a, 't> {
                     let mut idx = Vec::new();
                     for x in es {
                         let val = self.eval_param_expr(x).ok_or_else(|| {
-                            anyhow!("subscript '{}' must be a constant or parameter expression", self.model.show(x))
+                            anyhow!(
+                                "subscript '{}' must be a constant or parameter expression",
+                                self.model.show(x)
+                            )
                         })?;
                         let i = val.round() as i64;
                         if i < 1 || i as usize > dim {
@@ -2729,7 +3280,13 @@ impl<'a, 't> Flattener<'a, 't> {
         Ok(sel)
     }
 
-    fn index_val(&mut self, b: Val, subs: &'a [ast::Subscript], scope: &Scope, ctx: &mut Ctx) -> Result<Val> {
+    fn index_val(
+        &mut self,
+        b: Val,
+        subs: &'a [ast::Subscript],
+        scope: &Scope,
+        ctx: &mut Ctx,
+    ) -> Result<Val> {
         match b {
             Val::A(dims, el) => {
                 let sel = self.eval_subscripts(subs, &dims, scope, ctx)?;
@@ -2740,14 +3297,28 @@ impl<'a, 't> Flattener<'a, 't> {
                 let sel = self.eval_subscripts(subs, &dims, scope, ctx)?;
                 let (nd, idx) = select_indices(&dims, &sel);
                 let v: Vec<InstId> = idx.into_iter().map(|i| el[i]).collect();
-                if nd.is_empty() { Ok(Val::Inst(v[0])) } else { Ok(Val::IA(nd, v)) }
+                if nd.is_empty() {
+                    Ok(Val::Inst(v[0]))
+                } else {
+                    Ok(Val::IA(nd, v))
+                }
             }
-            Val::S(e) if subs.iter().all(|s| matches!(s, ast::Subscript::Expression(_))) => Ok(Val::S(e)),
+            Val::S(e)
+                if subs
+                    .iter()
+                    .all(|s| matches!(s, ast::Subscript::Expression(_))) =>
+            {
+                Ok(Val::S(e))
+            }
             Val::Rec(fields) => {
                 // Array of records stored field by field: index every field.
                 let mut out = Vec::with_capacity(fields.len());
                 for (n, v) in fields {
-                    let iv = if matches!(v, Val::Str(_)) { v } else { self.index_val(v, subs, scope, ctx)? };
+                    let iv = if matches!(v, Val::Str(_)) {
+                        v
+                    } else {
+                        self.index_val(v, subs, scope, ctx)?
+                    };
                     out.push((n, iv));
                 }
                 Ok(Val::Rec(out))
@@ -2764,11 +3335,20 @@ impl<'a, 't> Flattener<'a, 't> {
                 if el.iter().all(|e| matches!(e, Comp::Var(_))) {
                     let v = el
                         .iter()
-                        .map(|e| if let Comp::Var(x) = e { self.var_ref(*x) } else { Arena::ZERO })
+                        .map(|e| {
+                            if let Comp::Var(x) = e {
+                                self.var_ref(*x)
+                            } else {
+                                Arena::ZERO
+                            }
+                        })
                         .collect();
                     Ok(Val::A(dims.clone(), v))
                 } else if el.iter().all(|e| matches!(e, Comp::Inst(_))) {
-                    let v = el.iter().map(|e| if let Comp::Inst(x) = e { *x } else { 0 }).collect();
+                    let v = el
+                        .iter()
+                        .map(|e| if let Comp::Inst(x) = e { *x } else { 0 })
+                        .collect();
                     Ok(Val::IA(dims.clone(), v))
                 } else {
                     // Arrays of arrays (from field access over component arrays): flatten.
@@ -2803,7 +3383,12 @@ impl<'a, 't> Flattener<'a, 't> {
         self.model.arena.var(v)
     }
 
-    fn resolve_ref(&mut self, cr: &'a ast::ComponentReference, scope: &Scope, ctx: &mut Ctx) -> Result<Val> {
+    fn resolve_ref(
+        &mut self,
+        cr: &'a ast::ComponentReference,
+        scope: &Scope,
+        ctx: &mut Ctx,
+    ) -> Result<Val> {
         let first = &*cr.parts[0].ident.text;
         // Locals (for iterators, function variables)
         for frame in ctx.locals.iter().rev() {
@@ -2838,7 +3423,9 @@ impl<'a, 't> Flattener<'a, 't> {
             let mut cur = c;
             for (i, p) in cr.parts.iter().enumerate() {
                 if i > 0 {
-                    cur = self.child_comp(cur, &p.ident.text).with_context(|| format!("in reference '{cr}'"))?;
+                    cur = self
+                        .child_comp(cur, &p.ident.text)
+                        .with_context(|| format!("in reference '{cr}'"))?;
                 }
                 if let Some(subs) = &p.subs {
                     cur = self.subscript_comp(cur, subs, scope, ctx)?;
@@ -2872,17 +3459,33 @@ impl<'a, 't> Flattener<'a, 't> {
         }
     }
 
-    fn lookup_constant(&mut self, cr: &'a ast::ComponentReference, scope: &Scope, ctx: &mut Ctx) -> Result<Option<Val>> {
+    fn lookup_constant(
+        &mut self,
+        cr: &'a ast::ComponentReference,
+        scope: &Scope,
+        ctx: &mut Ctx,
+    ) -> Result<Option<Val>> {
         let parts: Vec<&str> = cr.parts.iter().map(|p| &*p.ident.text).collect();
-        let env = if cr.local { self.env_of(ROOT) } else { scope.env.clone() };
+        let env = if cr.local {
+            self.env_of(ROOT)
+        } else {
+            scope.env.clone()
+        };
         // 1) Unqualified constant visible in an enclosing class (or the function itself).
         if parts.len() == 1 {
             let mut e: Option<Rc<Env>> = Some(env.clone());
             while let Some(en) = e {
                 if let Some((owner, comp)) = self.tree.find_component(en.class, parts[0])
-                    && matches!(comp.variability, Variability::Constant(_) | Variability::Parameter(_))
+                    && matches!(
+                        comp.variability,
+                        Variability::Constant(_) | Variability::Parameter(_)
+                    )
                 {
-                    let oenv = Rc::new(Env { class: owner, overrides: en.overrides.clone(), parent: en.parent.clone() });
+                    let oenv = Rc::new(Env {
+                        class: owner,
+                        overrides: en.overrides.clone(),
+                        parent: en.parent.clone(),
+                    });
                     let v = self.class_constant(owner, comp, oenv)?;
                     return Ok(Some(self.apply_subs(v, &cr.parts[0], scope, ctx)?));
                 }
@@ -2898,7 +3501,9 @@ impl<'a, 't> Flattener<'a, 't> {
         }
         // 2) Qualified: longest class prefix, then constant / enumeration literal.
         for k in (1..parts.len()).rev() {
-            let Some(cls) = self.lookup_class(&env, &parts[..k]) else { continue };
+            let Some(cls) = self.lookup_class(&env, &parts[..k]) else {
+                continue;
+            };
             let name = parts[k];
             if k == parts.len() - 1 {
                 if let Some(v) = self.enum_literal(cls, name) {
@@ -2932,7 +3537,13 @@ impl<'a, 't> Flattener<'a, 't> {
         Ok(None)
     }
 
-    fn apply_subs(&mut self, v: Val, part: &'a ast::ComponentRefPart, scope: &Scope, ctx: &mut Ctx) -> Result<Val> {
+    fn apply_subs(
+        &mut self,
+        v: Val,
+        part: &'a ast::ComponentRefPart,
+        scope: &Scope,
+        ctx: &mut Ctx,
+    ) -> Result<Val> {
         match &part.subs {
             Some(s) => self.index_val(v, s, scope, ctx),
             None => Ok(v),
@@ -2941,7 +3552,11 @@ impl<'a, 't> Flattener<'a, 't> {
 
     fn enum_literal(&self, cls: ClassId, name: &str) -> Option<f64> {
         let def = self.tree.def(cls)?;
-        if let Some(i) = def.enum_literals.iter().position(|l| &*l.ident.text == name) {
+        if let Some(i) = def
+            .enum_literals
+            .iter()
+            .position(|l| &*l.ident.text == name)
+        {
             return Some((i + 1) as f64);
         }
         // type E = OtherEnum;
@@ -2953,7 +3568,12 @@ impl<'a, 't> Flattener<'a, 't> {
         None
     }
 
-    fn class_constant(&mut self, owner: ClassId, comp: &'a ast::Component, env: Rc<Env>) -> Result<Val> {
+    fn class_constant(
+        &mut self,
+        owner: ClassId,
+        comp: &'a ast::Component,
+        env: Rc<Env>,
+    ) -> Result<Val> {
         let key = (owner, comp.name.clone());
         if let Some(v) = self.const_cache.get(&key) {
             return Ok(v.clone());
@@ -2988,12 +3608,24 @@ impl<'a, 't> Flattener<'a, 't> {
     // Function calls
     // ------------------------------------------------------------------
 
-    fn call(&mut self, comp: &'a ast::ComponentReference, args: &'a [E], scope: &Scope, ctx: &mut Ctx) -> Result<Val> {
+    fn call(
+        &mut self,
+        comp: &'a ast::ComponentReference,
+        args: &'a [E],
+        scope: &Scope,
+        ctx: &mut Ctx,
+    ) -> Result<Val> {
         let name = cref_name(comp);
         let (pos, named) = split_args(args);
         macro_rules! arg {
             ($i:expr) => {
-                self.translate(pos.get($i).copied().ok_or_else(|| anyhow!("{}: missing argument {}", name, $i + 1))?, scope, ctx)?
+                self.translate(
+                    pos.get($i)
+                        .copied()
+                        .ok_or_else(|| anyhow!("{}: missing argument {}", name, $i + 1))?,
+                    scope,
+                    ctx,
+                )?
             };
         }
         let f1 = |n: &str| -> Option<Fn1> {
@@ -3029,7 +3661,9 @@ impl<'a, 't> Flattener<'a, 't> {
             // A record argument: an imported function of that name (Modelica.ComplexMath.abs)
             // takes precedence; otherwise abs of a Complex is its modulus.
             let env = scope.env.clone();
-            let user = self.lookup_class(&env, &[short.as_str()]).filter(|&c| matches!(self.tree.class_type(c), ClassType::Function));
+            let user = self
+                .lookup_class(&env, &[short.as_str()])
+                .filter(|&c| matches!(self.tree.class_type(c), ClassType::Function));
             if user.is_none() {
                 if short == "abs" {
                     let (re, im) = self.complex_parts(v)?;
@@ -3097,11 +3731,21 @@ impl<'a, 't> Flattener<'a, 't> {
                 return r;
             }
             "homotopy" => {
-                let actual = named.iter().find(|(n, _)| *n == "actual").map(|(_, e)| *e).or(pos.first().copied());
-                return self.translate(actual.ok_or_else(|| anyhow!("homotopy: missing actual"))?, scope, ctx);
+                let actual = named
+                    .iter()
+                    .find(|(n, _)| *n == "actual")
+                    .map(|(_, e)| *e)
+                    .or(pos.first().copied());
+                return self.translate(
+                    actual.ok_or_else(|| anyhow!("homotopy: missing actual"))?,
+                    scope,
+                    ctx,
+                );
             }
             "delay" => {
-                self.model.warnings.push("delay() is approximated by its undelayed argument".into());
+                self.model
+                    .warnings
+                    .push("delay() is approximated by its undelayed argument".into());
                 return Ok(arg!(0));
             }
             "sample" => {
@@ -3148,7 +3792,9 @@ impl<'a, 't> Flattener<'a, 't> {
                 let v = arg!(0);
                 if name == "sum" && Self::is_record_like(&v) {
                     // sum of an array of records (Complex): field by field.
-                    let Val::Rec(fields) = self.to_rec(v)? else { unreachable!() };
+                    let Val::Rec(fields) = self.to_rec(v)? else {
+                        unreachable!()
+                    };
                     let mut out = Vec::new();
                     for (n, x) in fields {
                         let (_, e) = x.elems()?;
@@ -3162,9 +3808,17 @@ impl<'a, 't> Flattener<'a, 't> {
                 }
                 let (_, e) = v.elems()?;
                 let a = &mut self.model.arena;
-                let mut r = if name == "sum" { Arena::ZERO } else { Arena::ONE };
+                let mut r = if name == "sum" {
+                    Arena::ZERO
+                } else {
+                    Arena::ONE
+                };
                 for x in e {
-                    r = if name == "sum" { a.add(r, x) } else { a.mul(r, x) };
+                    r = if name == "sum" {
+                        a.add(r, x)
+                    } else {
+                        a.mul(r, x)
+                    };
                 }
                 return Ok(Val::S(r));
             }
@@ -3184,7 +3838,10 @@ impl<'a, 't> Flattener<'a, 't> {
                     let d = dims.get(k.saturating_sub(1)).copied().unwrap_or(1);
                     return Ok(Val::S(self.model.arena.constant(d as f64)));
                 }
-                let v: Vec<ExprId> = dims.iter().map(|&d| self.model.arena.constant(d as f64)).collect();
+                let v: Vec<ExprId> = dims
+                    .iter()
+                    .map(|&d| self.model.arena.constant(d as f64))
+                    .collect();
                 return Ok(Val::A(vec![v.len()], v));
             }
             "ndims" => {
@@ -3201,7 +3858,11 @@ impl<'a, 't> Flattener<'a, 't> {
                     let mut dims = Vec::new();
                     for p in &pos[1..] {
                         let d = self.translate(p, scope, ctx)?.scalar()?;
-                        dims.push(self.eval_param_expr(d).ok_or_else(|| anyhow!("fill: size must be a parameter"))? as usize);
+                        dims.push(
+                            self.eval_param_expr(d)
+                                .ok_or_else(|| anyhow!("fill: size must be a parameter"))?
+                                as usize,
+                        );
                     }
                     let n: usize = dims.iter().product();
                     return self.stack_vals(dims, vec![v; n]);
@@ -3209,7 +3870,11 @@ impl<'a, 't> Flattener<'a, 't> {
                 let mut dims = Vec::new();
                 for p in &pos[1..] {
                     let d = self.translate(p, scope, ctx)?.scalar()?;
-                    dims.push(self.eval_param_expr(d).ok_or_else(|| anyhow!("fill: size must be a parameter"))? as usize);
+                    dims.push(
+                        self.eval_param_expr(d)
+                            .ok_or_else(|| anyhow!("fill: size must be a parameter"))?
+                            as usize,
+                    );
                 }
                 let n: usize = dims.iter().product();
                 let x = v.scalar()?;
@@ -3224,7 +3889,11 @@ impl<'a, 't> Flattener<'a, 't> {
                 let mut dims = Vec::new();
                 for p in &pos[start..] {
                     let d = self.translate(p, scope, ctx)?.scalar()?;
-                    dims.push(self.eval_param_expr(d).ok_or_else(|| anyhow!("{name}: size must be a parameter"))? as usize);
+                    dims.push(
+                        self.eval_param_expr(d)
+                            .ok_or_else(|| anyhow!("{name}: size must be a parameter"))?
+                            as usize,
+                    );
                 }
                 let n: usize = dims.iter().product();
                 return Ok(Val::A(dims, vec![val; n]));
@@ -3246,7 +3915,11 @@ impl<'a, 't> Flattener<'a, 't> {
                 let ar = &mut self.model.arena;
                 let mut v = Vec::new();
                 for i in 0..n {
-                    let t = if n > 1 { i as f64 / (n - 1) as f64 } else { 0.0 };
+                    let t = if n > 1 {
+                        i as f64 / (n - 1) as f64
+                    } else {
+                        0.0
+                    };
                     let ct = ar.constant(t);
                     let d = ar.sub(b, a);
                     let s = ar.mul(ct, d);
@@ -3299,7 +3972,12 @@ impl<'a, 't> Flattener<'a, 't> {
                     bail!("symmetric expects a square matrix");
                 }
                 let n = d[0];
-                let v = (0..n * n).map(|k| { let (i, j) = (k / n, k % n); if i <= j { e[k] } else { e[j * n + i] } }).collect();
+                let v = (0..n * n)
+                    .map(|k| {
+                        let (i, j) = (k / n, k % n);
+                        if i <= j { e[k] } else { e[j * n + i] }
+                    })
+                    .collect();
                 return Ok(Val::A(d, v));
             }
             "skew" => {
@@ -3309,7 +3987,17 @@ impl<'a, 't> Flattener<'a, 't> {
                 }
                 let ar = &mut self.model.arena;
                 let n = |ar: &mut Arena, e| ar.neg(e);
-                let v = vec![Arena::ZERO, n(ar, x[2]), x[1], x[2], Arena::ZERO, n(ar, x[0]), n(ar, x[1]), x[0], Arena::ZERO];
+                let v = vec![
+                    Arena::ZERO,
+                    n(ar, x[2]),
+                    x[1],
+                    x[2],
+                    Arena::ZERO,
+                    n(ar, x[0]),
+                    n(ar, x[1]),
+                    x[0],
+                    Arena::ZERO,
+                ];
                 return Ok(Val::A(vec![3, 3], v));
             }
             "matrix" => {
@@ -3344,9 +4032,19 @@ impl<'a, 't> Flattener<'a, 't> {
                 for p in &pos[1..] {
                     vals.push(self.translate(p, scope, ctx)?);
                 }
-                return self.array_construct(vals, if k == 1 { ArrayConstructor::Vertical } else { ArrayConstructor::Horizontal })
+                return self
+                    .array_construct(
+                        vals,
+                        if k == 1 {
+                            ArrayConstructor::Vertical
+                        } else {
+                            ArrayConstructor::Horizontal
+                        },
+                    )
                     .map(|v| match v {
-                        Val::A(d, e) if k == 1 && d.len() == 2 && d[1] == 1 => Val::A(vec![d[0]], e),
+                        Val::A(d, e) if k == 1 && d.len() == 2 && d[1] == 1 => {
+                            Val::A(vec![d[0]], e)
+                        }
                         other => other,
                     });
             }
@@ -3354,7 +4052,9 @@ impl<'a, 't> Flattener<'a, 't> {
             "String" => return Ok(Val::Str(String::new())),
             "assert" | "terminate" | "print" => return Ok(Val::S(Arena::ZERO)),
             "cardinality" => {
-                self.model.warnings.push("cardinality() is not supported; assuming 1".into());
+                self.model
+                    .warnings
+                    .push("cardinality() is not supported; assuming 1".into());
                 return Ok(Val::S(Arena::ONE));
             }
             "getInstanceName" => return Ok(Val::Str(String::new())),
@@ -3366,7 +4066,11 @@ impl<'a, 't> Flattener<'a, 't> {
                 };
                 let r = match (&self.oc_answers, node) {
                     (Some(ans), Some(n)) => {
-                        if name == "Connections.isRoot" { ans.is_root(&n) } else { ans.rooted(&n) }
+                        if name == "Connections.isRoot" {
+                            ans.is_root(&n)
+                        } else {
+                            ans.rooted(&n)
+                        }
                     }
                     _ => false,
                 };
@@ -3376,16 +4080,29 @@ impl<'a, 't> Flattener<'a, 't> {
         }
         // User-defined function or record constructor.
         let parts: Vec<&str> = comp.parts.iter().map(|p| &*p.ident.text).collect();
-        let env = if comp.local { self.env_of(ROOT) } else { scope.env.clone() };
+        let env = if comp.local {
+            self.env_of(ROOT)
+        } else {
+            scope.env.clone()
+        };
         let (cls, mod_scope) = match self.lookup_class(&env, &parts) {
             Some(c) => {
                 let penv = self.env_of(self.tree.node(c).parent.unwrap_or(ROOT));
-                (c, Scope { inst: None, env: penv })
+                (
+                    c,
+                    Scope {
+                        inst: None,
+                        env: penv,
+                    },
+                )
             }
             None => {
                 // A function declared in a component's class (`world.gravityAcceleration(r)`):
                 // its short-class modifiers refer to that component's parameters.
-                let found = if parts.len() > 1 && !ctx.in_function && let Some(inst) = scope.inst {
+                let found = if parts.len() > 1
+                    && !ctx.in_function
+                    && let Some(inst) = scope.inst
+                {
                     self.component_function(inst, &parts)?
                 } else {
                     None
@@ -3420,17 +4137,37 @@ impl<'a, 't> Flattener<'a, 't> {
         match self.tree.class_type(cls) {
             ClassType::Function => {
                 let outs = self.inline_function(cls, argv, nargv, env.overrides.clone())?;
-                if outs.len() == 1 { Ok(outs.into_iter().next().unwrap()) } else { Ok(Val::Tuple(outs)) }
+                if outs.len() == 1 {
+                    Ok(outs.into_iter().next().unwrap())
+                } else {
+                    Ok(Val::Tuple(outs))
+                }
             }
             ClassType::Record | ClassType::Operator => self.record_constructor(cls, argv, nargv),
+            _ if self.tree.builtin_base(cls) == Some("ExternalObject") => {
+                let ctor = self
+                    .tree
+                    .member_class(cls, "constructor")
+                    .ok_or_else(|| anyhow!("external object '{}' has no constructor", name))?;
+                let outs = self.inline_function(ctor, argv, nargv, env.overrides.clone())?;
+                outs.into_iter()
+                    .next()
+                    .ok_or_else(|| anyhow!("constructor of '{}' returned nothing", name))
+            }
             _ => bail!("'{}' is not a function", name),
         }
     }
 
     /// Resolve `a.b.f` where `a.b` is a component and `f` a function class of its type.
-    fn component_function(&mut self, inst: InstId, parts: &[&str]) -> Result<Option<(ClassId, Scope)>> {
+    fn component_function(
+        &mut self,
+        inst: InstId,
+        parts: &[&str],
+    ) -> Result<Option<(ClassId, Scope)>> {
         self.ensure_component(inst, parts[0])?;
-        let Some(mut cur) = self.insts[inst as usize].comps.get(parts[0]).cloned() else { return Ok(None) };
+        let Some(mut cur) = self.insts[inst as usize].comps.get(parts[0]).cloned() else {
+            return Ok(None);
+        };
         for p in &parts[1..parts.len() - 1] {
             cur = match self.child_comp(cur, p) {
                 Ok(c) => c,
@@ -3439,7 +4176,9 @@ impl<'a, 't> Flattener<'a, 't> {
         }
         let Comp::Inst(i) = cur else { return Ok(None) };
         let class = self.insts[i as usize].class;
-        let Some(f) = self.tree.member_class(class, parts[parts.len() - 1]) else { return Ok(None) };
+        let Some(f) = self.tree.member_class(class, parts[parts.len() - 1]) else {
+            return Ok(None);
+        };
         let env = self.env_of(class);
         Ok(Some((f, Scope { inst: Some(i), env })))
     }
@@ -3473,7 +4212,13 @@ impl<'a, 't> Flattener<'a, 't> {
         let upd_next = a.add(start, pi);
         let o = self.model.origin("sample()");
         self.model.whens.push(WhenClause {
-            branches: vec![(cond, vec![WhenAction::Assign(id, upd), WhenAction::Assign(next_id, upd_next)])],
+            branches: vec![(
+                cond,
+                vec![
+                    WhenAction::Assign(id, upd),
+                    WhenAction::Assign(next_id, upd_next),
+                ],
+            )],
             origin: o,
         });
         self.when_assigned.insert(id);
@@ -3495,7 +4240,10 @@ impl<'a, 't> Flattener<'a, 't> {
                 continue;
             }
             let env = self.env_of(owner);
-            let sc = Scope { inst: None, env: env.clone() };
+            let sc = Scope {
+                inst: None,
+                env: env.clone(),
+            };
             let mut d = dims.to_vec();
             for sub in &c.shape_expr {
                 if let ast::Subscript::Expression(e) = sub {
@@ -3506,7 +4254,12 @@ impl<'a, 't> Flattener<'a, 't> {
             let sub_rec = if tparts.len() == 1 && builtin_name(tparts[0]).is_some() {
                 None
             } else {
-                self.lookup_class(&env, &tparts).filter(|&k| matches!(self.tree.class_type(k), ClassType::Record | ClassType::Operator))
+                self.lookup_class(&env, &tparts).filter(|&k| {
+                    matches!(
+                        self.tree.class_type(k),
+                        ClassType::Record | ClassType::Operator
+                    )
+                })
             };
             let v = match sub_rec {
                 Some(k) => self.zero_record(k, &d, depth + 1)?,
@@ -3521,7 +4274,12 @@ impl<'a, 't> Flattener<'a, 't> {
         Ok(Val::Rec(fields))
     }
 
-    fn record_constructor(&mut self, cls: ClassId, argv: Vec<Val>, nargv: Vec<(String, Val)>) -> Result<Val> {
+    fn record_constructor(
+        &mut self,
+        cls: ClassId,
+        argv: Vec<Val>,
+        nargv: Vec<(String, Val)>,
+    ) -> Result<Val> {
         let mut fields = Vec::new();
         let mut names = Vec::new();
         self.function_elements(cls, &mut names, 0);
@@ -3534,7 +4292,10 @@ impl<'a, 't> Flattener<'a, 't> {
                 argv[pi - 1].clone()
             } else if let Some(b) = &comp.binding {
                 let env = self.env_of(owner);
-                let mut ctx = Ctx { in_function: true, ..Default::default() };
+                let mut ctx = Ctx {
+                    in_function: true,
+                    ..Default::default()
+                };
                 ctx.locals.push(fields.iter().cloned().collect());
                 self.translate(b, &Scope { inst: None, env }, &mut ctx)?
             } else {
@@ -3545,7 +4306,12 @@ impl<'a, 't> Flattener<'a, 't> {
         Ok(Val::Rec(fields))
     }
 
-    fn function_elements(&self, cls: ClassId, out: &mut Vec<(String, &'a ast::Component, ClassId)>, depth: usize) {
+    fn function_elements(
+        &self,
+        cls: ClassId,
+        out: &mut Vec<(String, &'a ast::Component, ClassId)>,
+        depth: usize,
+    ) {
         if depth > 16 {
             return;
         }
@@ -3561,7 +4327,12 @@ impl<'a, 't> Flattener<'a, 't> {
         }
     }
 
-    fn function_algorithms(&self, cls: ClassId, out: &mut Vec<(&'a [ast::Statement], ClassId)>, depth: usize) {
+    fn function_algorithms(
+        &self,
+        cls: ClassId,
+        out: &mut Vec<(&'a [ast::Statement], ClassId)>,
+        depth: usize,
+    ) {
         if depth > 16 {
             return;
         }
@@ -3575,7 +4346,11 @@ impl<'a, 't> Flattener<'a, 't> {
         }
     }
 
-    fn function_external(&self, cls: ClassId, depth: usize) -> Option<(&'a ast::ExternalFunction, String)> {
+    fn function_external(
+        &self,
+        cls: ClassId,
+        depth: usize,
+    ) -> Option<(&'a ast::ExternalFunction, String)> {
         if depth > 16 {
             return None;
         }
@@ -3608,7 +4383,10 @@ impl<'a, 't> Flattener<'a, 't> {
         self.function_elements(cls, &mut elems, 0);
         let env = self.env_with(cls, overrides);
         let scope = Scope { inst: None, env };
-        let mut ctx = Ctx { in_function: true, ..Default::default() };
+        let mut ctx = Ctx {
+            in_function: true,
+            ..Default::default()
+        };
         ctx.locals.push(FxHashMap::default());
         let mut inputs = Vec::new();
         let mut outputs = Vec::new();
@@ -3633,7 +4411,11 @@ impl<'a, 't> Flattener<'a, 't> {
                     },
                 };
                 // A record argument passed as a component (`f(frame.R)`) becomes a record value.
-                let v = if matches!(v, Val::Inst(_)) { self.as_record(&v).unwrap_or(v) } else { v };
+                let v = if matches!(v, Val::Inst(_)) {
+                    self.as_record(&v).unwrap_or(v)
+                } else {
+                    v
+                };
                 ctx.locals.last_mut().unwrap().insert(n.clone(), v);
             }
         }
@@ -3643,7 +4425,36 @@ impl<'a, 't> Flattener<'a, 't> {
             let ins: Vec<Val> = inputs.iter().map(|n| ctx.locals[0][n].clone()).collect();
             self.depth -= 1;
             if lang.trim_matches('"') == "builtin" {
-                return self.intrinsic(&short, ins).with_context(|| format!("in builtin function '{fname}'"));
+                return self
+                    .intrinsic(&short, ins)
+                    .with_context(|| format!("in builtin function '{fname}'"));
+            }
+            let cname = ext
+                .function_name
+                .as_ref()
+                .map(|t| t.text.to_string())
+                .unwrap_or_default();
+            if let Some(op) = cname.strip_prefix("ModelicaStandardTables_") {
+                self.depth += 1;
+                let mut args = Vec::with_capacity(ext.args.len());
+                for a in &ext.args {
+                    args.push(self.translate(a, &scope, &mut ctx)?);
+                }
+                self.depth -= 1;
+                return self
+                    .standard_table(op, args)
+                    .with_context(|| format!("in function '{fname}'"));
+            }
+            if let Some(op) = cname.strip_prefix("ModelicaStrings_") {
+                self.depth += 1;
+                let mut args = Vec::with_capacity(ext.args.len());
+                for a in &ext.args {
+                    args.push(self.translate(a, &scope, &mut ctx)?);
+                }
+                self.depth -= 1;
+                return self
+                    .strings(op, args)
+                    .with_context(|| format!("in function '{fname}'"));
             }
             bail!("external function '{}' is not supported", fname);
         }
@@ -3656,20 +4467,31 @@ impl<'a, 't> Flattener<'a, 't> {
                 outputs.push(n.clone());
             }
             let oenv = self.env_of(*owner);
-            let oscope = Scope { inst: None, env: oenv };
+            let oscope = Scope {
+                inst: None,
+                env: oenv,
+            };
             let mut dims = Vec::new();
             for s in &c.shape_expr {
                 if let ast::Subscript::Expression(e) = s {
                     let d = self.translate(e, &oscope, &mut ctx)?.scalar()?;
-                    dims.push(self.eval_param_expr(d).ok_or_else(|| anyhow!("function array size must be known"))? as usize);
+                    dims.push(
+                        self.eval_param_expr(d)
+                            .ok_or_else(|| anyhow!("function array size must be known"))?
+                            as usize,
+                    );
                 }
             }
             let tparts: Vec<&str> = c.type_name.name.iter().map(|t| &*t.text).collect();
             let rcls = if tparts.len() == 1 && builtin_name(tparts[0]).is_some() {
                 None
             } else {
-                self.lookup_class(&oscope.env, &tparts)
-                    .filter(|&k| matches!(self.tree.class_type(k), ClassType::Record | ClassType::Operator))
+                self.lookup_class(&oscope.env, &tparts).filter(|&k| {
+                    matches!(
+                        self.tree.class_type(k),
+                        ClassType::Record | ClassType::Operator
+                    )
+                })
             };
             let init = if let Some(b) = &c.binding {
                 self.translate(b, &oscope, &mut ctx)?
@@ -3703,12 +4525,206 @@ impl<'a, 't> Flattener<'a, 't> {
         let mut returned = false;
         for (stmts, owner) in algs {
             let oenv = self.env_of(owner);
-            let oscope = Scope { inst: None, env: oenv };
+            let oscope = Scope {
+                inst: None,
+                env: oenv,
+            };
             self.exec(stmts, &oscope, &mut ctx, &mut returned)
                 .with_context(|| format!("in function '{fname}'"))?;
         }
         self.depth -= 1;
         Ok(outputs.iter().map(|n| ctx.locals[0][n].clone()).collect())
+    }
+
+    /// Native implementation of the `ModelicaStandardTables` C API behind
+    /// `CombiTable1D*` and `CombiTimeTable`. A table object is an integer handle into
+    /// `ext_tables`; lookups become [`Node::Interp`] nodes on the arena table.
+    fn standard_table(&mut self, op: &str, args: Vec<Val>) -> Result<Vec<Val>> {
+        let num = |f: &mut Self, v: &Val, what: &str| -> Result<f64> {
+            let e = v.scalar()?;
+            f.eval_param_expr(e)
+                .ok_or_else(|| anyhow!("{what} must be a parameter expression"))
+        };
+        let handle = |f: &mut Self, v: &Val| -> Result<(u32, Vec<usize>)> {
+            let e = v.scalar()?;
+            if let Node::Var(var) = f.model.arena.node(e) {
+                // Surface the constructor's error instead of "must be a parameter".
+                f.ensure_binding(var).with_context(|| {
+                    format!("in table object '{}'", f.model.vars[var as usize].name)
+                })?;
+            }
+            let k = num(f, v, "table object")? as usize;
+            f.ext_tables
+                .get(k)
+                .cloned()
+                .ok_or_else(|| anyhow!("invalid table object"))
+        };
+        let column = |f: &mut Self, cols: &[usize], v: &Val| -> Result<u32> {
+            let i = num(f, v, "table column")? as usize;
+            let c = *cols
+                .get(i.wrapping_sub(1))
+                .ok_or_else(|| anyhow!("table column {i} out of range"))?;
+            Ok(c.saturating_sub(1) as u32)
+        };
+        let (kind, fun) = op
+            .split_once('_')
+            .ok_or_else(|| anyhow!("unknown table function '{op}'"))?;
+        let time = kind == "CombiTimeTable";
+        if kind == "CombiTable2D" {
+            bail!("2-D tables are not supported yet");
+        }
+        let out = match fun {
+            "init2" | "init3" => {
+                // (fileName, tableName, table, nrow, ncol, [startTime,] columns, ncols, smoothness,
+                //  extrapolation, [shiftTime, timeEvents,] verboseRead, ...)
+                let (d, e) = args[2].elems()?;
+                if d.len() != 2 || d[0] == 0 {
+                    bail!("tables read from files are not supported; give the table as a matrix");
+                }
+                let mut data = Vec::with_capacity(e.len());
+                for v in e {
+                    data.push(
+                        self.eval_param_expr(v)
+                            .ok_or_else(|| anyhow!("table data must be constant or parameter"))?,
+                    );
+                }
+                let o = usize::from(time);
+                let (_, ce) = args[5 + o].elems()?;
+                let mut columns = Vec::with_capacity(ce.len());
+                for v in ce {
+                    columns.push(
+                        self.eval_param_expr(v)
+                            .ok_or_else(|| anyhow!("table columns must be parameters"))?
+                            as usize,
+                    );
+                }
+                let smooth = num(self, &args[7 + o], "smoothness")? as u8;
+                let extrap = num(self, &args[8 + o], "extrapolation")? as u8;
+                let mut t = Table::linear(
+                    d[0],
+                    d[1],
+                    data,
+                    match extrap {
+                        2 => 1,
+                        3 => 2,
+                        _ => 0,
+                    },
+                );
+                match smooth {
+                    3 => t.smoothness = 1,
+                    2 | 6 => t.make_cubic(false),
+                    4 | 5 => t.make_cubic(true),
+                    _ => {}
+                }
+                if time {
+                    t.start = num(self, &args[5], "startTime")?;
+                    t.shift = num(self, &args[10 + o], "shiftTime")?;
+                }
+                if columns.iter().any(|&c| c == 0 || c > t.cols) {
+                    bail!(
+                        "table columns {columns:?} out of range for a table with {} columns",
+                        t.cols
+                    );
+                }
+                let id = self.model.arena.add_table(t);
+                self.ext_tables.push((id, columns));
+                Val::S(
+                    self.model
+                        .arena
+                        .constant((self.ext_tables.len() - 1) as f64),
+                )
+            }
+            "getValue" => {
+                let (t, cols) = handle(self, &args[0])?;
+                let c = column(self, &cols, &args[1])?;
+                Val::S(self.model.arena.interp(t, c, args[2].scalar()?))
+            }
+            "getDerValue" => {
+                let (t, cols) = handle(self, &args[0])?;
+                let c = column(self, &cols, &args[1])?;
+                let x = args[2].scalar()?;
+                let dx = args[if time { 5 } else { 3 }].scalar()?;
+                let s = self.model.arena.interp_der(t, c, x);
+                Val::S(self.model.arena.mul(s, dx))
+            }
+            "minimumTime" | "minimumAbscissa" | "maximumTime" | "maximumAbscissa" => {
+                let (t, _) = handle(self, &args[0])?;
+                let tb = &self.model.arena.tables[t as usize];
+                let v = if fun.starts_with("min") {
+                    tb.at(0, 0)
+                } else {
+                    tb.at(tb.rows - 1, 0)
+                };
+                Val::S(self.model.arena.constant(v))
+            }
+            "nextTimeEvent" => {
+                let (t, _) = handle(self, &args[0])?;
+                Val::S(
+                    self.model
+                        .arena
+                        .interp(t, Table::NEXT_EVENT, args[1].scalar()?),
+                )
+            }
+            "close" => Val::S(Arena::ZERO),
+            _ => bail!("table function '{op}' is not supported"),
+        };
+        Ok(vec![out])
+    }
+
+    /// `Modelica.Utilities.Strings` on translation-time strings (the `ModelicaStrings` C API).
+    fn strings(&mut self, op: &str, args: Vec<Val>) -> Result<Vec<Val>> {
+        let text = |v: &Val| -> Result<String> {
+            match v {
+                Val::Str(s) => Ok(s.clone()),
+                _ => bail!("expected a string, found {}", v.kind()),
+            }
+        };
+        let mut int = |v: &Val| -> Result<i64> {
+            let e = v.scalar()?;
+            Ok(self
+                .eval_param_expr(e)
+                .ok_or_else(|| anyhow!("string index must be a parameter expression"))?
+                as i64)
+        };
+        let chars: Vec<char> = text(&args[0])?.chars().collect();
+        let n = chars.len() as i64;
+        let r = match op {
+            "length" => Val::S(self.model.arena.constant(n as f64)),
+            "substring" => {
+                let (a, b) = (int(&args[1])?.max(1), int(&args[2])?.min(n));
+                let s: String = if b >= a {
+                    chars[(a - 1) as usize..b as usize].iter().collect()
+                } else {
+                    String::new()
+                };
+                Val::Str(s)
+            }
+            "skipWhiteSpace" => {
+                let mut i = int(&args[1])?.max(1);
+                while i <= n && chars[(i - 1) as usize].is_whitespace() {
+                    i += 1;
+                }
+                Val::S(self.model.arena.constant(i as f64))
+            }
+            "compare" => {
+                let b = text(&args[1])?;
+                let cs = int(&args[2])? != 0;
+                let a: String = chars.iter().collect();
+                let ord = if cs {
+                    a.cmp(&b)
+                } else {
+                    a.to_lowercase().cmp(&b.to_lowercase())
+                };
+                let k = match ord {
+                    std::cmp::Ordering::Less => 1.0,
+                    std::cmp::Ordering::Equal => 2.0,
+                    std::cmp::Ordering::Greater => 3.0,
+                };
+                Val::S(self.model.arena.constant(k))
+            }
+            _ => bail!("string function '{op}' is not supported"),
+        };
+        Ok(vec![r])
     }
 
     fn intrinsic(&mut self, name: &str, ins: Vec<Val>) -> Result<Vec<Val>> {
@@ -3726,9 +4742,12 @@ impl<'a, 't> Flattener<'a, 't> {
                 };
                 let mut data = Vec::with_capacity(e.len());
                 for &v in &e {
-                    data.push(self.eval_param_expr(v).ok_or_else(|| anyhow!("table data must be constant or parameter"))?);
+                    data.push(
+                        self.eval_param_expr(v)
+                            .ok_or_else(|| anyhow!("table data must be constant or parameter"))?,
+                    );
                 }
-                let t = Table { rows: d[0], cols: d[1], data, extrapolation: u8::from(name == "interpolateExtrapolate") };
+                let t = Table::linear(d[0], d[1], data, u8::from(name == "interpolateExtrapolate"));
                 let id = self.model.arena.add_table(t);
                 let col0 = col.saturating_sub(1) as u32;
                 Ok(vec![Val::S(self.model.arena.interp(id, col0, x))])
@@ -3737,7 +4756,13 @@ impl<'a, 't> Flattener<'a, 't> {
         }
     }
 
-    fn exec(&mut self, stmts: &'a [ast::Statement], scope: &Scope, ctx: &mut Ctx, returned: &mut bool) -> Result<()> {
+    fn exec(
+        &mut self,
+        stmts: &'a [ast::Statement],
+        scope: &Scope,
+        ctx: &mut Ctx,
+        returned: &mut bool,
+    ) -> Result<()> {
         for s in stmts {
             if *returned {
                 return Ok(());
@@ -3748,7 +4773,11 @@ impl<'a, 't> Flattener<'a, 't> {
                     let v = self.translate(value, scope, ctx)?;
                     self.assign_local(comp, v, scope, ctx)?;
                 }
-                ast::Statement::FunctionCall { comp, args, outputs } => {
+                ast::Statement::FunctionCall {
+                    comp,
+                    args,
+                    outputs,
+                } => {
                     let v = self.call(comp, args, scope, ctx)?;
                     let vals = match v {
                         Val::Tuple(t) => t,
@@ -3760,16 +4789,24 @@ impl<'a, 't> Flattener<'a, 't> {
                         }
                     }
                 }
-                ast::Statement::If { cond_blocks, else_block } => {
+                ast::Statement::If {
+                    cond_blocks,
+                    else_block,
+                } => {
                     self.exec_if(cond_blocks, else_block.as_deref(), scope, ctx, returned)?;
                 }
                 ast::Statement::For { indices, equations } => {
-                    let idx = indices.first().ok_or_else(|| anyhow!("for without index"))?;
+                    let idx = indices
+                        .first()
+                        .ok_or_else(|| anyhow!("for without index"))?;
                     let range = self.translate(&idx.range, scope, ctx)?;
                     let (_, vals) = range.elems()?;
                     let name = idx.ident.text.to_string();
                     for v in vals {
-                        ctx.locals.last_mut().unwrap().insert(name.clone(), Val::S(v));
+                        ctx.locals
+                            .last_mut()
+                            .unwrap()
+                            .insert(name.clone(), Val::S(v));
                         self.exec(equations, scope, ctx, returned)?;
                         if *returned {
                             break;
@@ -3855,8 +4892,16 @@ impl<'a, 't> Flattener<'a, 't> {
 
     /// `if c then t else e` on values of any shape (records field by field).
     fn merge_value(&mut self, c: ExprId, t: Val, e: Val) -> Result<Val> {
-        let t = if matches!(t, Val::Inst(_)) && matches!(e, Val::Rec(_) | Val::Inst(_)) { self.as_record(&t)? } else { t };
-        let e = if matches!(e, Val::Inst(_)) && matches!(t, Val::Rec(_)) { self.as_record(&e)? } else { e };
+        let t = if matches!(t, Val::Inst(_)) && matches!(e, Val::Rec(_) | Val::Inst(_)) {
+            self.as_record(&t)?
+        } else {
+            t
+        };
+        let e = if matches!(e, Val::Inst(_)) && matches!(t, Val::Rec(_)) {
+            self.as_record(&e)?
+        } else {
+            e
+        };
         self.merge_branch(c, t, e)
     }
 
@@ -3880,7 +4925,13 @@ impl<'a, 't> Flattener<'a, 't> {
         }
     }
 
-    fn assign_local(&mut self, target: &'a ast::ComponentReference, v: Val, scope: &Scope, ctx: &mut Ctx) -> Result<()> {
+    fn assign_local(
+        &mut self,
+        target: &'a ast::ComponentReference,
+        v: Val,
+        scope: &Scope,
+        ctx: &mut Ctx,
+    ) -> Result<()> {
         let name = target.parts[0].ident.text.to_string();
         let frame = ctx.locals.iter().rposition(|f| f.contains_key(&name));
         if target.parts.len() == 1 && target.parts[0].subs.is_none() {
@@ -3890,7 +4941,14 @@ impl<'a, 't> Flattener<'a, 't> {
         }
         let frame = frame.ok_or_else(|| anyhow!("unknown variable '{name}'"))?;
         let cur = ctx.locals[frame][&name].clone();
-        let new = self.assign_path(cur, target.parts[0].subs.as_deref(), &target.parts[1..], v, scope, ctx)?;
+        let new = self.assign_path(
+            cur,
+            target.parts[0].subs.as_deref(),
+            &target.parts[1..],
+            v,
+            scope,
+            ctx,
+        )?;
         ctx.locals[frame].insert(name, new);
         Ok(())
     }
@@ -3911,8 +4969,14 @@ impl<'a, 't> Flattener<'a, 't> {
                 Some(s) => self.assign_into(cur, s, v, scope, ctx),
             };
         }
-        let cur = if matches!(cur, Val::Inst(_) | Val::IA(..)) { self.to_rec(cur)? } else { cur };
-        let Val::Rec(mut fields) = cur else { bail!("field assignment on a non-record value") };
+        let cur = if matches!(cur, Val::Inst(_) | Val::IA(..)) {
+            self.to_rec(cur)?
+        } else {
+            cur
+        };
+        let Val::Rec(mut fields) = cur else {
+            bail!("field assignment on a non-record value")
+        };
         let f = &*rest[0].ident.text;
         let pos = match fields.iter().position(|(n, _)| n == f) {
             Some(p) => p,
@@ -3934,7 +4998,14 @@ impl<'a, 't> Flattener<'a, 't> {
     }
 
     /// `cur[subs] := v` for arrays, and field by field for arrays of records.
-    fn assign_into(&mut self, cur: Val, subs: &'a [ast::Subscript], v: Val, scope: &Scope, ctx: &mut Ctx) -> Result<Val> {
+    fn assign_into(
+        &mut self,
+        cur: Val,
+        subs: &'a [ast::Subscript],
+        v: Val,
+        scope: &Scope,
+        ctx: &mut Ctx,
+    ) -> Result<Val> {
         match cur {
             Val::A(dims, mut el) => {
                 let sel = self.eval_subscripts(subs, &dims, scope, ctx)?;
@@ -3946,7 +5017,9 @@ impl<'a, 't> Flattener<'a, 't> {
                 Ok(Val::A(dims, el))
             }
             Val::Rec(fields) => {
-                let vr = if Self::is_record_like(&v) { self.to_rec(v)? } else {
+                let vr = if Self::is_record_like(&v) {
+                    self.to_rec(v)?
+                } else {
                     let (re, im) = self.complex_parts(v)?;
                     Self::complex(re, im)
                 };
@@ -3967,7 +5040,12 @@ impl<'a, 't> Flattener<'a, 't> {
     }
 
     /// Algorithm section in a model: symbolic execution gives one equation per assigned variable.
-    fn translate_algorithm(&mut self, stmts: &'a [ast::Statement], scope: &Scope, initial: bool) -> Result<()> {
+    fn translate_algorithm(
+        &mut self,
+        stmts: &'a [ast::Statement],
+        scope: &Scope,
+        initial: bool,
+    ) -> Result<()> {
         // Collect assigned targets (top-level names) and when-statements.
         let mut ctx = Ctx::default();
         ctx.locals.push(FxHashMap::default());
@@ -3988,7 +5066,10 @@ impl<'a, 't> Flattener<'a, 't> {
                                 for (i, x) in te.iter().enumerate() {
                                     if let Node::Var(var) = self.model.arena.node(*x) {
                                         self.when_assigned.insert(var);
-                                        acts.push(WhenAction::Assign(var, *ve.get(i).unwrap_or(&ve[0])));
+                                        acts.push(WhenAction::Assign(
+                                            var,
+                                            *ve.get(i).unwrap_or(&ve[0]),
+                                        ));
                                     }
                                 }
                             }
@@ -3999,7 +5080,9 @@ impl<'a, 't> Flattener<'a, 't> {
                                     acts.push(WhenAction::Reinit(var, v));
                                 }
                             }
-                            ast::Statement::FunctionCall { comp, args, .. } if cref_name(comp) == "reinit" => {
+                            ast::Statement::FunctionCall { comp, args, .. }
+                                if cref_name(comp) == "reinit" =>
+                            {
                                 let t = self.translate(&args[0], scope, &mut ctx)?.scalar()?;
                                 let v = self.translate(&args[1], scope, &mut ctx)?.scalar()?;
                                 if let Node::Var(var) = self.model.arena.node(t) {
@@ -4012,7 +5095,10 @@ impl<'a, 't> Flattener<'a, 't> {
                     branches.push((c, acts));
                 }
                 let o = self.eq_origin(scope, "when-statement");
-                self.model.whens.push(WhenClause { branches, origin: o });
+                self.model.whens.push(WhenClause {
+                    branches,
+                    origin: o,
+                });
             } else {
                 plain.push(s.clone());
             }
@@ -4026,7 +5112,14 @@ impl<'a, 't> Flattener<'a, 't> {
         for t in &targets {
             let cr = ast::ComponentReference {
                 local: false,
-                parts: vec![ast::ComponentRefPart { ident: rumoca_core::Token { text: t.as_str().into(), ..Default::default() }, subs: None, def_id: None }],
+                parts: vec![ast::ComponentRefPart {
+                    ident: rumoca_core::Token {
+                        text: t.as_str().into(),
+                        ..Default::default()
+                    },
+                    subs: None,
+                    def_id: None,
+                }],
                 span: rumoca_core::Span::DUMMY,
                 qualified_display_name: None,
             };
@@ -4083,7 +5176,10 @@ fn collect_targets(stmts: &[ast::Statement], out: &mut Vec<String>) {
                     }
                 }
             }
-            ast::Statement::If { cond_blocks, else_block } => {
+            ast::Statement::If {
+                cond_blocks,
+                else_block,
+            } => {
                 for b in cond_blocks {
                     collect_targets(&b.stmts, out);
                 }
@@ -4160,7 +5256,11 @@ fn slice_leading(v: Val, k: usize, n: usize) -> Val {
                 let chunk = x.len() / n;
                 let rest = d[j..].to_vec();
                 let part = x[k * chunk..(k + 1) * chunk].to_vec();
-                if rest.is_empty() { Val::S(part[0]) } else { Val::A(rest, part) }
+                if rest.is_empty() {
+                    Val::S(part[0])
+                } else {
+                    Val::A(rest, part)
+                }
             }
             None => Val::A(d, x),
         },
@@ -4169,7 +5269,11 @@ fn slice_leading(v: Val, k: usize, n: usize) -> Val {
                 let chunk = x.len() / n;
                 let rest = d[j..].to_vec();
                 let part = x[k * chunk..(k + 1) * chunk].to_vec();
-                if rest.is_empty() { Val::Inst(part[0]) } else { Val::IA(rest, part) }
+                if rest.is_empty() {
+                    Val::Inst(part[0])
+                } else {
+                    Val::IA(rest, part)
+                }
             }
             None => Val::IA(d, x),
         },
@@ -4178,14 +5282,30 @@ fn slice_leading(v: Val, k: usize, n: usize) -> Val {
             slice_leading(first, k, n)
         }
         Val::Rec(fields) => Val::Rec(
-            fields.into_iter().map(|(f, v)| (f, if matches!(v, Val::Str(_)) { v } else { slice_leading(v, k, n) })).collect(),
+            fields
+                .into_iter()
+                .map(|(f, v)| {
+                    (
+                        f,
+                        if matches!(v, Val::Str(_)) {
+                            v
+                        } else {
+                            slice_leading(v, k, n)
+                        },
+                    )
+                })
+                .collect(),
         ),
         other => other,
     }
 }
 
 fn dot(prefix: &str) -> String {
-    if prefix.is_empty() { String::new() } else { format!("{prefix}.") }
+    if prefix.is_empty() {
+        String::new()
+    } else {
+        format!("{prefix}.")
+    }
 }
 
 fn index_str(dims: &[usize], mut k: usize) -> String {
@@ -4194,7 +5314,10 @@ fn index_str(dims: &[usize], mut k: usize) -> String {
         idx[d] = k % dims[d] + 1;
         k /= dims[d];
     }
-    idx.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",")
+    idx.iter()
+        .map(|i| i.to_string())
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 /// Apply a subscript selection to row-major dims. `None` = full range; `Some([MAX, ..])` = vector subscript.
@@ -4212,7 +5335,11 @@ fn select_indices(dims: &[usize], sel: &[Option<Vec<usize>>]) -> (Vec<usize>, Ve
             }
         }
     }
-    let new_dims: Vec<usize> = per_dim.iter().filter(|(keep, _)| *keep).map(|(_, v)| v.len()).collect();
+    let new_dims: Vec<usize> = per_dim
+        .iter()
+        .filter(|(keep, _)| *keep)
+        .map(|(_, v)| v.len())
+        .collect();
     let mut out = vec![0usize];
     for (d, (_, v)) in per_dim.iter().enumerate() {
         let stride: usize = dims[d + 1..].iter().product();
@@ -4240,12 +5367,20 @@ fn split_args(args: &[E]) -> (Vec<&E>, Vec<(&str, &E)>) {
 }
 
 pub fn cref_name(c: &ast::ComponentReference) -> String {
-    c.parts.iter().map(|p| p.ident.text.to_string()).collect::<Vec<_>>().join(".")
+    c.parts
+        .iter()
+        .map(|p| p.ident.text.to_string())
+        .collect::<Vec<_>>()
+        .join(".")
 }
 
 fn expr_string(e: &E) -> String {
     match e {
-        E::Terminal { token, terminal_type: TerminalType::String, .. } => token.text.trim_matches('"').to_string(),
+        E::Terminal {
+            token,
+            terminal_type: TerminalType::String,
+            ..
+        } => token.text.trim_matches('"').to_string(),
         E::Binary { lhs, rhs, .. } => format!("{}{}", expr_string(lhs), expr_string(rhs)),
         _ => String::new(),
     }
@@ -4253,10 +5388,16 @@ fn expr_string(e: &E) -> String {
 
 pub fn literal_number(e: &E) -> Option<f64> {
     match e {
-        E::Terminal { token, terminal_type: TerminalType::UnsignedReal | TerminalType::UnsignedInteger, .. } => {
-            token.text.parse().ok()
-        }
-        E::Unary { op: OpUnary::Minus, rhs, .. } => literal_number(rhs).map(|v| -v),
+        E::Terminal {
+            token,
+            terminal_type: TerminalType::UnsignedReal | TerminalType::UnsignedInteger,
+            ..
+        } => token.text.parse().ok(),
+        E::Unary {
+            op: OpUnary::Minus,
+            rhs,
+            ..
+        } => literal_number(rhs).map(|v| -v),
         E::Parenthesized { inner, .. } => literal_number(inner),
         _ => None,
     }

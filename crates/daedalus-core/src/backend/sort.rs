@@ -79,7 +79,9 @@ impl Work {
         }
         // Linear: r = d*v + r0  ->  v = -r0/d
         let zero = Arena::ZERO;
-        let r0 = self.arena.substitute(r, &|n| if n == target { Some(zero) } else { None });
+        let r0 = self
+            .arena
+            .substitute(r, &|n| if n == target { Some(zero) } else { None });
         if self.arena.contains(r0, target) {
             return None;
         }
@@ -90,8 +92,9 @@ impl Work {
             let mut varying = false;
             self.arena.visit_leaves(d, &mut |n| match n {
                 Node::Var(x) => {
-                    if self.unknown[x as usize] || self.vars[x as usize].kind != crate::flat::VarKind::Parameter
-                        && self.vars[x as usize].kind != crate::flat::VarKind::Constant
+                    if self.unknown[x as usize]
+                        || self.vars[x as usize].kind != crate::flat::VarKind::Parameter
+                            && self.vars[x as usize].kind != crate::flat::VarKind::Constant
                     {
                         varying = true;
                     }
@@ -109,7 +112,13 @@ impl Work {
         let r = self.arena.sub(eq.lhs, eq.rhs);
         let mut memo = FxHashMap::default();
         let d = self.arena.diff(r, Node::Var(v), &mut memo);
-        let vals = super::eval::Values { var: &|x| pt[x as usize], pre: &|x| pt[x as usize], time: 0.0, initial: false, rel: None };
+        let vals = super::eval::Values {
+            var: &|x| pt[x as usize],
+            pre: &|x| pt[x as usize],
+            time: 0.0,
+            initial: false,
+            rel: None,
+        };
         let x = super::eval::eval(&self.arena, d, &vals, &mut FxHashMap::default());
         x.is_finite() && x.abs() > 1e-12
     }
@@ -164,18 +173,33 @@ pub fn causalize(
     }
     let n_eq = eqs.len();
     let n_var = vars.len();
-    let g = Bipartite { n_eq, n_var, adj: &adj };
+    let g = Bipartite {
+        n_eq,
+        n_var,
+        adj: &adj,
+    };
     let (eq_match, var_match) = hopcroft_karp(&g);
     let free_eqs: Vec<usize> = (0..n_eq).filter(|&e| eq_match[e] == NONE).collect();
-    let free_vars: Vec<VarId> = (0..n_var).filter(|&v| var_match[v] == NONE).map(|v| vars[v]).collect();
+    let free_vars: Vec<VarId> = (0..n_var)
+        .filter(|&v| var_match[v] == NONE)
+        .map(|v| vars[v])
+        .collect();
     if !free_eqs.is_empty() || !free_vars.is_empty() {
-        let mut msg = format!("{label} problem is structurally singular ({n_eq} equations, {n_var} unknowns).\n");
+        let mut msg = format!(
+            "{label} problem is structurally singular ({n_eq} equations, {n_var} unknowns).\n"
+        );
         if !free_vars.is_empty() {
             let names: Vec<&str> = free_vars.iter().take(30).map(|&v| w.name(v)).collect();
-            msg.push_str(&format!("  unknowns not determined by any equation: {}\n", names.join(", ")));
+            msg.push_str(&format!(
+                "  unknowns not determined by any equation: {}\n",
+                names.join(", ")
+            ));
         }
         for &e in free_eqs.iter().take(30) {
-            msg.push_str(&format!("  equation with no unknown left: {}\n", w.eq_text(&eqs[e])));
+            msg.push_str(&format!(
+                "  equation with no unknown left: {}\n",
+                w.eq_text(&eqs[e])
+            ));
         }
         bail!(msg);
     }
@@ -184,7 +208,13 @@ pub fn causalize(
     // Guess point propagated through the blocks in order (start values, then what the
     // explicit assignments give from them): tearing checks its pivots against it.
     let mut pt: Vec<f64> = (0..w.vars.len() as VarId)
-        .map(|x| if w.unknown[x as usize] { w.start_value(x) } else { w.param_values[x as usize] })
+        .map(|x| {
+            if w.unknown[x as usize] {
+                w.start_value(x)
+            } else {
+                w.param_values[x as usize]
+            }
+        })
         .collect();
     for comp in comps {
         if comp.len() == 1 {
@@ -202,13 +232,21 @@ pub fn causalize(
                     let r = w.arena.sub(eqs[e].lhs, eqs[e].rhs);
                     let set: FxHashSet<VarId> = [v].into_iter().collect();
                     let linear = w.is_linear_in(r, &set);
-                    blocks.push(Block::Solve { tears: vec![v], inner: vec![], residuals: vec![r], linear });
+                    blocks.push(Block::Solve {
+                        tears: vec![v],
+                        inner: vec![],
+                        residuals: vec![r],
+                        linear,
+                    });
                 }
             }
             continue;
         }
         let ceqs: Vec<Eq> = comp.iter().map(|&e| eqs[e as usize]).collect();
-        let cvars: Vec<VarId> = comp.iter().map(|&e| vars[eq_match[e as usize] as usize]).collect();
+        let cvars: Vec<VarId> = comp
+            .iter()
+            .map(|&e| vars[eq_match[e as usize] as usize])
+            .collect();
         let b = tear(w, &ceqs, &cvars, tearing, &pt);
         if let Block::Solve { inner, .. } = &b {
             for &(v, x) in inner {
@@ -224,7 +262,13 @@ pub fn causalize(
 }
 
 fn eval_at(w: &Work, e: ExprId, pt: &[f64]) -> f64 {
-    let vals = super::eval::Values { var: &|x| pt[x as usize], pre: &|x| pt[x as usize], time: 0.0, initial: true, rel: None };
+    let vals = super::eval::Values {
+        var: &|x| pt[x as usize],
+        pre: &|x| pt[x as usize],
+        time: 0.0,
+        initial: true,
+        rel: None,
+    };
     super::eval::eval(&w.arena, e, &vals, &mut FxHashMap::default())
 }
 
@@ -235,10 +279,22 @@ fn tear(w: &mut Work, eqs: &[Eq], vars: &[VarId], tearing: bool, pt: &[f64]) -> 
     let residual_all: Vec<ExprId> = eqs.iter().map(|e| w.arena.sub(e.lhs, e.rhs)).collect();
     let linear = residual_all.iter().all(|&r| w.is_linear_in(r, &set));
     if !tearing {
-        return Block::Solve { tears: vars.to_vec(), inner: vec![], residuals: residual_all, linear };
+        return Block::Solve {
+            tears: vars.to_vec(),
+            inner: vec![],
+            residuals: residual_all,
+            linear,
+        };
     }
-    let occ: Vec<Vec<VarId>> =
-        eqs.iter().map(|e| w.eq_unknowns(e).into_iter().filter(|v| set.contains(v)).collect()).collect();
+    let occ: Vec<Vec<VarId>> = eqs
+        .iter()
+        .map(|e| {
+            w.eq_unknowns(e)
+                .into_iter()
+                .filter(|v| set.contains(v))
+                .collect()
+        })
+        .collect();
     let mut known: FxHashSet<VarId> = FxHashSet::default();
     let mut used = vec![false; eqs.len()];
     let mut inner: Vec<(VarId, ExprId)> = Vec::new();
@@ -254,14 +310,18 @@ fn tear(w: &mut Work, eqs: &[Eq], vars: &[VarId], tearing: bool, pt: &[f64]) -> 
                     continue;
                 }
                 let mut rem = occ[i].iter().copied().filter(|v| !known.contains(v));
-                let (Some(v), None) = (rem.next(), rem.next()) else { continue };
+                let (Some(v), None) = (rem.next(), rem.next()) else {
+                    continue;
+                };
                 if unsolvable.contains(&(i, v)) {
                     continue;
                 }
                 // Inside a loop only solve through coefficients that are non-zero at the
                 // parameter and start values; a vanishing one (I[1,3] = 0, R.T[2,3] of an
                 // unrotated frame) stays a residual for the Newton/linear solve.
-                let sc = w.solve_class(&eqs[i], v).filter(|&(_, c)| c == 0 || w.coefficient_nonzero(&eqs[i], v, pt));
+                let sc = w
+                    .solve_class(&eqs[i], v)
+                    .filter(|&(_, c)| c == 0 || w.coefficient_nonzero(&eqs[i], v, pt));
                 match sc {
                     Some((x, c)) => {
                         if best.is_none_or(|b| c < b.3) {
@@ -291,7 +351,11 @@ fn tear(w: &mut Work, eqs: &[Eq], vars: &[VarId], tearing: bool, pt: &[f64]) -> 
             if used[i] {
                 continue;
             }
-            let rem: Vec<VarId> = occ[i].iter().copied().filter(|v| !known.contains(v)).collect();
+            let rem: Vec<VarId> = occ[i]
+                .iter()
+                .copied()
+                .filter(|v| !known.contains(v))
+                .collect();
             for &v in &rem {
                 *count.entry(v).or_default() += if rem.len() == 2 { 3 } else { 1 };
             }
@@ -305,9 +369,17 @@ fn tear(w: &mut Work, eqs: &[Eq], vars: &[VarId], tearing: bool, pt: &[f64]) -> 
         tears.push(t);
         known.insert(t);
     }
-    let residuals: Vec<ExprId> = (0..eqs.len()).filter(|&i| !used[i]).map(|i| residual_all[i]).collect();
+    let residuals: Vec<ExprId> = (0..eqs.len())
+        .filter(|&i| !used[i])
+        .map(|i| residual_all[i])
+        .collect();
     debug_assert_eq!(residuals.len(), tears.len());
-    Block::Solve { tears, inner, residuals, linear }
+    Block::Solve {
+        tears,
+        inner,
+        residuals,
+        linear,
+    }
 }
 
 /// Build and causalise the initialization problem: all unknowns (states included) from the
@@ -325,7 +397,13 @@ pub fn initialization(w: &mut Work, states: &[VarId], tearing: bool) -> Result<V
         let lhs = w.arena.var(v);
         let origin = w.origins.len() as u32;
         w.origins.push(format!("start value of {}", w.name(v)));
-        Eq { lhs, rhs, origin, parent: None, derived: None }
+        Eq {
+            lhs,
+            rhs,
+            origin,
+            parent: None,
+            derived: None,
+        }
     };
     for v in 0..w.vars.len() as VarId {
         if w.unknown[v as usize] && w.vars[v as usize].fixed == Some(true) {
@@ -343,13 +421,20 @@ pub fn initialization(w: &mut Work, states: &[VarId], tearing: bool) -> Result<V
     let n_states_optional = optional.len();
     for v in 0..w.vars.len() as VarId {
         let fixed = w.vars[v as usize].fixed;
-        if w.unknown[v as usize] && fixed != Some(true) && !(state_set.contains(&v) && fixed.is_none()) {
+        if w.unknown[v as usize]
+            && fixed != Some(true)
+            && !(state_set.contains(&v) && fixed.is_none())
+        {
             optional.push(v);
         }
     }
     let nv = w.vars.len();
     let mut adj: Vec<Vec<u32>> = mandatory.iter().map(|e| w.eq_unknowns(e)).collect();
-    let g = Bipartite { n_eq: adj.len(), n_var: nv, adj: &adj };
+    let g = Bipartite {
+        n_eq: adj.len(),
+        n_var: nv,
+        adj: &adj,
+    };
     let (em, vm) = hopcroft_karp(&g);
     let mut eq_match = em;
     let mut var_match = vm;
@@ -359,13 +444,24 @@ pub fn initialization(w: &mut Work, states: &[VarId], tearing: bool) -> Result<V
     for e in 0..mandatory.len() {
         if eq_match[e] == NONE {
             if e < n_sim {
-                bail!("initialization problem is overdetermined at {}", w.eq_text(&mandatory[e]));
+                bail!(
+                    "initialization problem is overdetermined at {}",
+                    w.eq_text(&mandatory[e])
+                );
             }
-            w.warnings.push(format!("initialization: redundant equation ignored: {}", w.eq_text(&mandatory[e])));
+            w.warnings.push(format!(
+                "initialization: redundant equation ignored: {}",
+                w.eq_text(&mandatory[e])
+            ));
             keep[e] = false;
         }
     }
-    let mut selected: Vec<Eq> = mandatory.iter().zip(&keep).filter(|(_, k)| **k).map(|(e, _)| *e).collect();
+    let mut selected: Vec<Eq> = mandatory
+        .iter()
+        .zip(&keep)
+        .filter(|(_, k)| **k)
+        .map(|(e, _)| *e)
+        .collect();
     let mut visited_eq: Vec<u32> = vec![0; mandatory.len() + optional.len()];
     let mut visited_var: Vec<u32> = vec![0; nv];
     let mut stamp = 0;
@@ -381,7 +477,16 @@ pub fn initialization(w: &mut Work, states: &[VarId], tearing: bool) -> Result<V
         eq_match.push(NONE);
         let ei = adj.len() - 1;
         stamp += 1;
-        let ok = augment(ei, &adj, &mut eq_match, &mut var_match, &mut visited_eq, &mut visited_var, stamp, &|_| true);
+        let ok = augment(
+            ei,
+            &adj,
+            &mut eq_match,
+            &mut var_match,
+            &mut visited_eq,
+            &mut visited_var,
+            stamp,
+            &|_| true,
+        );
         if ok {
             matched += 1;
             selected.push(e);
@@ -393,9 +498,20 @@ pub fn initialization(w: &mut Work, states: &[VarId], tearing: bool) -> Result<V
     if !defaulted.is_empty() {
         w.warnings.push(format!(
             "initialization underdetermined; using start values for: {}",
-            defaulted.iter().take(20).cloned().collect::<Vec<_>>().join(", ")
+            defaulted
+                .iter()
+                .take(20)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
         ));
     }
     let unknown = w.unknown.clone();
-    causalize(w, &selected, &|v| unknown[v as usize], tearing, "initialization")
+    causalize(
+        w,
+        &selected,
+        &|v| unknown[v as usize],
+        tearing,
+        "initialization",
+    )
 }
