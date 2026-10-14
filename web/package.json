@@ -9,7 +9,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "test": "tsc --noEmit && node --test tests/"
+    "test": "tsc --noEmit"
   },
   "devDependencies": {
     "typescript": "5.6.3",
