@@ -44,7 +44,14 @@ classes.
    - unrolls `for` equations and array equations to scalars;
    - inlines functions by symbolic execution;
    - resolves `connect` sets (potential equality, flow sum to zero), including
-     loops over component arrays.
+     loops over component arrays;
+   - handles expandable connectors (MLS 9.1.3): bus members that no equation
+     uses become hidden constants instead of unknowns;
+   - maps `ExternalObject` classes to integer handles and replaces the
+     `ModelicaStandardTables` C functions with native tables. A lookup becomes
+     one interpolation node in the arena, with linear, constant, Akima and
+     Fritsch–Butland cubic smoothness, hold, linear and periodic
+     extrapolation, and time events at breakpoints.
 
 **Inspection (`inspect.rs`)** serves the workbench. For any class it returns:
 - the class tree;
@@ -72,6 +79,9 @@ Every expression is a hash-consed node in one arena. This gives three things:
    about 40–60 % of their variables here; the 1000-mass chain loses 8,005 of 21,013.
 3. **Index reduction (`index.rs`).**
    - `der(x)` becomes an ordinary variable.
+   - Unknowns fixed by equations over parameters only are marked
+     time-invariant. Their derivative is zero, so Pantelides never
+     differentiates through them.
    - Pantelides' algorithm differentiates the minimal set of equations. It reads
      the visited set of a failed augmenting path from a trail, so its cost
      stays proportional to the region searched.
@@ -122,6 +132,11 @@ Euler run at a fixed step for real-time use.
 
 **Events.**
 - Relations are monitored as zero crossings and located on the dense output.
+  Each relation has a hysteresis band relative to its own running magnitude,
+  so a relation that hovers at zero does not fire twice for one crossing.
+- If events keep switching the same relations back and forth at one instant
+  (more than 500 events within a relative time of 1e-10), the run stops with
+  an error naming those relations, instead of stalling.
 - Event iteration re-evaluates `when` clauses, `reinit` and `pre()` until the
   discrete state is stable.
 - `terminate()` ends the run cleanly.
