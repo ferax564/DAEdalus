@@ -1,0 +1,10 @@
+[package]
+name = "daedalus-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+[[bin]]
+name = "daedalus"
+path = "src/main.rs"
+[dependencies]
+daedalus-core = { path = "../daedalus-core" }
