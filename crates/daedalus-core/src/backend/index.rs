@@ -329,6 +329,7 @@ fn unmatched_hint(w: &Work) -> String {
 /// with `parent`/`derived` links; new derivative variables are created on demand.
 pub fn pantelides(w: &mut Work) -> Result<()> {
     check_balance(w)?;
+    prefer_state_change(w);
     let n_orig = w.eqs.len();
     // Time-invariant unknowns and their defining equations are solved like parameters:
     // they take no part in index reduction.
@@ -358,10 +359,15 @@ pub fn pantelides(w: &mut Work) -> Result<()> {
     let mut stamp = 0u32;
     let max_eqs = 8 * n_orig.max(16) + 1000;
     for k in 0..n_orig {
-        if invariant_eqs.contains(&k) {
+        if invariant_eqs.contains(&k) || w.eqs[k].parent.is_some() {
             continue;
         }
+        // Equations already differentiated (by the state change) start at their
+        // highest derivative.
         let mut i = k;
+        while let Some(d) = w.eqs[i].derived {
+            i = d;
+        }
         let mut level = 0;
         loop {
             stamp += 1;
@@ -442,6 +448,133 @@ pub fn pantelides(w: &mut Work) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Make unknowns with `stateSelect = prefer/always` that do not appear differentiated
+/// candidates for states, as Dymola does: the algebraic equations that compute them from
+/// the natural states (`m = V*d(p, h)`, `U = m*u(p, h)` for a medium volume with mass and
+/// energy balances) are differentiated, so the dummy-derivative selection can pick the
+/// preferred variables (`p`, `h`) as states and turn the natural ones into algebraic
+/// variables. The states then enter the medium functions directly instead of through a
+/// nonlinear system solved at every step.
+fn prefer_state_change(w: &mut Work) {
+    let nv = w.vars.len();
+    let preferred: Vec<VarId> = (0..nv as VarId)
+        .filter(|&v| {
+            let x = &w.vars[v as usize];
+            w.unknown[v as usize]
+                && w.der_of[v as usize].is_none()
+                && w.base_of[v as usize].is_none()
+                && !w.invariant.contains(&v)
+                && x.ty == VarType::Real
+                && x.kind == VarKind::Continuous
+                && matches!(x.state_select, StateSelect::Prefer | StateSelect::Always)
+        })
+        .collect();
+    if preferred.is_empty() {
+        return;
+    }
+    // Algebraic part: equations without derivative variables, over unknowns that are
+    // neither natural states nor derivatives.
+    let is_alg = |w: &Work, v: VarId| {
+        w.der_of[v as usize].is_none()
+            && w.base_of[v as usize].is_none()
+            && !w.invariant.contains(&v)
+    };
+    let mut alg_eqs: Vec<usize> = Vec::new();
+    let mut adj: Vec<Vec<u32>> = Vec::new();
+    let mut touches_state: Vec<bool> = Vec::new();
+    for (k, e) in w.eqs.iter().enumerate() {
+        if w.invariant_eqs.contains(&k) || e.derived.is_some() || e.parent.is_some() {
+            continue;
+        }
+        let u = w.eq_unknowns(e);
+        if u.iter().any(|&v| w.base_of[v as usize].is_some()) {
+            continue;
+        }
+        let a: Vec<u32> = u.iter().copied().filter(|&v| is_alg(w, v)).collect();
+        if a.is_empty() {
+            // a constraint between states: index reduction proper handles it
+            return;
+        }
+        touches_state.push(u.iter().any(|&v| w.der_of[v as usize].is_some()));
+        alg_eqs.push(k);
+        adj.push(a);
+    }
+    let mut eq_match = vec![NONE; alg_eqs.len()];
+    let mut var_match = vec![NONE; nv];
+    let mut visited_eq = vec![0u32; alg_eqs.len()];
+    let mut visited_var = vec![0u32; nv];
+    let active = |_: u32| true;
+    for e in 0..alg_eqs.len() {
+        augment(
+            e,
+            &adj,
+            &mut eq_match,
+            &mut var_match,
+            &mut visited_eq,
+            &mut visited_var,
+            e as u32 + 1,
+            &active,
+        );
+    }
+    // For each preferred variable, the equations it depends on (transitively).
+    let mut chosen: Vec<bool> = vec![false; alg_eqs.len()];
+    for &p in &preferred {
+        if var_match[p as usize] == NONE {
+            continue;
+        }
+        let mut seen_eq: FxHashSet<u32> = FxHashSet::default();
+        let mut stack = vec![p];
+        let mut seen_var: FxHashSet<VarId> = FxHashSet::default();
+        seen_var.insert(p);
+        let mut reaches_state = false;
+        let mut complete = true;
+        while let Some(v) = stack.pop() {
+            let e = var_match[v as usize];
+            if e == NONE {
+                complete = false;
+                break;
+            }
+            if !seen_eq.insert(e) {
+                continue;
+            }
+            reaches_state |= touches_state[e as usize];
+            for &u in &adj[e as usize] {
+                if seen_var.insert(u) {
+                    stack.push(u);
+                }
+            }
+        }
+        if complete && reaches_state {
+            for e in seen_eq {
+                chosen[e as usize] = true;
+            }
+        }
+    }
+    let todo: Vec<usize> = (0..alg_eqs.len())
+        .filter(|&e| chosen[e])
+        .map(|e| alg_eqs[e])
+        .collect();
+    for l in todo {
+        let eq = w.eqs[l];
+        for v in w.eq_unknowns(&eq) {
+            if !w.invariant.contains(&v) {
+                w.der_var(v);
+            }
+        }
+        let lhs = w.time_derivative(eq.lhs);
+        let rhs = w.time_derivative(eq.rhs);
+        w.eqs.push(Eq {
+            lhs,
+            rhs,
+            origin: eq.origin,
+            parent: Some(l),
+            derived: None,
+        });
+        let ni = w.eqs.len() - 1;
+        w.eqs[l].derived = Some(ni);
+    }
 }
 
 /// Structural pseudo-random perturbation used for numeric rank checks.

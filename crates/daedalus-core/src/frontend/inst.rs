@@ -7,7 +7,7 @@
 
 use super::overconstrained::{OcAnswers, OcLog};
 use super::tree::{ClassId, ClassTree, ROOT, builtin_name};
-use crate::expr::{Arena, Cmp, ExprId, Fn1, Fn2, Node, Table, VarId};
+use crate::expr::{Arena, Cmp, ExprId, Fn1, Fn2, LoopProg, Node, Table, VarId};
 use crate::flat::*;
 use anyhow::{Context, Result, anyhow, bail};
 use indexmap::IndexMap;
@@ -219,6 +219,9 @@ pub struct Ctx {
     end_value: Option<usize>,
     /// Inside a function body (no instance components visible).
     in_function: bool,
+    /// Condition under which the statements being executed run (inside the branches of
+    /// a time-varying `if`); `None` means always.
+    path: Option<ExprId>,
 }
 
 pub struct Flattener<'a, 't> {
@@ -265,6 +268,15 @@ pub struct Flattener<'a, 't> {
     /// A synchronous operator was translated.
     uses_clocks: bool,
     depth: usize,
+    /// Next id of a [`Node::Local`] standing for a loop variable while a loop body is
+    /// translated (unique, so nested loops never mix their variables up).
+    next_local: u32,
+    /// Functions being compiled as callables (their body is inlined once), and the
+    /// compiled ones by function and argument shape: (program, inputs, output template).
+    outlining: FxHashSet<ClassId>,
+    outlined: FxHashMap<String, (u32, usize, Vec<Val>)>,
+    /// Functions that could not be compiled on their own.
+    outline_failed: FxHashSet<ClassId>,
     pub var_by_name: FxHashMap<String, VarId>,
     /// Declared but not yet instantiated components, instantiated on first reference so
     /// that declaration order does not matter (e.g. conditions on later parameters).
@@ -315,6 +327,10 @@ impl<'a, 't> Flattener<'a, 't> {
             clocked_whens: Vec::new(),
             uses_clocks: false,
             depth: 0,
+            next_local: 1 << 20,
+            outlining: FxHashSet::default(),
+            outlined: FxHashMap::default(),
+            outline_failed: FxHashSet::default(),
             var_by_name: FxHashMap::default(),
             deferred: FxHashMap::default(),
             oc_log: OcLog::default(),
@@ -413,9 +429,45 @@ impl<'a, 't> Flattener<'a, 't> {
         None
     }
 
-    fn lookup_class_name(&self, env: &Env, name: &ast::Name) -> Option<ClassId> {
-        let parts: Vec<&str> = name.name.iter().map(|t| &*t.text).collect();
-        self.lookup_class(env, &parts)
+    /// The package through which class `cls`, named `parts` in `env`, is reached when
+    /// that package only inherits it (`Medium.BaseProperties` with `Medium` extending the
+    /// package that declares it): the class then sees that package's constants and
+    /// redeclarations before its own lexical scope.
+    fn class_via(&self, env: &Env, parts: &[&str], cls: ClassId) -> Option<ClassId> {
+        let via = if parts.len() > 1 {
+            self.lookup_class(env, &parts[..parts.len() - 1])
+        } else {
+            let mut e: Option<&Env> = Some(env);
+            let mut found = None;
+            while let Some(en) = e {
+                if en.overrides.contains_key(parts[0]) {
+                    break;
+                }
+                if self.tree.member_class(en.class, parts[0]) == Some(cls) {
+                    found = Some(en.class);
+                    break;
+                }
+                e = en.parent.as_deref();
+            }
+            found
+        }?;
+        let lexical = self.tree.node(cls).parent;
+        (Some(via) != lexical && self.tree.class_type(via) == ClassType::Package).then_some(via)
+    }
+
+    /// Whether class `c` inherits (transitively) from class `base`.
+    fn inherits_from(&self, c: ClassId, base: ClassId) -> bool {
+        let mut stack = self.tree.bases(c);
+        let mut seen = FxHashSet::default();
+        while let Some(b) = stack.pop() {
+            if b == base {
+                return true;
+            }
+            if seen.insert(b) {
+                stack.extend(self.tree.bases(b));
+            }
+        }
+        false
     }
 
     // ------------------------------------------------------------------
@@ -893,10 +945,15 @@ impl<'a, 't> Flattener<'a, 't> {
                 }),
                 None => env.clone(),
             };
-            let mut base = self
-                .lookup_class(&lookup_env, &parts)
-                .or_else(|| self.lookup_class(&env, &parts))
-                .ok_or_else(|| anyhow!("base class '{}' not found", ext.base_name))?;
+            // `redeclare model extends X` inside X: the base is the inherited X.
+            let class_extends = parts.len() == 1 && self.tree.node(class).name == parts[0];
+            let mut base = if class_extends {
+                class
+            } else {
+                self.lookup_class(&lookup_env, &parts)
+                    .or_else(|| self.lookup_class(&env, &parts))
+                    .ok_or_else(|| anyhow!("base class '{}' not found", ext.base_name))?
+            };
             if base == class {
                 // `redeclare model extends X`: the base is the inherited X, not this class.
                 base = self
@@ -908,6 +965,19 @@ impl<'a, 't> Flattener<'a, 't> {
                 self.add_mod_expr(&mut em, &x.expr, x.each, x.final_, x.redeclare, &scope);
             }
             let merged = merge(m, &em);
+            // Modifiers of `redeclare function f = g(a = ..)` in the extends clause.
+            for (name, _, _) in &em.redeclares {
+                if let Some(sub) = merged.sub(name) {
+                    let vals: Vec<(String, Scoped<'a>)> = sub
+                        .subs
+                        .iter()
+                        .filter_map(|(n, sm)| sm.value.clone().map(|v| (n.clone(), v)))
+                        .collect();
+                    if !vals.is_empty() {
+                        self.class_mods.entry((inst, name.clone())).or_insert(vals);
+                    }
+                }
+            }
             // Redeclares in extends apply to the instance environment for inherited elements.
             let mut ov: FxHashMap<String, ClassId> = (*env.overrides).clone();
             for (name, cls, sc) in &merged.redeclares {
@@ -916,7 +986,22 @@ impl<'a, 't> Flattener<'a, 't> {
                     ov.insert(name.clone(), c);
                 }
             }
-            let benv = self.env_with(base, Rc::new(ov));
+            // A base inherited from the package that encloses it in a base of our own
+            // enclosing package (`redeclare model extends BaseProperties`) resolves names
+            // in our enclosing package first, so it sees its redeclared records.
+            let blex = self.tree.node(base).parent;
+            let benv = match (&env.parent, blex) {
+                (Some(pe), Some(bl)) if pe.class != bl && self.inherits_from(pe.class, bl) => {
+                    let ov = Rc::new(ov);
+                    let p = self.inherited_env(pe.class, bl, ov.clone());
+                    Rc::new(Env {
+                        class: base,
+                        overrides: ov,
+                        parent: Some(p),
+                    })
+                }
+                _ => self.env_with(base, Rc::new(ov)),
+            };
             self.collect(base, benv.clone(), &merged, inst, out, depth + 1)?;
             // Make inherited overrides visible to the instance env as well.
             if !benv.overrides.is_empty() {
@@ -1034,6 +1119,18 @@ impl<'a, 't> Flattener<'a, 't> {
                 ast::Subscript::Range { .. } | ast::Subscript::Empty => {
                     // Unknown size `[:]`: derive from the binding value if possible.
                     let d = if let Some(v) = &m.value {
+                        // `{a, b}`: the size without evaluating the elements (they may
+                        // refer to components not instantiated yet).
+                        if dims.is_empty()
+                            && let E::Array {
+                                elements,
+                                kind: ArrayConstructor::Array,
+                                ..
+                            } = v.expr
+                        {
+                            dims.push(elements.len());
+                            continue;
+                        }
                         let val = self.translate_scoped(v, &mut Ctx::default())?;
                         match val {
                             Val::A(d, _) => d.get(dims.len()).copied().unwrap_or(0),
@@ -1234,7 +1331,20 @@ impl<'a, 't> Flattener<'a, 't> {
             self.insts[inst as usize].comps.insert(name, Comp::Removed);
             return Ok(());
         }
-        let tenv = {
+        let via = if m.retype.is_none() {
+            self.class_via(&env, &tparts, tc)
+        } else {
+            None
+        };
+        let tenv = if let Some(v) = via {
+            let lexical = self.tree.node(tc).parent.unwrap_or(ROOT);
+            let p = self.inherited_env(v, lexical, env.overrides.clone());
+            Rc::new(Env {
+                class: tc,
+                overrides: env.overrides.clone(),
+                parent: Some(p),
+            })
+        } else {
             let te = self.env_of(tc);
             let ov = env.overrides.clone();
             if ov.is_empty() {
@@ -3239,11 +3349,19 @@ impl<'a, 't> Flattener<'a, 't> {
 
     fn field(&mut self, b: Val, field: &str) -> Result<Val> {
         match b {
-            Val::Rec(fields) => fields
-                .into_iter()
-                .find(|(n, _)| n == field)
-                .map(|(_, v)| v)
-                .ok_or_else(|| anyhow!("record has no field '{field}'")),
+            Val::Rec(fields) => {
+                let names: Vec<String> = fields.iter().map(|(n, _)| n.clone()).collect();
+                fields
+                    .into_iter()
+                    .find(|(n, _)| n == field)
+                    .map(|(_, v)| v)
+                    .ok_or_else(|| {
+                        anyhow!(
+                            "record has no field '{field}' (fields: {})",
+                            names.join(", ")
+                        )
+                    })
+            }
             Val::Inst(i) => {
                 let c = self.insts[i as usize]
                     .comps
@@ -3757,9 +3875,9 @@ impl<'a, 't> Flattener<'a, 't> {
         }
     }
 
-    /// `a[i, j]` with run-time scalar subscripts on a fully indexed array: a balanced
-    /// selection tree over the flat index (e.g. the Digital logic tables indexed by
-    /// discrete enumeration values).
+    /// `a[i, 1:4]` with run-time scalar subscripts (mixed with constant ones): every
+    /// element of the result is a balanced selection tree over the elements the run-time
+    /// subscripts can pick (the Digital logic tables, spline coefficient rows).
     fn dynamic_index(
         &mut self,
         dims: &[usize],
@@ -3767,31 +3885,67 @@ impl<'a, 't> Flattener<'a, 't> {
         subs: &'a [ast::Subscript],
         scope: &Scope,
         ctx: &mut Ctx,
-    ) -> Result<Option<ExprId>> {
+    ) -> Result<Option<Val>> {
+        enum Sub {
+            Fixed(Vec<usize>, bool),
+            Dyn(ExprId),
+        }
         if subs.len() != dims.len() || el.is_empty() {
             return Ok(None);
         }
-        let mut lin = Arena::ZERO;
-        let mut stride = 1usize;
-        for k in (0..subs.len()).rev() {
-            let ast::Subscript::Expression(e) = &subs[k] else {
-                return Ok(None);
-            };
-            let saved = ctx.end_value;
-            ctx.end_value = Some(dims[k]);
-            let v = self.translate(e, scope, ctx);
-            ctx.end_value = saved;
-            let Ok(x) = v?.scalar() else {
-                return Ok(None);
-            };
-            let a = &mut self.model.arena;
-            let one = a.constant(1.0);
-            let i0 = a.sub(x, one);
-            let st = a.constant(stride as f64);
-            let term = a.mul(i0, st);
-            lin = a.add(lin, term);
-            stride *= dims[k];
+        let mut spec = Vec::with_capacity(subs.len());
+        for (k, s) in subs.iter().enumerate() {
+            match s {
+                ast::Subscript::Range { .. } | ast::Subscript::Empty => {
+                    spec.push(Sub::Fixed((0..dims[k]).collect(), true))
+                }
+                ast::Subscript::Expression(e) => {
+                    let saved = ctx.end_value;
+                    ctx.end_value = Some(dims[k]);
+                    let v = self.translate(e, scope, ctx);
+                    ctx.end_value = saved;
+                    let (d, es) = v?.elems()?;
+                    let consts: Option<Vec<f64>> =
+                        es.iter().map(|&x| self.eval_param_expr(x)).collect();
+                    match consts {
+                        Some(c) => {
+                            let mut idx = Vec::with_capacity(c.len());
+                            for x in c {
+                                let i = x.round() as i64;
+                                if i < 1 || i as usize > dims[k] {
+                                    bail!("subscript {} out of bounds 1..{}", i, dims[k]);
+                                }
+                                idx.push(i as usize - 1);
+                            }
+                            spec.push(Sub::Fixed(idx, !d.is_empty()))
+                        }
+                        None if d.is_empty() => spec.push(Sub::Dyn(es[0])),
+                        None => return Ok(None),
+                    }
+                }
+            }
         }
+        let mut strides = vec![1usize; dims.len()];
+        for k in (0..dims.len().saturating_sub(1)).rev() {
+            strides[k] = strides[k + 1] * dims[k + 1];
+        }
+        // linear index over the run-time dimensions
+        let a = &mut self.model.arena;
+        let mut lin = Arena::ZERO;
+        let mut dstride = 1usize;
+        let mut dyn_dims = Vec::new();
+        for k in (0..dims.len()).rev() {
+            if let Sub::Dyn(x) = spec[k] {
+                let one = a.constant(1.0);
+                let i0 = a.sub(x, one);
+                let st = a.constant(dstride as f64);
+                let t = a.mul(i0, st);
+                lin = a.add(lin, t);
+                dstride *= dims[k];
+                dyn_dims.push(k);
+            }
+        }
+        dyn_dims.reverse();
         fn tree(a: &mut Arena, lin: ExprId, el: &[ExprId], lo: usize) -> ExprId {
             if el.len() == 1 {
                 return el[0];
@@ -3806,7 +3960,44 @@ impl<'a, 't> Flattener<'a, 't> {
             let c = a.cmp(Cmp::Lt, lin, th);
             a.if_(c, l, r)
         }
-        Ok(Some(tree(&mut self.model.arena, lin, el, 0)))
+        // cartesian product over the fixed subscripts (row-major)
+        let mut out_dims = Vec::new();
+        let mut fixed: Vec<(usize, &Vec<usize>)> = Vec::new();
+        for (k, sp) in spec.iter().enumerate() {
+            if let Sub::Fixed(idx, keep) = sp {
+                if *keep {
+                    out_dims.push(idx.len());
+                }
+                fixed.push((k, idx));
+            }
+        }
+        let n_out: usize = fixed.iter().map(|(_, i)| i.len()).product();
+        let mut vals = Vec::with_capacity(n_out);
+        for o in 0..n_out {
+            let mut rem = o;
+            let mut off = 0;
+            for (k, idx) in fixed.iter().rev() {
+                off += idx[rem % idx.len()] * strides[*k];
+                rem /= idx.len();
+            }
+            let n_dyn: usize = dyn_dims.iter().map(|&k| dims[k]).product();
+            let mut cand = Vec::with_capacity(n_dyn);
+            for c in 0..n_dyn {
+                let mut rem = c;
+                let mut lin_off = off;
+                for &k in dyn_dims.iter().rev() {
+                    lin_off += (rem % dims[k]) * strides[k];
+                    rem /= dims[k];
+                }
+                cand.push(el[lin_off]);
+            }
+            vals.push(tree(&mut self.model.arena, lin, &cand, 0));
+        }
+        Ok(Some(if out_dims.is_empty() {
+            Val::S(vals[0])
+        } else {
+            Val::A(out_dims, vals)
+        }))
     }
 
     fn eval_subscripts(
@@ -3869,7 +4060,7 @@ impl<'a, 't> Flattener<'a, 't> {
                     Ok(sel) => sel,
                     Err(err) => {
                         return match self.dynamic_index(&dims, &el, subs, scope, ctx)? {
-                            Some(e) => Ok(Val::S(e)),
+                            Some(v) => Ok(v),
                             None => Err(err),
                         };
                     }
@@ -4085,37 +4276,8 @@ impl<'a, 't> Flattener<'a, 't> {
         } else {
             scope.env.clone()
         };
-        // 1) Unqualified constant visible in an enclosing class (or the function itself).
         if parts.len() == 1 {
-            let mut e: Option<Rc<Env>> = Some(env.clone());
-            while let Some(en) = e {
-                if let Some((owner, comp, modv)) = self.find_constant(en.class, parts[0], 0)
-                    && matches!(
-                        comp.variability,
-                        Variability::Constant(_) | Variability::Parameter(_)
-                    )
-                {
-                    let oenv = if owner == en.class {
-                        Rc::new(Env {
-                            class: owner,
-                            overrides: en.overrides.clone(),
-                            parent: en.parent.clone(),
-                        })
-                    } else {
-                        self.inherited_env(en.class, owner, en.overrides.clone())
-                    };
-                    let v = self.class_constant_in(en.class, owner, comp, modv, oenv)?;
-                    return Ok(Some(self.apply_subs(v, &cr.parts[0], scope, ctx)?));
-                }
-                e = en.parent.clone();
-            }
-            if let Some((pkg, name)) = self.tree.lookup_import_constant(env.class, parts[0])
-                && let Some((owner, comp)) = self.tree.find_component(pkg, &name)
-            {
-                let oenv = self.env_of(owner);
-                let v = self.class_constant(owner, comp, oenv)?;
-                return Ok(Some(v));
-            }
+            return self.lookup_unqualified_constant(cr, &env, scope, ctx);
         }
         // 2) Qualified: longest class prefix, then constant / enumeration literal.
         for k in (1..parts.len()).rev() {
@@ -4155,6 +4317,65 @@ impl<'a, 't> Flattener<'a, 't> {
             && let Some(v) = builtin_enum_literal(parts[0], parts[1])
         {
             return Ok(Some(Val::S(self.model.arena.constant(v))));
+        }
+        // A field of a record constant (`data.MM`).
+        self.lookup_unqualified_constant(cr, &env, scope, ctx)
+    }
+
+    /// Constant `cr.parts[0]` visible in an enclosing class (or the function itself),
+    /// followed by the record fields of the remaining parts.
+    fn lookup_unqualified_constant(
+        &mut self,
+        cr: &'a ast::ComponentReference,
+        env: &Rc<Env>,
+        scope: &Scope,
+        ctx: &mut Ctx,
+    ) -> Result<Option<Val>> {
+        let v = self.unqualified_constant(cr, env, scope, ctx)?;
+        let Some(mut v) = v else { return Ok(None) };
+        for p in &cr.parts[1..] {
+            v = self.field(v, &p.ident.text)?;
+            v = self.apply_subs(v, p, scope, ctx)?;
+        }
+        Ok(Some(v))
+    }
+
+    fn unqualified_constant(
+        &mut self,
+        cr: &'a ast::ComponentReference,
+        env: &Rc<Env>,
+        scope: &Scope,
+        ctx: &mut Ctx,
+    ) -> Result<Option<Val>> {
+        let parts: Vec<&str> = cr.parts.iter().map(|p| &*p.ident.text).collect();
+        let mut e: Option<Rc<Env>> = Some(env.clone());
+        while let Some(en) = e {
+            if let Some((owner, comp, modv)) = self.find_constant(en.class, parts[0], 0)
+                && matches!(
+                    comp.variability,
+                    Variability::Constant(_) | Variability::Parameter(_)
+                )
+            {
+                let oenv = if owner == en.class {
+                    Rc::new(Env {
+                        class: owner,
+                        overrides: en.overrides.clone(),
+                        parent: en.parent.clone(),
+                    })
+                } else {
+                    self.inherited_env(en.class, owner, en.overrides.clone())
+                };
+                let v = self.class_constant_in(en.class, owner, comp, modv, oenv)?;
+                return Ok(Some(self.apply_subs(v, &cr.parts[0], scope, ctx)?));
+            }
+            e = en.parent.clone();
+        }
+        if let Some((pkg, name)) = self.tree.lookup_import_constant(env.class, parts[0])
+            && let Some((owner, comp)) = self.tree.find_component(pkg, &name)
+        {
+            let oenv = self.env_of(owner);
+            let v = self.class_constant(owner, comp, oenv)?;
+            return Ok(Some(v));
         }
         Ok(None)
     }
@@ -4273,12 +4494,18 @@ impl<'a, 't> Flattener<'a, 't> {
         }
         let r = match modv {
             Some((value, mc)) => {
-                let menv = self.env_of(mc);
-                let menv = Rc::new(Env {
-                    class: menv.class,
-                    overrides: env.overrides.clone(),
-                    parent: menv.parent.clone(),
-                });
+                // Written in `mc`, but names resolve in the class that inherits it first
+                // (`substanceNames = {data.name}` sees the `data` its user supplies).
+                let menv = if mc == ctx {
+                    let menv = self.env_of(mc);
+                    Rc::new(Env {
+                        class: menv.class,
+                        overrides: env.overrides.clone(),
+                        parent: menv.parent.clone(),
+                    })
+                } else {
+                    self.inherited_env(ctx, mc, env.overrides.clone())
+                };
                 self.translate(
                     value,
                     &Scope {
@@ -4326,13 +4553,70 @@ impl<'a, 't> Flattener<'a, 't> {
                         val = Some(self.translate(value, &scope, &mut Ctx::default()));
                     }
                 }
-                val.unwrap_or_else(|| Err(anyhow!("constant '{}' has no value", comp.name)))
+                match val {
+                    Some(v) => v,
+                    None => self.record_constant_from_mods(comp, &scope, &key),
+                }
             }
         };
         self.const_in_progress.remove(&key);
         let v = r?;
         self.const_cache.insert(key, v.clone());
         Ok(v)
+    }
+
+    /// A record constant given by modifiers (`constant DataRecord N2(name = "N2", ..)`).
+    fn record_constant_from_mods(
+        &mut self,
+        comp: &'a ast::Component,
+        scope: &Scope,
+        key: &(ClassId, String),
+    ) -> Result<Val> {
+        let tparts: Vec<&str> = comp.type_name.name.iter().map(|t| &*t.text).collect();
+        let rec = if tparts.len() == 1 && builtin_name(tparts[0]).is_some() {
+            None
+        } else {
+            self.lookup_class(&scope.env, &tparts)
+                .filter(|&k| matches!(self.tree.class_type(k), ClassType::Record))
+        };
+        let Some(rec) = rec else {
+            bail!("constant '{}' has no value", comp.name);
+        };
+        // An array of records is stored field by field; `each` values are repeated.
+        let mut dims = Vec::new();
+        for sub in &comp.shape_expr {
+            match sub {
+                ast::Subscript::Expression(e) => {
+                    dims.push(self.eval_structural(e, scope)? as usize)
+                }
+                _ => bail!("constant '{}' has no value", comp.name),
+            }
+        }
+        let n: usize = dims.iter().product();
+        let mut nargv = Vec::new();
+        for (i, m) in comp.source_modifications.iter().enumerate() {
+            if let E::Modification { target, value, .. } = m
+                && target.parts.len() == 1
+            {
+                let each = comp
+                    .source_modification_each_flags
+                    .get(i)
+                    .copied()
+                    .unwrap_or(false);
+                // Later fields may refer to earlier ones (`R_s = R_NASA_2002/N2.MM`).
+                let partial = Val::Rec(nargv.clone());
+                self.const_cache.insert(key.clone(), partial);
+                let v = self.translate(value, scope, &mut Ctx::default());
+                self.const_cache.remove(key);
+                let v = match v? {
+                    Val::S(e) if each && !dims.is_empty() => Val::A(dims.clone(), vec![e; n]),
+                    Val::Str(x) if each && !dims.is_empty() => Val::SA(dims.clone(), vec![x; n]),
+                    v => v,
+                };
+                nargv.push((target.parts[0].ident.text.to_string(), v));
+            }
+        }
+        self.record_constructor(rec, Vec::new(), nargv)
     }
 
     // ------------------------------------------------------------------
@@ -4523,14 +4807,16 @@ impl<'a, 't> Flattener<'a, 't> {
                 return Ok(Val::S(self.sample(start, interval)));
             }
             "semiLinear" => {
+                // Vectorised over the enthalpies / mass fractions (`port.mXi_flow`).
                 let x = arg!(0).scalar()?;
-                let k1 = arg!(1).scalar()?;
-                let k2 = arg!(2).scalar()?;
-                let a = &mut self.model.arena;
-                let c = a.cmp(Cmp::Ge, x, Arena::ZERO);
-                let p1 = a.mul(k1, x);
-                let p2 = a.mul(k2, x);
-                return Ok(Val::S(a.if_(c, p1, p2)));
+                let k1 = arg!(1);
+                let k2 = arg!(2);
+                return self.zip2(k1, k2, &mut |a, k1, k2| {
+                    let c = a.cmp(Cmp::Ge, x, Arena::ZERO);
+                    let p1 = a.mul(k1, x);
+                    let p2 = a.mul(k2, x);
+                    a.if_(c, p1, p2)
+                });
             }
             "atan2" | "div" | "mod" | "rem" => {
                 let f = match name.as_str() {
@@ -4815,6 +5101,13 @@ impl<'a, 't> Flattener<'a, 't> {
                 let v = vec![c(1, 2), c(2, 0), c(0, 1)];
                 return Ok(Val::A(vec![3], v));
             }
+            "array" => {
+                let mut vals = Vec::with_capacity(pos.len());
+                for p in &pos {
+                    vals.push(self.translate(p, scope, ctx)?);
+                }
+                return self.array_construct(vals, ArrayConstructor::Array);
+            }
             "cat" => {
                 let k = arg!(0).scalar()?;
                 let k = self.eval_param_expr(k).unwrap_or(1.0) as usize;
@@ -4931,6 +5224,17 @@ impl<'a, 't> Flattener<'a, 't> {
         let mut redeclare_defaults: Vec<(String, Scoped<'a>)> = Vec::new();
         let (cls, mod_scope) = match self.lookup_class(&env, &parts) {
             Some(c) => {
+                // `redeclare function f = g(a = ..)` on an enclosing instance.
+                if parts.len() == 1 && !ctx.in_function && env.overrides.get(parts[0]) == Some(&c) {
+                    let mut cur = scope.inst;
+                    while let Some(i) = cur {
+                        if let Some(ms) = self.class_mods.get(&(i, parts[0].to_string())) {
+                            redeclare_defaults = ms.clone();
+                            break;
+                        }
+                        cur = self.insts[i as usize].parent;
+                    }
+                }
                 let penv = self.env_of(self.tree.node(c).parent.unwrap_or(ROOT));
                 (
                     c,
@@ -4997,40 +5301,18 @@ impl<'a, 't> Flattener<'a, 't> {
             ClassType::Function => {
                 // A function reached through a package that inherits it (`Medium.f`) sees
                 // that package's constants and redeclarations.
-                let via = if parts.len() > 1 {
-                    self.lookup_class(&env, &parts[..parts.len() - 1])
-                } else {
-                    let mut e: Option<&Env> = Some(&env);
-                    let mut found = None;
-                    while let Some(en) = e {
-                        if en.overrides.contains_key(parts[0]) {
-                            break;
-                        }
-                        if self.tree.member_class(en.class, parts[0]) == Some(cls) {
-                            found = Some(en.class);
-                            break;
-                        }
-                        e = en.parent.as_deref();
-                    }
-                    found
-                };
+                let via = self.class_via(&env, &parts, cls);
                 let lexical = self.tree.node(cls).parent;
-                let outs = match via {
-                    Some(v)
-                        if Some(v) != lexical && self.tree.class_type(v) == ClassType::Package =>
-                    {
-                        let owner = lexical.unwrap_or(ROOT);
-                        let penv = self.inherited_env(v, owner, env.overrides.clone());
-                        self.inline_function_in(
-                            cls,
-                            argv,
-                            nargv,
-                            env.overrides.clone(),
-                            Some(penv),
-                        )?
-                    }
-                    _ => self.inline_function(cls, argv, nargv, env.overrides.clone())?,
-                };
+                let penv = via.map(|v| {
+                    let owner = lexical.unwrap_or(ROOT);
+                    self.inherited_env(v, owner, env.overrides.clone())
+                });
+                // A function of scalars applied to arrays: element by element.
+                if let Some(v) = self.vectorized_call(cls, &argv, &nargv, &penv, &env.overrides)? {
+                    return Ok(v);
+                }
+                let outs =
+                    self.inline_function_in(cls, argv, nargv, env.overrides.clone(), penv)?;
                 if outs.len() == 1 {
                     Ok(outs.into_iter().next().unwrap())
                 } else {
@@ -5050,6 +5332,103 @@ impl<'a, 't> Flattener<'a, 't> {
             }
             _ => bail!("'{}' is not a function", name),
         }
+    }
+
+    /// A call of a function with scalar inputs that passes arrays to some of them is
+    /// applied element-wise (Modelica's function vectorization).
+    fn vectorized_call(
+        &mut self,
+        cls: ClassId,
+        argv: &[Val],
+        nargv: &[(String, Val)],
+        penv: &Option<Rc<Env>>,
+        overrides: &Rc<FxHashMap<String, ClassId>>,
+    ) -> Result<Option<Val>> {
+        let is_arr = |v: &Val| matches!(v, Val::A(d, _) if !d.is_empty());
+        if !argv.iter().chain(nargv.iter().map(|x| &x.1)).any(is_arr) {
+            return Ok(None);
+        }
+        let mut elems = Vec::new();
+        self.function_elements(cls, &mut elems, 0);
+        let inputs: Vec<(String, &'a ast::Component, ClassId)> = elems
+            .into_iter()
+            .filter(|(_, c, _)| matches!(c.causality, Causality::Input(_)))
+            .collect();
+        let scalar_formal = |this: &mut Self, name: &str| -> bool {
+            let Some((_, c, owner)) = inputs.iter().find(|(n, _, _)| n == name) else {
+                return false;
+            };
+            if !c.shape_expr.is_empty() {
+                return false;
+            }
+            let tparts: Vec<&str> = c.type_name.name.iter().map(|t| &*t.text).collect();
+            if tparts.len() == 1 && builtin_name(tparts[0]).is_some() {
+                return true;
+            }
+            let env = this.env_of(*owner);
+            match this.lookup_class(&env, &tparts) {
+                Some(t) => {
+                    this.tree.builtin_base(t).is_some()
+                        && this
+                            .tree
+                            .def(t)
+                            .is_none_or(|d| d.array_subscripts.is_empty())
+                }
+                None => false,
+            }
+        };
+        let mut pos_vec = Vec::with_capacity(argv.len());
+        let mut dims: Option<Vec<usize>> = None;
+        for (i, v) in argv.iter().enumerate() {
+            let name = inputs.get(i).map(|x| x.0.clone()).unwrap_or_default();
+            let vec = is_arr(v) && scalar_formal(self, &name);
+            if vec {
+                let Val::A(d, _) = v else { unreachable!() };
+                if dims.as_ref().is_some_and(|x| x != d) {
+                    return Ok(None);
+                }
+                dims = Some(d.clone());
+            }
+            pos_vec.push(vec);
+        }
+        let mut named_vec = Vec::with_capacity(nargv.len());
+        for (n, v) in nargv {
+            let vec = is_arr(v) && scalar_formal(self, n);
+            if vec {
+                let Val::A(d, _) = v else { unreachable!() };
+                if dims.as_ref().is_some_and(|x| x != d) {
+                    return Ok(None);
+                }
+                dims = Some(d.clone());
+            }
+            named_vec.push(vec);
+        }
+        let Some(dims) = dims else { return Ok(None) };
+        let n: usize = dims.iter().product();
+        let pick = |v: &Val, k: usize| match v {
+            Val::A(_, e) => Val::S(e[k]),
+            _ => v.clone(),
+        };
+        let mut out = Vec::with_capacity(n);
+        for k in 0..n {
+            let a: Vec<Val> = argv
+                .iter()
+                .zip(&pos_vec)
+                .map(|(v, &vec)| if vec { pick(v, k) } else { v.clone() })
+                .collect();
+            let na: Vec<(String, Val)> = nargv
+                .iter()
+                .zip(&named_vec)
+                .map(|((m, v), &vec)| (m.clone(), if vec { pick(v, k) } else { v.clone() }))
+                .collect();
+            let outs = self.inline_function_in(cls, a, na, overrides.clone(), penv.clone())?;
+            let first = outs
+                .into_iter()
+                .next()
+                .ok_or_else(|| anyhow!("vectorized call of a function without outputs"))?;
+            out.push(first.scalar()?);
+        }
+        Ok(Some(Val::A(dims, out)))
     }
 
     /// Resolve `a.b.f` where `a.b` is a component and `f` a function class of its type.
@@ -5134,6 +5513,21 @@ impl<'a, 't> Flattener<'a, 't> {
         for (n, c, owner) in names {
             if matches!(c.variability, Variability::Constant(_)) {
                 continue;
+            }
+            // A field with a default (its binding, or `extends R(field = ..)`) starts with it.
+            if dims.is_empty()
+                && let Some((fo, fc, modv)) = self.find_constant(cls, &n, 0)
+                && (fc.binding.is_some() || modv.is_some())
+            {
+                let fenv = if fo == cls {
+                    self.env_of(fo)
+                } else {
+                    self.inherited_env(cls, fo, Rc::new(FxHashMap::default()))
+                };
+                if let Ok(v) = self.class_constant_in(cls, fo, fc, modv, fenv) {
+                    fields.push((n, v));
+                    continue;
+                }
             }
             let env = self.env_of(owner);
             let sc = Scope {
@@ -5408,7 +5802,33 @@ impl<'a, 't> Flattener<'a, 't> {
                     .strings(op, args)
                     .with_context(|| format!("in function '{fname}'"));
             }
+            if matches!(cname.as_str(), "dgesv" | "dgesv_vec")
+                || matches!(short.as_str(), "dgesv" | "dgesv_vec")
+            {
+                let ins: Vec<Val> = inputs.iter().map(|n| ctx.locals[0][n].clone()).collect();
+                return self
+                    .lapack_solve(ins)
+                    .with_context(|| format!("in function '{fname}'"));
+            }
             bail!("external function '{}' is not supported", fname);
+        }
+        // A large function called with run-time arguments is compiled once and called,
+        // instead of being inlined at every call (property functions of media).
+        if !self.outlining.contains(&cls) {
+            let ins: Vec<Val> = inputs.iter().map(|n| ctx.locals[0][n].clone()).collect();
+            if !self.outline_failed.contains(&cls) && self.should_outline(cls, &ins) {
+                // Not every function compiles on its own (recursion on a structural
+                // input, references to model variables): those are inlined after all.
+                let saved = self.depth;
+                self.depth -= 1;
+                match self.outlined_call(cls, ins, overrides.clone(), via) {
+                    Ok(v) => return Ok(v),
+                    Err(_) => {
+                        self.depth = saved;
+                        self.outline_failed.insert(cls);
+                    }
+                }
+            }
         }
         // Outputs and protected locals: dims + bindings.
         for (n, c, owner) in &elems {
@@ -5679,6 +6099,75 @@ impl<'a, 't> Flattener<'a, 't> {
         Ok(vec![r])
     }
 
+    /// `(x, info) = dgesv(A, b)`: the solution of `A*x = b` (`b` a vector or a matrix).
+    /// Constant systems are solved numerically with partial pivoting, others by symbolic
+    /// elimination with pivots chosen at translation time.
+    fn lapack_solve(&mut self, ins: Vec<Val>) -> Result<Vec<Val>> {
+        let (da, a) = ins.first().ok_or_else(|| anyhow!("missing A"))?.elems()?;
+        let (db, b) = ins.get(1).ok_or_else(|| anyhow!("missing b"))?.elems()?;
+        if da.len() != 2 || da[0] != da[1] {
+            bail!("A must be a square matrix");
+        }
+        let n = da[0];
+        let m = if db.len() == 2 { db[1] } else { 1 };
+        if db.first() != Some(&n) {
+            bail!("b must have {n} rows");
+        }
+        let ar = &mut self.model.arena;
+        let mut a: Vec<Vec<ExprId>> = (0..n).map(|i| a[i * n..(i + 1) * n].to_vec()).collect();
+        let mut b: Vec<Vec<ExprId>> = (0..n).map(|i| b[i * m..(i + 1) * m].to_vec()).collect();
+        let num = |ar: &Arena, e: ExprId| ar.as_const(e);
+        for k in 0..n {
+            // Pivot: the largest constant entry, else the first that is not structurally zero.
+            let mut piv = None;
+            let mut best = 0.0;
+            for i in k..n {
+                if let Some(v) = num(ar, a[i][k]) {
+                    if v.abs() > best {
+                        best = v.abs();
+                        piv = Some(i);
+                    }
+                }
+            }
+            if piv.is_none() {
+                piv = (k..n).find(|&i| !ar.is_zero(a[i][k]));
+            }
+            let Some(p) = piv else {
+                bail!("singular matrix");
+            };
+            a.swap(k, p);
+            b.swap(k, p);
+            for i in k + 1..n {
+                if ar.is_zero(a[i][k]) {
+                    continue;
+                }
+                let f = ar.div(a[i][k], a[k][k]);
+                for j in k..n {
+                    let t = ar.mul(f, a[k][j]);
+                    a[i][j] = ar.sub(a[i][j], t);
+                }
+                for j in 0..m {
+                    let t = ar.mul(f, b[k][j]);
+                    b[i][j] = ar.sub(b[i][j], t);
+                }
+            }
+        }
+        let mut x = vec![vec![Arena::ZERO; m]; n];
+        for k in (0..n).rev() {
+            for j in 0..m {
+                let mut s = b[k][j];
+                for l in k + 1..n {
+                    let t = ar.mul(a[k][l], x[l][j]);
+                    s = ar.sub(s, t);
+                }
+                x[k][j] = ar.div(s, a[k][k]);
+            }
+        }
+        let flat: Vec<ExprId> = x.into_iter().flatten().collect();
+        let xv = Val::A(db.clone(), flat);
+        Ok(vec![xv, Val::S(Arena::ZERO)])
+    }
+
     fn intrinsic(&mut self, name: &str, ins: Vec<Val>) -> Result<Vec<Val>> {
         match name {
             // interpolate(table[:,:], x, col) -> y   (linear, hold extrapolation)
@@ -5770,9 +6259,11 @@ impl<'a, 't> Flattener<'a, 't> {
                     let mut n = 0;
                     loop {
                         let c = self.translate(&block.cond, scope, ctx)?.scalar()?;
-                        let cv = self.eval_param_expr(c).ok_or_else(|| {
-                            anyhow!("while-loop condition must be evaluable at translation time")
-                        })?;
+                        let Some(cv) = self.eval_param_expr(c) else {
+                            // the condition depends on run-time values: a loop program
+                            self.runtime_while(block, scope, ctx)?;
+                            break;
+                        };
                         if cv == 0.0 {
                             break;
                         }
@@ -5791,6 +6282,341 @@ impl<'a, 't> Flattener<'a, 't> {
                 }
             }
         }
+        Ok(())
+    }
+
+    /// Whether a call of function `cls` with arguments `ins` is compiled as a callable
+    /// instead of inlined: sizeable algorithmic functions with run-time arguments.
+    fn should_outline(&mut self, cls: ClassId, ins: &[Val]) -> bool {
+        if std::env::var_os("DAEDALUS_NO_OUTLINE").is_some() {
+            return false;
+        }
+        let mut scalars = Vec::new();
+        for v in ins {
+            match v {
+                Val::S(_) | Val::A(..) | Val::Rec(_) => flatten_scalars(v, &mut scalars),
+                _ => return false,
+            }
+        }
+        // Arguments fixed at translation time (parameters): inlining folds the body.
+        if scalars.iter().all(|&e| self.eval_param_expr(e).is_some()) {
+            return false;
+        }
+        if self
+            .tree
+            .def(cls)
+            .is_some_and(|d| annotation_flag(&d.annotation, "Inline"))
+        {
+            return false;
+        }
+        let mut algs = Vec::new();
+        self.function_algorithms(cls, &mut algs, 0);
+        let size: usize = algs.iter().map(|(st, _)| stmt_weight(st)).sum();
+        size >= 12
+    }
+
+    /// Call of function `cls` compiled once per argument shape: a one-shot loop program
+    /// whose state is `[flag, inputs.., outputs..]`.
+    fn outlined_call(
+        &mut self,
+        cls: ClassId,
+        ins: Vec<Val>,
+        overrides: Rc<FxHashMap<String, ClassId>>,
+        via: Option<ClassId>,
+    ) -> Result<Vec<Val>> {
+        let mut args = Vec::new();
+        for v in &ins {
+            flatten_scalars(v, &mut args);
+        }
+        let shapes: Vec<String> = ins.iter().map(val_shape).collect();
+        let mut ov: Vec<(String, ClassId)> =
+            overrides.iter().map(|(k, v)| (k.clone(), *v)).collect();
+        ov.sort();
+        let key = format!("{cls}|{via:?}|{ov:?}|{}", shapes.join(","));
+        let (pid, n_in, outs) = match self.outlined.get(&key) {
+            Some(x) => x.clone(),
+            None => {
+                let built = self.build_outlined(cls, &ins, overrides, via)?;
+                self.outlined.insert(key, built.clone());
+                built
+            }
+        };
+        let mut full = Vec::with_capacity(1 + n_in + 8);
+        full.push(Arena::ONE);
+        full.extend(args.iter().copied());
+        let mut n_out = 0;
+        for o in &outs {
+            let mut f = Vec::new();
+            flatten_scalars(o, &mut f);
+            n_out += f.len();
+        }
+        full.extend(std::iter::repeat_n(Arena::ZERO, n_out));
+        let mut k = 0u32;
+        let mut res = Vec::with_capacity(outs.len());
+        for o in &outs {
+            let mut f = Vec::new();
+            flatten_scalars(o, &mut f);
+            let calls: Vec<ExprId> = (0..f.len())
+                .map(|_| {
+                    let e = self
+                        .model
+                        .arena
+                        .call(pid, full.clone(), (1 + n_in) as u32 + k);
+                    k += 1;
+                    e
+                })
+                .collect();
+            let mut it = calls.into_iter();
+            res.push(rebuild_scalars(o, &mut it));
+        }
+        Ok(res)
+    }
+
+    fn build_outlined(
+        &mut self,
+        cls: ClassId,
+        ins: &[Val],
+        overrides: Rc<FxHashMap<String, ClassId>>,
+        via: Option<ClassId>,
+    ) -> Result<(u32, usize, Vec<Val>)> {
+        let mut flat = Vec::new();
+        for v in ins {
+            flatten_scalars(v, &mut flat);
+        }
+        let n_in = flat.len() as u32;
+        let base = self.next_local;
+        self.next_local += n_in;
+        let mut k = 0u32;
+        let mut sym = Vec::with_capacity(ins.len());
+        for v in ins {
+            let mut f = Vec::new();
+            flatten_scalars(v, &mut f);
+            let ls: Vec<ExprId> = f
+                .iter()
+                .map(|_| {
+                    let e = self.model.arena.local(base + k);
+                    k += 1;
+                    e
+                })
+                .collect();
+            let mut it = ls.into_iter();
+            sym.push(rebuild_scalars(v, &mut it));
+        }
+        let parent = via.map(|c| self.env_of(c));
+        self.outlining.insert(cls);
+        let r = self.inline_function_in(cls, sym, Vec::new(), overrides, parent);
+        self.outlining.remove(&cls);
+        let outs = r?;
+        let mut out_exprs = Vec::new();
+        for o in &outs {
+            match o {
+                Val::S(_) | Val::A(..) | Val::Rec(_) | Val::Tuple(_) => {
+                    flatten_scalars(o, &mut out_exprs)
+                }
+                _ => bail!("function output of kind {} cannot be compiled", o.kind()),
+            }
+        }
+        let n_out = out_exprs.len() as u32;
+        let mut memo = FxHashMap::default();
+        let mut bad = None;
+        let mut map_leaf = |a: &mut Arena, n: Node| -> Option<ExprId> {
+            match n {
+                Node::Local(j) if j >= base && j < base + n_in => Some(a.local(1 + j - base)),
+                Node::Local(_)
+                | Node::Var(_)
+                | Node::Pre(_)
+                | Node::Der(_)
+                | Node::Time
+                | Node::Initial
+                | Node::Rel(_)
+                | Node::Delay(..) => {
+                    bad = Some(n);
+                    Some(Arena::ZERO)
+                }
+                _ => None,
+            }
+        };
+        let arena = &mut self.model.arena;
+        let mut next = vec![Arena::ZERO];
+        for j in 0..n_in {
+            next.push(arena.local(1 + j));
+        }
+        for &e in &out_exprs {
+            next.push(arena.rewrite(e, &mut memo, &mut map_leaf));
+        }
+        if let Some(n) = bad {
+            bail!("function body refers to {n:?}, which a compiled function cannot see");
+        }
+        let cond = arena.local(0);
+        let pid = arena.add_prog(LoopProg {
+            n: (1 + n_in + n_out) as usize,
+            cond,
+            next,
+        });
+        Ok((pid, n_in as usize, outs))
+    }
+
+    /// `while c loop .. end while` whose condition depends on run-time values: the locals
+    /// the body changes become the state of a loop program, executed at run time.
+    fn runtime_while(
+        &mut self,
+        block: &'a ast::StatementBlock,
+        scope: &Scope,
+        ctx: &mut Ctx,
+    ) -> Result<()> {
+        if stmts_break(&block.stmts) {
+            bail!("break in a while-loop with a run-time condition is not supported");
+        }
+        let keys: Vec<(usize, String)> = ctx
+            .locals
+            .iter()
+            .enumerate()
+            .flat_map(|(fi, f)| {
+                let mut k: Vec<String> = f.keys().cloned().collect();
+                k.sort();
+                k.into_iter().map(move |n| (fi, n))
+            })
+            .collect();
+        let saved = ctx.locals.clone();
+        let mut init = Vec::new();
+        for (fi, k) in &keys {
+            flatten_scalars(&saved[*fi][k], &mut init);
+        }
+        // Pass 1 (every local a loop variable) finds the locals the body changes; pass 2
+        // makes only those the state, so that constants (indices, sizes) stay constant.
+        let mut changed = vec![true; init.len()];
+        let mut result = None;
+        for pass in 0..2 {
+            let base = self.next_local;
+            let mut slots = Vec::new(); // positions in `init` that are state
+            let mut j = 0u32;
+            let mut repl = Vec::with_capacity(init.len());
+            for (k, &e) in init.iter().enumerate() {
+                if changed[k] {
+                    repl.push(self.model.arena.local(base + j));
+                    slots.push(k);
+                    j += 1;
+                } else {
+                    repl.push(e);
+                }
+            }
+            self.next_local += j;
+            let mut it = repl.iter().copied();
+            let mut locals = saved.clone();
+            for (fi, k) in &keys {
+                let v = rebuild_scalars(&saved[*fi][k], &mut it);
+                locals[*fi].insert(k.clone(), v);
+            }
+            ctx.locals = locals;
+            let saved_path = ctx.path;
+            ctx.path = None;
+            let cond = self
+                .translate(&block.cond, scope, ctx)
+                .and_then(|v| v.scalar());
+            let mut ret = false;
+            let body = cond.and_then(|c| {
+                self.exec(&block.stmts, scope, ctx, &mut ret)?;
+                Ok(c)
+            });
+            ctx.path = saved_path;
+            let cond = match body {
+                Ok(c) => c,
+                Err(e) => {
+                    ctx.locals = saved;
+                    return Err(e);
+                }
+            };
+            if ret {
+                ctx.locals = saved;
+                bail!("return in a while-loop with a run-time condition is not supported");
+            }
+            let mut after = Vec::new();
+            for (fi, k) in &keys {
+                match ctx.locals[*fi].get(k) {
+                    Some(v) => flatten_scalars(v, &mut after),
+                    None => {}
+                }
+            }
+            if after.len() != init.len() {
+                ctx.locals = saved;
+                bail!("a while-loop changes the size of a local");
+            }
+            if pass == 0 {
+                for k in 0..init.len() {
+                    changed[k] = after[k] != repl[k];
+                }
+                if !changed.iter().any(|&c| c) {
+                    ctx.locals = saved;
+                    bail!("while-loop with a run-time condition that changes nothing");
+                }
+                continue;
+            }
+            result = Some((base, slots, cond, after));
+        }
+        let (base, slots, cond, after) = result.unwrap();
+        let n_state = slots.len() as u32;
+        // Renumber the state to Local(0..n); everything else the loop reads from outside
+        // (outer loop state, model variables, time) becomes an extra input.
+        let mut foreign: Vec<ExprId> = Vec::new();
+        let mut fmap: FxHashMap<Node, u32> = FxHashMap::default();
+        let mut memo = FxHashMap::default();
+        let mut map_leaf = |a: &mut Arena, n: Node| -> Option<ExprId> {
+            match n {
+                Node::Local(k) if k >= base && k < base + n_state => Some(a.local(k - base)),
+                Node::Local(_)
+                | Node::Var(_)
+                | Node::Pre(_)
+                | Node::Der(_)
+                | Node::Time
+                | Node::Initial
+                | Node::Rel(_)
+                | Node::Delay(..) => {
+                    let i = match fmap.get(&n) {
+                        Some(&i) => i,
+                        None => {
+                            foreign.push(a.node_id(n));
+                            fmap.insert(n, (foreign.len() - 1) as u32);
+                            (foreign.len() - 1) as u32
+                        }
+                    };
+                    Some(a.local(n_state + i))
+                }
+                _ => None,
+            }
+        };
+        let arena = &mut self.model.arena;
+        let mut cond = arena.rewrite(cond, &mut memo, &mut map_leaf);
+        let next: Vec<ExprId> = slots
+            .iter()
+            .map(|&k| arena.rewrite(after[k], &mut memo, &mut map_leaf))
+            .collect();
+        if let Some(p) = ctx.path {
+            let pl = arena.rewrite(p, &mut memo, &mut map_leaf);
+            cond = arena.f2(Fn2::And, pl, cond);
+        }
+        let n_foreign = foreign.len() as u32;
+        let mut next = next;
+        for i in 0..n_foreign {
+            next.push(self.model.arena.local(n_state + i));
+        }
+        let pid = self.model.arena.add_prog(LoopProg {
+            n: (n_state + n_foreign) as usize,
+            cond,
+            next,
+        });
+        let mut args: Vec<ExprId> = slots.iter().map(|&k| init[k]).collect();
+        args.extend(foreign.iter().copied());
+        let mut outv = init.clone();
+        for (j, &k) in slots.iter().enumerate() {
+            outv[k] = self.model.arena.call(pid, args.clone(), j as u32);
+        }
+        let mut it = outv.into_iter();
+        let mut locals = saved.clone();
+        for (fi, k) in &keys {
+            let v = rebuild_scalars(&saved[*fi][k], &mut it);
+            locals[*fi].insert(k.clone(), v);
+        }
+        ctx.locals = locals;
         Ok(())
     }
 
@@ -5818,11 +6644,23 @@ impl<'a, 't> Flattener<'a, 't> {
         }
         // Symbolic branch: execute both and merge locals with if-expressions.
         let base = ctx.locals.clone();
+        let saved_path = ctx.path;
+        let and = |a: &mut Arena, p: Option<ExprId>, c: ExprId| match p {
+            Some(p) => a.f2(Fn2::And, p, c),
+            None => c,
+        };
+        ctx.path = Some(and(&mut self.model.arena, saved_path, c));
         let mut r1 = false;
-        self.exec(&first.stmts, scope, ctx, &mut r1)?;
+        let res = self.exec(&first.stmts, scope, ctx, &mut r1);
+        ctx.path = saved_path;
+        res?;
         let then_locals = std::mem::replace(&mut ctx.locals, base);
+        let nc = self.model.arena.not(c);
+        ctx.path = Some(and(&mut self.model.arena, saved_path, nc));
         let mut r2 = false;
-        self.exec_if(rest, else_block, scope, ctx, &mut r2)?;
+        let res = self.exec_if(rest, else_block, scope, ctx, &mut r2);
+        ctx.path = saved_path;
+        res?;
         if r1 || r2 {
             bail!("return inside a branch with a time-varying condition is not supported");
         }
@@ -6008,23 +6846,9 @@ impl<'a, 't> Flattener<'a, 't> {
                 for b in blocks {
                     let c = self.when_condition(&b.cond, scope, &mut ctx)?;
                     let mut acts = Vec::new();
+                    let mut rest = Vec::new();
                     for st in &b.stmts {
                         match st {
-                            ast::Statement::Assignment { comp, value } => {
-                                let t = self.resolve_ref(comp, scope, &mut ctx)?;
-                                let v = self.translate(value, scope, &mut ctx)?;
-                                let (_, te) = t.elems()?;
-                                let (_, ve) = v.elems()?;
-                                for (i, x) in te.iter().enumerate() {
-                                    if let Node::Var(var) = self.model.arena.node(*x) {
-                                        self.when_assigned.insert(var);
-                                        acts.push(WhenAction::Assign(
-                                            var,
-                                            *ve.get(i).unwrap_or(&ve[0]),
-                                        ));
-                                    }
-                                }
-                            }
                             ast::Statement::Reinit { variable, value } => {
                                 let t = self.resolve_ref(variable, scope, &mut ctx)?.scalar()?;
                                 let v = self.translate(value, scope, &mut ctx)?.scalar()?;
@@ -6041,7 +6865,43 @@ impl<'a, 't> Flattener<'a, 't> {
                                     acts.push(WhenAction::Reinit(var, v));
                                 }
                             }
-                            _ => {}
+                            ast::Statement::FunctionCall { outputs, .. } if outputs.is_empty() => {}
+                            ast::Statement::Assert { .. } => {}
+                            other => rest.push(other.clone()),
+                        }
+                    }
+                    // The other statements execute in order (tuple assignments, ifs and
+                    // loops included); each variable they assign gets its final value.
+                    let mut targets: Vec<String> = Vec::new();
+                    collect_targets(&rest, &mut targets);
+                    let mut wctx = Ctx::default();
+                    wctx.locals.push(FxHashMap::default());
+                    let mut orig = Vec::new();
+                    for t in &targets {
+                        let cr: &'a ast::ComponentReference = Box::leak(Box::new(simple_cref(t)));
+                        let v = self.resolve_ref(cr, scope, &mut wctx)?;
+                        wctx.locals[0].insert(t.clone(), v.clone());
+                        orig.push((t.clone(), v));
+                    }
+                    let leaked: &'a [ast::Statement] = Box::leak(rest.into_boxed_slice());
+                    let mut returned = false;
+                    self.exec(leaked, scope, &mut wctx, &mut returned)?;
+                    for (t, ov) in orig {
+                        let nv = wctx.locals[0][&t].clone();
+                        let (mut oe, mut ne) = (Vec::new(), Vec::new());
+                        flatten_scalars(&ov, &mut oe);
+                        flatten_scalars(&nv, &mut ne);
+                        for (i, &o) in oe.iter().enumerate() {
+                            let Some(&n) = ne.get(i).or(ne.first()) else {
+                                continue;
+                            };
+                            if n == o {
+                                continue;
+                            }
+                            if let Node::Var(var) = self.model.arena.node(o) {
+                                self.when_assigned.insert(var);
+                                acts.push(WhenAction::Assign(var, n));
+                            }
                         }
                     }
                     branches.push((c, acts));
@@ -6106,6 +6966,22 @@ impl Val {
             Val::A(d, v) if d.is_empty() => Val::S(v[0]),
             other => other,
         }
+    }
+}
+
+fn simple_cref(name: &str) -> ast::ComponentReference {
+    ast::ComponentReference {
+        local: false,
+        parts: vec![ast::ComponentRefPart {
+            ident: rumoca_core::Token {
+                text: name.into(),
+                ..Default::default()
+            },
+            subs: None,
+            def_id: None,
+        }],
+        span: rumoca_core::Span::DUMMY,
+        qualified_display_name: None,
     }
 }
 
@@ -6405,4 +7281,112 @@ fn builtin_annotation(ann: &[E]) -> Option<String> {
         }
         _ => None,
     })
+}
+
+/// Scalars of a value in a fixed order (strings and instances have none).
+fn flatten_scalars(v: &Val, out: &mut Vec<ExprId>) {
+    match v {
+        Val::S(e) => out.push(*e),
+        Val::A(_, el) => out.extend_from_slice(el),
+        Val::Rec(f) => {
+            for (_, x) in f {
+                flatten_scalars(x, out);
+            }
+        }
+        Val::Tuple(t) => {
+            for x in t {
+                flatten_scalars(x, out);
+            }
+        }
+        Val::Inst(_) | Val::IA(..) | Val::Str(_) | Val::SA(..) => {}
+    }
+}
+
+/// `v` with its scalars (in [`flatten_scalars`] order) taken from `it`.
+fn rebuild_scalars(v: &Val, it: &mut impl Iterator<Item = ExprId>) -> Val {
+    match v {
+        Val::S(_) => Val::S(it.next().unwrap_or(Arena::ZERO)),
+        Val::A(d, el) => Val::A(
+            d.clone(),
+            el.iter()
+                .map(|_| it.next().unwrap_or(Arena::ZERO))
+                .collect(),
+        ),
+        Val::Rec(f) => Val::Rec(
+            f.iter()
+                .map(|(n, x)| (n.clone(), rebuild_scalars(x, it)))
+                .collect(),
+        ),
+        Val::Tuple(t) => Val::Tuple(t.iter().map(|x| rebuild_scalars(x, it)).collect()),
+        other => other.clone(),
+    }
+}
+
+/// A `break` that leaves this statement list's loop (not one of a nested loop).
+fn stmts_break(stmts: &[ast::Statement]) -> bool {
+    stmts.iter().any(|s| match s {
+        ast::Statement::Break { .. } => true,
+        ast::Statement::If {
+            cond_blocks,
+            else_block,
+        } => {
+            cond_blocks.iter().any(|b| stmts_break(&b.stmts))
+                || else_block.as_deref().is_some_and(stmts_break)
+        }
+        _ => false,
+    })
+}
+
+/// `annotation(name = true)`.
+fn annotation_flag(ann: &[E], name: &str) -> bool {
+    ann.iter().any(|a| match a {
+        E::Modification { target, value, .. }
+            if target.parts.len() == 1 && &*target.parts[0].ident.text == name =>
+        {
+            matches!(&**value, E::Terminal { token, .. } if &*token.text == "true")
+        }
+        _ => false,
+    })
+}
+
+/// Rough size of an algorithm: statements, loops counting extra.
+fn stmt_weight(stmts: &[ast::Statement]) -> usize {
+    stmts
+        .iter()
+        .map(|s| match s {
+            ast::Statement::If {
+                cond_blocks,
+                else_block,
+            } => {
+                1 + cond_blocks
+                    .iter()
+                    .map(|b| stmt_weight(&b.stmts))
+                    .sum::<usize>()
+                    + else_block.as_deref().map_or(0, stmt_weight)
+            }
+            ast::Statement::For { equations, .. } => 6 + stmt_weight(equations),
+            ast::Statement::While(b) => 12 + stmt_weight(&b.stmts),
+            _ => 1,
+        })
+        .sum()
+}
+
+/// Shape of a value for the compiled-function cache.
+fn val_shape(v: &Val) -> String {
+    match v {
+        Val::S(_) => "s".into(),
+        Val::A(d, _) => format!("{d:?}"),
+        Val::Rec(f) => format!(
+            "{{{}}}",
+            f.iter()
+                .map(|(n, x)| format!("{n}:{}", val_shape(x)))
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+        Val::Tuple(t) => format!(
+            "({})",
+            t.iter().map(val_shape).collect::<Vec<_>>().join(",")
+        ),
+        other => other.kind().to_string(),
+    }
 }

@@ -32,8 +32,35 @@ pub enum Ins {
     InterpDer(Slot, u32, u32, Slot),
     /// `d = history[k](time - r[delay])`
     Delay(Slot, u32, Slot),
+    /// `d = output out of the loop program run at call site s`
+    Call(Slot, u32, u32),
+    /// `d = d output / d argument` of call site `s`, `(out << 16) | arg`
+    CallD(Slot, u32, u32),
     /// Solve Newton block `i` in place.
     Newton(u32),
+    /// Skip the next `n` instructions when `c == 0`.
+    Jz(Slot, u32),
+    /// Skip the next `n` instructions.
+    Jmp(u32),
+}
+
+/// A compiled run-time `while` loop: registers `0..n` hold the state.
+#[derive(Clone, Debug)]
+pub struct ProgCode {
+    pub n: usize,
+    pub n_regs: usize,
+    pub consts: Vec<(Slot, f64)>,
+    pub cond: Vec<Ins>,
+    pub cond_slot: Slot,
+    pub next: Vec<Ins>,
+    pub next_slots: Vec<Slot>,
+}
+
+/// A call of a loop program: the registers (of the calling tape) holding its arguments.
+#[derive(Clone, Debug)]
+pub struct SiteCode {
+    pub prog: u32,
+    pub args: Vec<Slot>,
 }
 
 /// An algebraic loop: Newton iteration on the tear variables.
@@ -125,6 +152,8 @@ pub struct Model {
     pub pre_init: Vec<(VarId, VarId)>,
     /// Delayed variable of each `delay()` history buffer.
     pub delays: Vec<VarId>,
+    pub progs: Vec<ProgCode>,
+    pub sites: Vec<SiteCode>,
     pub param_vars: Vec<VarId>,
     pub inputs: Vec<VarId>,
     /// For each state derivative, the states it structurally depends on.
@@ -143,9 +172,110 @@ struct Emitter<'a> {
     consts: FxHashMap<u64, Slot>,
     const_list: Vec<(Slot, f64)>,
     raw_rel: bool,
+    sites: Vec<SiteCode>,
+    /// Whether an expression contains a function call (worth branching around).
+    has_call: FxHashMap<ExprId, bool>,
+    /// Nodes memoised inside the branches being emitted (forgotten when a branch ends).
+    branch_log: Vec<Vec<ExprId>>,
+    /// Result slots of branched `if` expressions (written in two places).
+    branched: FxHashSet<Slot>,
+    site_of: FxHashMap<(u32, Vec<Slot>), u32>,
 }
 
 impl Emitter<'_> {
+    fn contains_call(&mut self, root: ExprId) -> bool {
+        if let Some(&b) = self.has_call.get(&root) {
+            return b;
+        }
+        let mut stack = vec![(root, false)];
+        let mut ch = Vec::new();
+        while let Some((id, expanded)) = stack.pop() {
+            if self.has_call.contains_key(&id) {
+                continue;
+            }
+            ch.clear();
+            self.arena.children(id, &mut ch);
+            if !expanded {
+                stack.push((id, true));
+                for &c in &ch {
+                    if !self.has_call.contains_key(&c) {
+                        stack.push((c, false));
+                    }
+                }
+                continue;
+            }
+            let own = matches!(self.arena.node(id), Node::Call(..) | Node::CallD(..));
+            let b = own || ch.iter().any(|c| self.has_call[c]);
+            self.has_call.insert(id, b);
+        }
+        self.has_call[&root]
+    }
+
+    /// The call site of call `c` with arguments in `args`: the outputs and partials of
+    /// one call share it, so the function runs once for all of them.
+    fn site(&mut self, c: u32, args: Vec<Slot>) -> u32 {
+        let key = (c, args);
+        if let Some(&k) = self.site_of.get(&key) {
+            return k;
+        }
+        let prog = self.arena.calls[c as usize].prog;
+        self.sites.push(SiteCode {
+            prog,
+            args: key.1.clone(),
+        });
+        let k = (self.sites.len() - 1) as u32;
+        self.site_of.insert(key, k);
+        k
+    }
+
+    fn remember(&mut self, memo: &mut FxHashMap<ExprId, Slot>, id: ExprId, s: Slot) {
+        memo.insert(id, s);
+        if let Some(log) = self.branch_log.last_mut() {
+            log.push(id);
+        }
+    }
+
+    /// Emit `d := e` as one branch: what it computes is forgotten afterwards.
+    fn emit_branch(
+        &mut self,
+        d: Slot,
+        e: ExprId,
+        memo: &mut FxHashMap<ExprId, Slot>,
+        out: &mut Vec<Ins>,
+    ) {
+        self.branch_log.push(Vec::new());
+        let s = self.emit(e, memo, out);
+        out.push(Ins::Copy(d, s));
+        for x in self.branch_log.pop().unwrap() {
+            memo.remove(&x);
+        }
+    }
+
+    /// `if c then a else b` with a function call in a branch: only the taken branch runs.
+    fn emit_branched(
+        &mut self,
+        id: ExprId,
+        c: ExprId,
+        a: ExprId,
+        b: ExprId,
+        memo: &mut FxHashMap<ExprId, Slot>,
+        out: &mut Vec<Ins>,
+    ) -> Slot {
+        let sc = self.emit(c, memo, out);
+        let d = self.temp();
+        let jz = out.len();
+        out.push(Ins::Jz(sc, 0));
+        self.emit_branch(d, a, memo, out);
+        let jmp = out.len();
+        out.push(Ins::Jmp(0));
+        out[jz] = Ins::Jz(sc, (out.len() - jz - 1) as u32);
+        self.emit_branch(d, b, memo, out);
+        out[jmp] = Ins::Jmp((out.len() - jmp - 1) as u32);
+        self.branched.insert(d);
+        self.remember(memo, id, d);
+        d
+    }
+
     fn temp(&mut self) -> Slot {
         let s = self.next;
         self.next += 1;
@@ -178,7 +308,7 @@ impl Emitter<'_> {
             let n = self.arena.node(id);
             let leaf = match n {
                 Node::Const(b) => Some(self.constant(f64::from_bits(b))),
-                Node::Var(v) => Some(v),
+                Node::Var(v) | Node::Local(v) => Some(v),
                 Node::Pre(v) => Some((self.layout.pre0 + v as usize) as Slot),
                 Node::Time => Some(self.layout.time as Slot),
                 Node::Initial => Some(self.layout.initial as Slot),
@@ -188,6 +318,12 @@ impl Emitter<'_> {
             };
             if let Some(s) = leaf {
                 memo.insert(id, s);
+                continue;
+            }
+            if let Node::If(c, a, b) = n
+                && (self.contains_call(a) || self.contains_call(b))
+            {
+                self.emit_branched(id, c, a, b, memo, out);
                 continue;
             }
             ch.clear();
@@ -228,10 +364,12 @@ impl Emitter<'_> {
                 Node::Interp(t, c, _) => Ins::Interp(d, t, c, s[0]),
                 Node::InterpDer(t, c, _) => Ins::InterpDer(d, t, c, s[0]),
                 Node::Delay(k, _) => Ins::Delay(d, k, s[0]),
+                Node::Call(c, out) => Ins::Call(d, self.site(c, s), out),
+                Node::CallD(c, k) => Ins::CallD(d, self.site(c, s), k),
                 other => unreachable!("node {other:?} in code generation"),
             };
             out.push(ins);
-            memo.insert(id, d);
+            self.remember(memo, id, d);
         }
         memo[&root]
     }
@@ -253,6 +391,7 @@ impl Emitter<'_> {
         if !had
             && out.len() > before_len
             && s >= self.first_temp()
+            && !self.branched.contains(&s)
             && retarget(out.last_mut().unwrap(), s, dst)
         {
             memo.insert(e, dst);
@@ -282,8 +421,10 @@ fn retarget(ins: &mut Ins, from: Slot, to: Slot) -> bool {
         | Ins::Select(d, ..)
         | Ins::Interp(d, ..)
         | Ins::InterpDer(d, ..)
-        | Ins::Delay(d, ..) => d,
-        Ins::Newton(_) => return false,
+        | Ins::Delay(d, ..)
+        | Ins::Call(d, ..)
+        | Ins::CallD(d, ..) => d,
+        Ins::Newton(_) | Ins::Jz(..) | Ins::Jmp(_) => return false,
     };
     if *d == from {
         *d = to;
@@ -396,6 +537,54 @@ fn compile_blocks(
 }
 
 /// Compile a system into a tape model.
+/// Compile loop program `p`: its condition and next-state expressions over the state
+/// registers.
+fn compile_prog(arena: &mut Arena, p: usize, sites: &mut Vec<SiteCode>) -> ProgCode {
+    let prog = arena.progs[p].clone();
+    let n = prog.n;
+    let layout = Layout {
+        nv: n,
+        pre0: n,
+        time: n,
+        initial: n,
+        rel0: n,
+        n_rel: 0,
+        n_regs: 0,
+    };
+    let mut em = Emitter {
+        arena,
+        layout,
+        next: n as Slot,
+        consts: FxHashMap::default(),
+        const_list: Vec::new(),
+        raw_rel: true,
+        sites: std::mem::take(sites),
+        has_call: FxHashMap::default(),
+        branch_log: Vec::new(),
+        branched: FxHashSet::default(),
+        site_of: FxHashMap::default(),
+    };
+    let mut memo = FxHashMap::default();
+    let mut cond = Vec::new();
+    let cond_slot = em.emit(prog.cond, &mut memo, &mut cond);
+    let mut next = Vec::new();
+    let next_slots = prog
+        .next
+        .iter()
+        .map(|&e| em.emit(e, &mut memo, &mut next))
+        .collect();
+    *sites = std::mem::take(&mut em.sites);
+    ProgCode {
+        n,
+        n_regs: em.next as usize + n,
+        consts: em.const_list,
+        cond,
+        cond_slot,
+        next,
+        next_slots,
+    }
+}
+
 pub fn compile(mut sys: System) -> Model {
     let nv = sys.vars.len();
     let n_rel = sys.arena.relations.len();
@@ -409,6 +598,10 @@ pub fn compile(mut sys: System) -> Model {
         n_regs: 0,
     };
     let tables = sys.arena.tables.clone();
+    let mut sites = Vec::new();
+    let progs: Vec<ProgCode> = (0..sys.arena.progs.len())
+        .map(|p| compile_prog(&mut sys.arena, p, &mut sites))
+        .collect();
     let mut em = Emitter {
         arena: &mut sys.arena,
         layout,
@@ -416,6 +609,11 @@ pub fn compile(mut sys: System) -> Model {
         consts: FxHashMap::default(),
         const_list: Vec::new(),
         raw_rel: true,
+        sites,
+        has_call: FxHashMap::default(),
+        branch_log: Vec::new(),
+        branched: FxHashSet::default(),
+        site_of: FxHashMap::default(),
     };
     let mut newton = Vec::new();
     // Parameters.
@@ -546,6 +744,7 @@ pub fn compile(mut sys: System) -> Model {
     let mut layout = layout;
     layout.n_regs = em.next as usize;
     let consts = em.const_list.clone();
+    let sites = std::mem::take(&mut em.sites);
     let jac_pattern = dependency_pattern(&sys);
     let tape_len = params.iter().map(|p| p.1.len()).sum::<usize>()
         + init.len()
@@ -580,6 +779,8 @@ pub fn compile(mut sys: System) -> Model {
         discretes: sys.discretes.clone(),
         pre_init: sys.pre_init.clone(),
         delays: sys.arena.delays.clone(),
+        progs,
+        sites,
         param_vars: sys.params.clone(),
         inputs: sys.inputs.clone(),
         jac_pattern,
@@ -725,9 +926,410 @@ impl DelayBuf {
     }
 }
 
+/// Registers of the loop programs and the last result of every call site.
+#[derive(Default)]
+pub struct LoopState {
+    regs: Vec<Vec<f64>>,
+    /// Per call site: last arguments, final state, valid.
+    cache: Vec<(Vec<f64>, Vec<f64>, bool)>,
+    /// Per call site: arguments and, per argument, the tangent of the final state along
+    /// that argument (empty until needed).
+    dcache: Vec<(Vec<f64>, Vec<Vec<f64>>)>,
+    /// Per call site: arguments, argument tangents, final state and its tangent.
+    tcache: Vec<TangentEntry>,
+    /// Per loop program: value and tangent registers for forward-mode runs.
+    tregs: Vec<(Vec<f64>, Vec<f64>)>,
+}
+
+#[derive(Clone, Default)]
+struct TangentEntry {
+    args: Vec<f64>,
+    dargs: Vec<f64>,
+    st: Vec<f64>,
+    dst: Vec<f64>,
+    ok: bool,
+}
+
+/// Output `out` of call site `site`, whose arguments are in the caller's registers `r`.
+fn site_value(m: &Model, ls: &mut LoopState, site: usize, out: usize, r: &[f64]) -> f64 {
+    let sc = &m.sites[site];
+    {
+        let (a, st, ok) = &ls.cache[site];
+        if *ok
+            && a.len() == sc.args.len()
+            && sc.args.iter().zip(a).all(|(&s, &x)| r[s as usize] == x)
+        {
+            return st[out];
+        }
+    }
+    let mut e = std::mem::take(&mut ls.cache[site]);
+    e.0.clear();
+    e.0.extend(sc.args.iter().map(|&s| r[s as usize]));
+    run_loop(m, ls, sc.prog as usize, &e.0, &mut e.1);
+    e.2 = true;
+    let v = e.1[out];
+    ls.cache[site] = e;
+    v
+}
+
+/// Partial derivative of a call site output, `k = (out << 16) | arg`, by a forward-mode
+/// run of the loop program along that argument (exact, unlike differences, so outer
+/// difference Jacobians of it stay accurate).
+fn site_partial(m: &Model, ls: &mut LoopState, site: usize, k: u32, r: &[f64]) -> f64 {
+    let (out, arg) = ((k >> 16) as usize, (k & 0xffff) as usize);
+    let sc = &m.sites[site];
+    let mut d = std::mem::take(&mut ls.dcache[site]);
+    if d.0.len() != sc.args.len() || sc.args.iter().zip(&d.0).any(|(&s, &x)| r[s as usize] != x) {
+        d.0.clear();
+        d.0.extend(sc.args.iter().map(|&s| r[s as usize]));
+        d.1.resize(sc.args.len(), Vec::new());
+        for st in &mut d.1 {
+            st.clear();
+        }
+    }
+    if d.1[arg].is_empty() {
+        let mut dargs = vec![0.0; d.0.len()];
+        dargs[arg] = 1.0;
+        let mut st = Vec::new();
+        let mut dst = std::mem::take(&mut d.1[arg]);
+        run_loop_tangent(m, ls, sc.prog as usize, &d.0, &dargs, &mut st, &mut dst);
+        d.1[arg] = dst;
+    }
+    let v = d.1[arg][out];
+    ls.dcache[site] = d;
+    v
+}
+
+/// Value and tangent of output `out` of call site `site` in a forward-mode run.
+fn site_tangent(
+    m: &Model,
+    ls: &mut LoopState,
+    site: usize,
+    out: usize,
+    r: &[f64],
+    dr: &[f64],
+) -> (f64, f64) {
+    let sc = &m.sites[site];
+    {
+        let e = &ls.tcache[site];
+        if e.ok
+            && e.args.len() == sc.args.len()
+            && sc
+                .args
+                .iter()
+                .enumerate()
+                .all(|(i, &s)| r[s as usize] == e.args[i] && dr[s as usize] == e.dargs[i])
+        {
+            return (e.st[out], e.dst[out]);
+        }
+    }
+    let mut e = std::mem::take(&mut ls.tcache[site]);
+    e.args.clear();
+    e.args.extend(sc.args.iter().map(|&s| r[s as usize]));
+    e.dargs.clear();
+    e.dargs.extend(sc.args.iter().map(|&s| dr[s as usize]));
+    if e.dargs.iter().all(|&x| x == 0.0) {
+        let v = site_value(m, ls, site, out, r);
+        let n = e.args.len().max(out + 1);
+        e.st = ls.cache[site].1.clone();
+        e.dst.clear();
+        e.dst.resize(n.max(e.st.len()), 0.0);
+        e.ok = true;
+        ls.tcache[site] = e;
+        return (v, 0.0);
+    }
+    run_loop_tangent(
+        m,
+        ls,
+        sc.prog as usize,
+        &e.args,
+        &e.dargs,
+        &mut e.st,
+        &mut e.dst,
+    );
+    e.ok = true;
+    let res = (e.st[out], e.dst[out]);
+    ls.tcache[site] = e;
+    res
+}
+
+/// Forward-mode run of loop program `p`: final state and its tangent.
+fn run_loop_tangent(
+    m: &Model,
+    ls: &mut LoopState,
+    p: usize,
+    args: &[f64],
+    dargs: &[f64],
+    out: &mut Vec<f64>,
+    dout: &mut Vec<f64>,
+) {
+    let pc = &m.progs[p];
+    let (mut r, mut dr) = std::mem::take(&mut ls.tregs[p]);
+    if r.len() != pc.n_regs {
+        r = vec![0.0; pc.n_regs];
+        for &(s, v) in &pc.consts {
+            r[s as usize] = v;
+        }
+        dr = vec![0.0; pc.n_regs];
+    }
+    let n = pc.n;
+    r[..n].copy_from_slice(args);
+    dr[..n].copy_from_slice(dargs);
+    let base = pc.n_regs - n;
+    for _ in 0..crate::backend::eval::MAX_LOOP_ITERATIONS {
+        run_sub_tangent(m, ls, &pc.cond, &mut r, &mut dr);
+        if r[pc.cond_slot as usize] == 0.0 {
+            break;
+        }
+        run_sub_tangent(m, ls, &pc.next, &mut r, &mut dr);
+        for k in 0..n {
+            r[base + k] = r[pc.next_slots[k] as usize];
+            dr[base + k] = dr[pc.next_slots[k] as usize];
+        }
+        r.copy_within(base..base + n, 0);
+        dr.copy_within(base..base + n, 0);
+    }
+    out.clear();
+    out.extend_from_slice(&r[..n]);
+    dout.clear();
+    dout.extend_from_slice(&dr[..n]);
+    ls.tregs[p] = (r, dr);
+}
+
+fn d_f1(f: Fn1, x: f64) -> f64 {
+    match f {
+        Fn1::Sin => x.cos(),
+        Fn1::Cos => -x.sin(),
+        Fn1::Tan => 1.0 / (x.cos() * x.cos()),
+        Fn1::Asin => 1.0 / (1.0 - x * x).sqrt(),
+        Fn1::Acos => -1.0 / (1.0 - x * x).sqrt(),
+        Fn1::Atan => 1.0 / (1.0 + x * x),
+        Fn1::Sinh => x.cosh(),
+        Fn1::Cosh => x.sinh(),
+        Fn1::Tanh => 1.0 - x.tanh() * x.tanh(),
+        Fn1::Exp => x.exp(),
+        Fn1::Log => 1.0 / x,
+        Fn1::Log10 => 1.0 / (x * std::f64::consts::LN_10),
+        Fn1::Sqrt => 0.5 / x.sqrt(),
+        Fn1::Abs => eval_f1(Fn1::Sign, x),
+        Fn1::Sign | Fn1::Floor | Fn1::Ceil | Fn1::Not => 0.0,
+    }
+}
+
+/// Forward-mode tape interpreter for loop programs: `dr` carries the tangents of `r`.
+fn run_sub_tangent(m: &Model, ls: &mut LoopState, prog: &[Ins], r: &mut [f64], dr: &mut [f64]) {
+    let mut pc = 0;
+    while pc < prog.len() {
+        let ins = &prog[pc];
+        pc += 1;
+        match *ins {
+            Ins::Jz(c, k) => {
+                if r[c as usize] == 0.0 {
+                    pc += k as usize;
+                }
+            }
+            Ins::Jmp(k) => pc += k as usize,
+            Ins::Copy(d, a) => {
+                r[d as usize] = r[a as usize];
+                dr[d as usize] = dr[a as usize];
+            }
+            Ins::Neg(d, a) => {
+                r[d as usize] = -r[a as usize];
+                dr[d as usize] = -dr[a as usize];
+            }
+            Ins::Add(d, a, b) => {
+                r[d as usize] = r[a as usize] + r[b as usize];
+                dr[d as usize] = dr[a as usize] + dr[b as usize];
+            }
+            Ins::Sub(d, a, b) => {
+                r[d as usize] = r[a as usize] - r[b as usize];
+                dr[d as usize] = dr[a as usize] - dr[b as usize];
+            }
+            Ins::Mul(d, a, b) => {
+                let (x, y) = (r[a as usize], r[b as usize]);
+                dr[d as usize] = dr[a as usize] * y + x * dr[b as usize];
+                r[d as usize] = x * y;
+            }
+            Ins::Div(d, a, b) => {
+                let (x, y) = (r[a as usize], r[b as usize]);
+                let q = x / y;
+                dr[d as usize] = (dr[a as usize] - q * dr[b as usize]) / y;
+                r[d as usize] = q;
+            }
+            Ins::Pow(d, a, b) => {
+                let (x, y) = (r[a as usize], r[b as usize]);
+                let (dx, dy) = (dr[a as usize], dr[b as usize]);
+                let v = x.powf(y);
+                let mut t = if dx != 0.0 {
+                    y * x.powf(y - 1.0) * dx
+                } else {
+                    0.0
+                };
+                if dy != 0.0 {
+                    t += v * x.ln() * dy;
+                }
+                r[d as usize] = v;
+                dr[d as usize] = t;
+            }
+            Ins::PowI(d, a, k) => {
+                let x = r[a as usize];
+                dr[d as usize] = if k == 0 {
+                    0.0
+                } else {
+                    f64::from(k) * x.powi(k - 1) * dr[a as usize]
+                };
+                r[d as usize] = x.powi(k);
+            }
+            Ins::F1(f, d, a) => {
+                let x = r[a as usize];
+                let dx = dr[a as usize];
+                dr[d as usize] = if dx != 0.0 { d_f1(f, x) * dx } else { 0.0 };
+                r[d as usize] = eval_f1(f, x);
+            }
+            Ins::F2(f, d, a, b) => {
+                let (x, y) = (r[a as usize], r[b as usize]);
+                let (dx, dy) = (dr[a as usize], dr[b as usize]);
+                dr[d as usize] = match f {
+                    Fn2::Atan2 => (y * dx - x * dy) / (x * x + y * y),
+                    Fn2::Min => {
+                        if x <= y {
+                            dx
+                        } else {
+                            dy
+                        }
+                    }
+                    Fn2::Max => {
+                        if x >= y {
+                            dx
+                        } else {
+                            dy
+                        }
+                    }
+                    Fn2::Mod => dx - (x / y).floor() * dy,
+                    Fn2::Rem => dx - (x / y).trunc() * dy,
+                    Fn2::Div | Fn2::And | Fn2::Or => 0.0,
+                };
+                r[d as usize] = eval_f2(f, x, y);
+            }
+            Ins::Cmp(op, d, a, b) => {
+                r[d as usize] = f64::from(op.eval(r[a as usize], r[b as usize]));
+                dr[d as usize] = 0.0;
+            }
+            Ins::Select(d, c, a, b) => {
+                let k = if r[c as usize] != 0.0 { a } else { b };
+                r[d as usize] = r[k as usize];
+                dr[d as usize] = dr[k as usize];
+            }
+            Ins::Interp(d, t, c, x) => {
+                let tb = &m.tables[t as usize];
+                let xv = r[x as usize];
+                dr[d as usize] = tb.slope(c as usize, xv) * dr[x as usize];
+                r[d as usize] = tb.interp(c as usize, xv);
+            }
+            Ins::InterpDer(d, t, c, x) => {
+                r[d as usize] = m.tables[t as usize].slope(c as usize, r[x as usize]);
+                dr[d as usize] = 0.0;
+            }
+            Ins::Call(d, site, out) => {
+                let (v, dv) = site_tangent(m, ls, site as usize, out as usize, r, dr);
+                r[d as usize] = v;
+                dr[d as usize] = dv;
+            }
+            Ins::CallD(d, site, k) => {
+                r[d as usize] = site_partial(m, ls, site as usize, k, r);
+                dr[d as usize] = 0.0;
+            }
+            Ins::Delay(d, ..) => {
+                r[d as usize] = f64::NAN;
+                dr[d as usize] = 0.0;
+            }
+            Ins::Newton(_) => {}
+        }
+    }
+}
+
+/// Run loop program `p` from state `args`; the final state goes to `out`.
+fn run_loop(m: &Model, ls: &mut LoopState, p: usize, args: &[f64], out: &mut Vec<f64>) {
+    let pc = &m.progs[p];
+    let mut r = std::mem::take(&mut ls.regs[p]);
+    if r.len() != pc.n_regs {
+        r = vec![0.0; pc.n_regs];
+        for &(s, v) in &pc.consts {
+            r[s as usize] = v;
+        }
+    }
+    let n = pc.n;
+    r[..n].copy_from_slice(args);
+    let base = pc.n_regs - n;
+    for _ in 0..crate::backend::eval::MAX_LOOP_ITERATIONS {
+        run_sub(m, ls, &pc.cond, &mut r);
+        if r[pc.cond_slot as usize] == 0.0 {
+            break;
+        }
+        run_sub(m, ls, &pc.next, &mut r);
+        for k in 0..n {
+            r[base + k] = r[pc.next_slots[k] as usize];
+        }
+        r.copy_within(base..base + n, 0);
+    }
+    out.clear();
+    out.extend_from_slice(&r[..n]);
+    ls.regs[p] = r;
+}
+
+/// Tape interpreter for loop programs (no Newton blocks, delays or relations there).
+fn run_sub(m: &Model, ls: &mut LoopState, prog: &[Ins], r: &mut [f64]) {
+    let mut pc = 0;
+    while pc < prog.len() {
+        let ins = &prog[pc];
+        pc += 1;
+        match *ins {
+            Ins::Jz(c, k) => {
+                if r[c as usize] == 0.0 {
+                    pc += k as usize;
+                }
+            }
+            Ins::Jmp(k) => pc += k as usize,
+            Ins::Copy(d, a) => r[d as usize] = r[a as usize],
+            Ins::Neg(d, a) => r[d as usize] = -r[a as usize],
+            Ins::Add(d, a, b) => r[d as usize] = r[a as usize] + r[b as usize],
+            Ins::Sub(d, a, b) => r[d as usize] = r[a as usize] - r[b as usize],
+            Ins::Mul(d, a, b) => r[d as usize] = r[a as usize] * r[b as usize],
+            Ins::Div(d, a, b) => r[d as usize] = r[a as usize] / r[b as usize],
+            Ins::Pow(d, a, b) => r[d as usize] = r[a as usize].powf(r[b as usize]),
+            Ins::PowI(d, a, k) => r[d as usize] = r[a as usize].powi(k),
+            Ins::F1(f, d, a) => r[d as usize] = eval_f1(f, r[a as usize]),
+            Ins::F2(f, d, a, b) => r[d as usize] = eval_f2(f, r[a as usize], r[b as usize]),
+            Ins::Cmp(op, d, a, b) => {
+                r[d as usize] = f64::from(op.eval(r[a as usize], r[b as usize]))
+            }
+            Ins::Select(d, c, a, b) => {
+                r[d as usize] = if r[c as usize] != 0.0 {
+                    r[a as usize]
+                } else {
+                    r[b as usize]
+                }
+            }
+            Ins::Interp(d, t, c, x) => {
+                r[d as usize] = m.tables[t as usize].interp(c as usize, r[x as usize])
+            }
+            Ins::InterpDer(d, t, c, x) => {
+                r[d as usize] = m.tables[t as usize].slope(c as usize, r[x as usize])
+            }
+            Ins::Call(d, site, out) => {
+                r[d as usize] = site_value(m, ls, site as usize, out as usize, r)
+            }
+            Ins::CallD(d, site, k) => r[d as usize] = site_partial(m, ls, site as usize, k, r),
+            Ins::Delay(d, ..) => r[d as usize] = f64::NAN,
+            Ins::Newton(_) => {}
+        }
+    }
+}
+
 pub struct Runtime<'m> {
     pub m: &'m Model,
     pub r: Vec<f64>,
+    pub loops: LoopState,
     pub delays: Vec<DelayBuf>,
     pub newton_stats: NewtonStats,
     work: Vec<f64>,
@@ -749,6 +1351,13 @@ impl<'m> Runtime<'m> {
             m,
             r,
             delays: vec![DelayBuf::default(); m.delays.len()],
+            loops: LoopState {
+                regs: vec![Vec::new(); m.progs.len()],
+                cache: vec![Default::default(); m.sites.len()],
+                dcache: vec![Default::default(); m.sites.len()],
+                tcache: vec![Default::default(); m.sites.len()],
+                tregs: vec![Default::default(); m.progs.len()],
+            },
             newton_stats: NewtonStats::default(),
             work: Vec::new(),
             jsave: Vec::new(),
@@ -763,9 +1372,18 @@ impl<'m> Runtime<'m> {
     #[inline]
     pub fn run(&mut self, prog: &[Ins]) {
         let tables = &self.m.tables;
-        for ins in prog {
+        let mut pc = 0;
+        while pc < prog.len() {
+            let ins = &prog[pc];
+            pc += 1;
             let r = &mut self.r;
             match *ins {
+                Ins::Jz(c, k) => {
+                    if r[c as usize] == 0.0 {
+                        pc += k as usize;
+                    }
+                }
+                Ins::Jmp(k) => pc += k as usize,
                 Ins::Copy(d, a) => r[d as usize] = r[a as usize],
                 Ins::Neg(d, a) => r[d as usize] = -r[a as usize],
                 Ins::Add(d, a, b) => r[d as usize] = r[a as usize] + r[b as usize],
@@ -801,6 +1419,20 @@ impl<'m> Runtime<'m> {
                     }
                     let tq = r[self.m.layout.time] - dl;
                     r[d as usize] = b.at(tq).unwrap_or(r[self.m.delays[k as usize] as usize]);
+                }
+                Ins::Call(d, site, out) => {
+                    let v = site_value(
+                        self.m,
+                        &mut self.loops,
+                        site as usize,
+                        out as usize,
+                        &self.r,
+                    );
+                    self.r[d as usize] = v;
+                }
+                Ins::CallD(d, site, k) => {
+                    let v = site_partial(self.m, &mut self.loops, site as usize, k, &self.r);
+                    self.r[d as usize] = v;
                 }
                 Ins::Newton(i) => self.newton(i as usize),
             }

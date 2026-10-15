@@ -7,6 +7,7 @@
 
 use rustc_hash::FxHashMap;
 use std::fmt::Write as _;
+use std::rc::Rc;
 
 /// Index of an expression node in the arena.
 pub type ExprId = u32;
@@ -160,6 +161,31 @@ pub enum Node {
     /// `time - d`, read from a history buffer. The delayed variable is deliberately not a
     /// child: the delay breaks the algebraic dependency on its argument.
     Delay(u32, ExprId),
+    /// Local variable `k` of a [`LoopProg`] (only inside loop programs).
+    Local(u32),
+    /// Output `out` of the loop program called at [`Arena::calls`]`[call]`; the call's
+    /// arguments are the node's children.
+    Call(u32, u32),
+    /// Partial derivative of a [`Node::Call`] output with respect to one argument:
+    /// `(call, out << 16 | arg)`, evaluated by finite differences.
+    CallD(u32, u32),
+}
+
+/// A `while` loop with a run-time condition, as a pure function of its state:
+/// `while cond(x) loop x := next(x) end while`. The state is `Local(0..n)`; the
+/// expressions refer to nothing else.
+#[derive(Debug, Clone)]
+pub struct LoopProg {
+    pub n: usize,
+    pub cond: ExprId,
+    pub next: Vec<ExprId>,
+}
+
+/// One call of a loop program: its initial state.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CallSite {
+    pub prog: u32,
+    pub args: Vec<ExprId>,
 }
 
 /// An event-generating relation `lhs op rhs`.
@@ -465,6 +491,11 @@ pub struct Arena {
     pub tables: Vec<Table>,
     /// Delayed variables of the [`Node::Delay`] nodes.
     pub delays: Vec<VarId>,
+    pub progs: Vec<LoopProg>,
+    pub calls: Vec<CallSite>,
+    call_intern: FxHashMap<CallSite, u32>,
+    /// Results of interpreted loop-program runs, by program and arguments.
+    pub prog_cache: std::cell::RefCell<FxHashMap<(u32, Vec<u64>), Rc<[f64]>>>,
 }
 
 #[inline]
@@ -782,6 +813,51 @@ impl Arena {
         self.intern_node(Node::Delay(k, d))
     }
 
+    /// The id of node `n` (interning it if new).
+    pub fn node_id(&mut self, n: Node) -> ExprId {
+        self.intern_node(n)
+    }
+
+    pub fn local(&mut self, k: u32) -> ExprId {
+        self.intern_node(Node::Local(k))
+    }
+
+    pub fn add_prog(&mut self, p: LoopProg) -> u32 {
+        self.progs.push(p);
+        (self.progs.len() - 1) as u32
+    }
+
+    fn call_site(&mut self, prog: u32, args: Vec<ExprId>) -> u32 {
+        let site = CallSite { prog, args };
+        if let Some(&c) = self.call_intern.get(&site) {
+            return c;
+        }
+        let c = self.calls.len() as u32;
+        self.calls.push(site.clone());
+        self.call_intern.insert(site, c);
+        c
+    }
+
+    /// Output `out` of loop program `prog` started from `args` (folded when the
+    /// arguments are constants).
+    pub fn call(&mut self, prog: u32, args: Vec<ExprId>, out: u32) -> ExprId {
+        if let Some(vals) = args
+            .iter()
+            .map(|&a| self.as_const(a))
+            .collect::<Option<Vec<f64>>>()
+        {
+            let r = crate::backend::eval::run_prog(self, prog, &vals);
+            return self.constant(r[out as usize]);
+        }
+        let c = self.call_site(prog, args);
+        self.intern_node(Node::Call(c, out))
+    }
+
+    fn call_d(&mut self, prog: u32, args: Vec<ExprId>, out: u32, arg: u32) -> ExprId {
+        let c = self.call_site(prog, args);
+        self.intern_node(Node::CallD(c, (out << 16) | arg))
+    }
+
     /// Children of a node, in evaluation order.
     pub fn children(&self, id: ExprId, out: &mut Vec<ExprId>) {
         match self.node(id) {
@@ -790,7 +866,11 @@ impl Arena {
             | Node::Der(_)
             | Node::Pre(_)
             | Node::Time
+            | Node::Local(_)
             | Node::Initial => {}
+            Node::Call(c, _) | Node::CallD(c, _) => {
+                out.extend_from_slice(&self.calls[c as usize].args)
+            }
             Node::Rel(r) => {
                 let rel = self.relations[r as usize];
                 out.push(rel.lhs);
@@ -833,7 +913,16 @@ impl Arena {
             | Node::Der(_)
             | Node::Pre(_)
             | Node::Time
+            | Node::Local(_)
             | Node::Initial => id,
+            Node::Call(c, out) => {
+                let prog = self.calls[c as usize].prog;
+                self.call(prog, ch.to_vec(), out)
+            }
+            Node::CallD(c, k) => {
+                let prog = self.calls[c as usize].prog;
+                self.call_d(prog, ch.to_vec(), k >> 16, k & 0xffff)
+            }
             Node::Rel(r) => {
                 let op = self.relations[r as usize].op;
                 self.relation(op, ch[0], ch[1])
@@ -1035,7 +1124,12 @@ impl Arena {
             }
             let n = self.node(id);
             match n {
-                Node::Const(_) | Node::Initial | Node::Rel(_) | Node::Cmp(..) => {
+                Node::Const(_)
+                | Node::Initial
+                | Node::Rel(_)
+                | Node::Cmp(..)
+                | Node::Local(_)
+                | Node::CallD(..) => {
                     memo.insert(id, Self::ZERO);
                     continue;
                 }
@@ -1153,6 +1247,22 @@ impl Arena {
                 }
                 // the history does not depend on the current values
                 Node::InterpDer(..) | Node::Delay(..) => Self::ZERO,
+                Node::Call(c, out) => {
+                    // chain rule with numerically evaluated partial derivatives
+                    let prog = self.calls[c as usize].prog;
+                    let args = self.calls[c as usize].args.clone();
+                    let mut acc = Self::ZERO;
+                    for k in 0..args.len() {
+                        let dk = d(k);
+                        if dk == Self::ZERO {
+                            continue;
+                        }
+                        let p = self.call_d(prog, args.clone(), out, k as u32);
+                        let t = self.mul(p, dk);
+                        acc = self.add(acc, t);
+                    }
+                    acc
+                }
                 _ => unreachable!(),
             };
             memo.insert(id, r);
@@ -1215,6 +1325,15 @@ impl Arena {
     }
 
     fn render_into(&self, id: ExprId, name: &dyn Fn(VarId) -> String, s: &mut String, prec: u8) {
+        // Shared sub-expressions render once per use, so a deep DAG can be exponentially
+        // long as text: stop at a fixed length.
+        const MAX_RENDER: usize = 20_000;
+        if s.len() > MAX_RENDER {
+            if !s.ends_with('…') {
+                s.push('…');
+            }
+            return;
+        }
         let paren = |s: &mut String, p: u8, f: &mut dyn FnMut(&mut String)| {
             if p < prec {
                 s.push('(');
@@ -1332,6 +1451,19 @@ impl Arena {
             Node::InterpDer(t, c, x) => {
                 let _ = write!(s, "interpolateSlope(table{t}, {c}, ");
                 self.render_into(x, name, s, 0);
+                s.push(')');
+            }
+            Node::Local(k) => {
+                let _ = write!(s, "$local{k}");
+            }
+            Node::Call(c, out) | Node::CallD(c, out) => {
+                let _ = write!(s, "$loop{}[{}](", self.calls[c as usize].prog, out);
+                for (i, &a) in self.calls[c as usize].args.iter().enumerate() {
+                    if i > 0 {
+                        s.push_str(", ");
+                    }
+                    self.render_into(a, name, s, 0);
+                }
                 s.push(')');
             }
             Node::Delay(k, d) => {
