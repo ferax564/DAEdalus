@@ -48,8 +48,10 @@ const TI33: f64 = -0.596_039_204_828_224_924_97;
 
 /// Newton iterations per step.
 const NIT: usize = 7;
-/// Contraction rate below which the Jacobian is reused.
-const THET: f64 = 0.001;
+/// Contraction rate below which the Jacobian is reused (RADAU5 suggests 0.001 for
+/// cheap Jacobians and 0.1 for costly ones; a Jacobian here costs one tape pass per
+/// color group).
+const THET: f64 = 0.01;
 const SAFE: f64 = 0.9;
 /// Step size ratio bounds: `h_new` in `[h / FACL, h * 8]`.
 const FACL: f64 = 5.0;

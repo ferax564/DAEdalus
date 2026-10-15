@@ -7,6 +7,7 @@ import { TextView } from "./editor";
 import { PlotWindow, displayUnit, interp } from "./plot";
 import { bundledLibrary, readPicked } from "./library";
 import { drawIcon, newCtx, SVG_NS, systemExtent, IDENTITY, el } from "./graphics";
+import { decorateMethodSelect, showRecommendation } from "./solver-hint";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -345,11 +346,12 @@ async function simulate() {
     if (s.stats) {
       const st = s.stats;
       log(
-        `${name}: ${st.states} states, ${st.solver.steps} steps (${st.solver.rejected} rejected), ${st.events} events; ` +
+        `${name}: ${st.states} states, ${st.method ? `${st.method}, ` : ""}${st.solver.steps} steps (${st.solver.rejected} rejected), ${st.events} events; ` +
           `${s.load_ms ? `parse library ${s.load_ms.toFixed(0)} ms, ` : ""}translate ${s.translate_ms.toFixed(0)} ms, simulate ${(st.init_ms + st.sim_ms).toFixed(0)} ms, total ${(performance.now() - t0).toFixed(0)} ms`,
         "ok",
       );
     }
+    showRecommendation($("solver-hint"), $("set-method") as HTMLSelectElement, s.stats, log);
     cache = { time: new Float64Array(), cols: new Map() };
     const plotted = plot.subplots.flatMap((sp) => sp.series.map((x) => x.name));
     const xNames = plot.subplots.map((sp) => sp.xName).filter((x): x is string => !!x);
@@ -373,6 +375,7 @@ async function simulate() {
 }
 
 $("btn-sim").onclick = () => simulate();
+decorateMethodSelect($("set-method") as HTMLSelectElement);
 window.addEventListener("keydown", (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
     e.preventDefault();
