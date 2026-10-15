@@ -1,0 +1,28 @@
+// A Dymola-style regression script.
+Advanced.Define.DAEsolver = true;
+OutputCPUtime := true;
+openModel("Plant.mo");
+checkModel("Plant.FirstOrder");
+translateModel("Plant.FirstOrder(k=4)");
+experimentSetupOutput(events=false);
+ok := simulateModel("Plant.FirstOrder(k=4)", stopTime=5, numberOfIntervals=100,
+  method="Dassl", tolerance=1e-8, resultFile="FirstOrder_k4");
+if not ok then
+  print("simulation failed");
+  exit(2);
+end if;
+simulateModel("Plant.FirstOrder", 0, 2, 0, 0.5, "dopri5", 1e-6, 0, "out/FirstOrder");
+// parameter sweep with simulateExtendedModel
+for T in {0.5, 1.0} loop
+  (ok, finals) := simulateExtendedModel("Plant.FirstOrder", stopTime=20,
+    initialNames={"T"}, initialValues={T}, finalNames={"y", "x"}, resultFile="sweep");
+  print("T = " + String(T) + ": y(20) = " + String(finals[1]));
+end for;
+finals
+linearizeModel("Plant.Pendulum", resultFile="pendulum_lin");
+linearizeModel("Plant.Pendulum", resultFile="pendulum_lin.json");
+plot({"y"});
+s := steadyState("Plant.FirstOrder(k=4)");
+s.x
+t := trim("Plant.Pendulum", {"tau"}, {"xPos"}, {0.4});
+t.tau

@@ -1,0 +1,6 @@
+loadModel(Modelica, {"4.1.0"});
+loadModel(Modelica);
+simulateModel("Modelica.Blocks.Examples.Lag", stopTime=1, resultFile="lag");
+loadModel(Modelica, {"3.2.3"});
+exit(0);
+print("not reached");

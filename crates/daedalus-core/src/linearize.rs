@@ -271,6 +271,40 @@ impl Linearization {
         s
     }
 
+    /// Write Dymola's `dslin.mat` layout (MATLAB v4): `Aclass` = `Alinear`, `nx`, the
+    /// state, input and output names in `xuyName`, and `ABCD = [A B; C D]`.
+    pub fn write_dslin(&self, out: &mut dyn std::io::Write) -> std::io::Result<()> {
+        use crate::results::{write_header, write_text};
+        let (n, nu, ny) = (self.states.len(), self.inputs.len(), self.outputs.len());
+        write_text(out, "Aclass", &["Alinear", "1.1", ""], false)?;
+        write_header(out, 0, 1, 1, "nx")?;
+        out.write_all(&(n as f64).to_le_bytes())?;
+        let names: Vec<&str> = self
+            .states
+            .iter()
+            .chain(&self.inputs)
+            .chain(&self.outputs)
+            .map(|s| s.as_str())
+            .collect();
+        write_text(out, "xuyName", &names, false)?;
+        let rows = n + ny;
+        let cols = n + nu;
+        write_header(out, 0, rows as i32, cols as i32, "ABCD")?;
+        // column-major
+        for j in 0..cols {
+            for i in 0..rows {
+                let v = match (i < n, j < n) {
+                    (true, true) => self.a[i][j],
+                    (true, false) => self.b[i][j - n],
+                    (false, true) => self.c[i - n][j],
+                    (false, false) => self.d[i - n][j - n],
+                };
+                out.write_all(&v.to_le_bytes())?;
+            }
+        }
+        Ok(())
+    }
+
     /// The model in the layout of OpenModelica's `linearize` (`model linearized_model`
     /// with parameters `A, B, C, D, x0, u0`), written in affine form around the
     /// linearization point so that it reproduces it: `der(x) = A*(x - x0) + B*(u - u0)

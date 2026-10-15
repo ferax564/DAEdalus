@@ -1,0 +1,11 @@
+// An OpenModelica-style script.
+loadFile("Plant.mo"); getErrorString();
+res := simulate(Plant.FirstOrder, startTime=0, stopTime=4, numberOfIntervals=400,
+  tolerance=1e-8, method="dassl", fileNamePrefix="fo", simflags="-lv LOG_STATS");
+res.resultFile
+val(y, 4.0)
+val("y", 4.0)
+simulate(Plant.FirstOrder, stopTime=1, outputFormat="csv");
+linearize(Plant.Pendulum, stopTime=0);
+simulate(Plant.NoSuchModel);
+getErrorString();
