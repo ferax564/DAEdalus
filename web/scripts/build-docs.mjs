@@ -28,9 +28,11 @@ const NAV = [
   ["Using DAEdalus", [
     ["workbench.md", "Workbench"],
     ["animation.md", "3-D animation"],
+    ["experiments.md", "Experiments and sweeps"],
     ["cli.md", "Command line"],
     ["scripting.md", "Scripts (.mos) and steady states"],
     ["python.md", "Python API"],
+    ["assistant.md", "AI assistant and MCP"],
   ]],
   ["Models", [
     ["examples.md", "Example library"],
@@ -38,6 +40,10 @@ const NAV = [
     ["msl.md", "Modelica Standard Library"],
   ]],
   ["Analysis and export", [
+    ["structure.md", "Structure and state selection"],
+    ["solvers.md", "Solvers"],
+    ["performance.md", "Performance analyzer"],
+    ["analysis.md", "Sensitivity and calibration"],
     ["linearize.md", "Linearization"],
     ["fmi.md", "FMI 2.0 export"],
     ["optimal-control.md", "Optimal control, MPC, MHE"],
