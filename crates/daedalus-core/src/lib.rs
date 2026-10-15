@@ -12,6 +12,10 @@ pub mod linearize;
 pub mod results;
 pub mod sim;
 pub mod solver;
+pub mod solver_auto;
+pub mod solver_esdirk;
+pub mod solver_jac;
+pub mod solver_radau;
 pub mod sparse;
 
 /// Flatten, analyse and compile `model` from `lib` into an executable model.

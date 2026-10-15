@@ -7,6 +7,10 @@ use crate::expr::VarId;
 use crate::flat::VarKind;
 use crate::results::{ResultKind, ResultVar, Results};
 use crate::solver::{Bdf, Dopri5, FixedMethod, FixedStep, Integrator, SolverStats};
+use crate::solver_auto::AutoSwitch;
+use crate::solver_esdirk::Esdirk;
+pub use crate::solver_jac::JacobianMode;
+use crate::solver_radau::Radau5;
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
 
@@ -18,17 +22,42 @@ pub enum Method {
     Dopri5,
     Rk4,
     Euler,
+    /// Radau IIA order 5 (stiff, L-stable, one-step).
+    Radau,
+    /// ESDIRK4(3)6L[2]SA (stiff, L-stable, one-step).
+    Esdirk,
+    /// Dopri5 with automatic switching to BDF when the problem turns stiff, and back.
+    Auto,
 }
 
 impl Method {
+    /// A DAEdalus method name, or the closest one to a Dymola `__Dymola_Algorithm`.
     pub fn parse(s: &str) -> Option<Method> {
-        Some(match s.to_ascii_lowercase().as_str() {
-            "bdf" | "dassl" | "ida" | "cvode" | "lsodar" | "radau" | "esdirk45a" => Method::Bdf,
-            "dopri5" | "dopri45" | "dopri" | "rkfix" | "rk45" => Method::Dopri5,
-            "rk4" | "rkfix4" => Method::Rk4,
-            "euler" => Method::Euler,
+        let s = s.trim().to_ascii_lowercase();
+        Some(match s.as_str() {
+            "bdf" | "dassl" | "ida" | "cvode" | "lsode" | "dlsode" => Method::Bdf,
+            "auto" | "lsodar" | "lsoda" => Method::Auto,
+            "radau" | "radau5" | "radauiia" | "radau iia" | "radau2a" => Method::Radau,
+            "dopri5" | "dopri45" | "dopri853" | "dopri" | "rk45" | "cerk23" | "cerk34"
+            | "cerk45" => Method::Dopri5,
+            "rk4" | "rkfix4" | "rkfix3" | "rkfix2" | "rkfix" => Method::Rk4,
+            "euler" | "expliciteuler" => Method::Euler,
+            _ if s.starts_with("esdirk") || s.starts_with("sdirk") || s == "dirk" => Method::Esdirk,
             _ => return None,
         })
+    }
+
+    /// Lower-case name as `--method` takes it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Method::Bdf => "bdf",
+            Method::Dopri5 => "dopri5",
+            Method::Rk4 => "rk4",
+            Method::Euler => "euler",
+            Method::Radau => "radau",
+            Method::Esdirk => "esdirk",
+            Method::Auto => "auto",
+        }
     }
 }
 
@@ -56,6 +85,9 @@ pub struct SimOptions {
     /// Abort after this many seconds of wall-clock time (0 = no limit).
     #[serde(default)]
     pub max_wall_time: f64,
+    /// State Jacobian of the implicit methods: exact (tape tangents) or differences.
+    #[serde(default)]
+    pub jacobian: JacobianMode,
 }
 
 impl Default for SimOptions {
@@ -73,6 +105,7 @@ impl Default for SimOptions {
             max_event_rows: 0,
             params: Vec::new(),
             max_wall_time: 0.0,
+            jacobian: JacobianMode::Exact,
         }
     }
 }
@@ -115,6 +148,8 @@ pub struct SimStats {
     pub jacobian_colors: usize,
     pub init_ms: f64,
     pub sim_ms: f64,
+    /// The integration method used (`--method` name).
+    pub method: String,
 }
 
 /// Columns stored in the result: all time-varying, non-hidden variables.
@@ -747,11 +782,27 @@ impl<'m> Simulation<'m> {
         }
         let rtol = o.tolerance;
         let atol = o.tolerance;
+        self.stats.method = o.method.name().to_string();
         let solver: Box<dyn Integrator> = match o.method {
             Method::Bdf => {
-                let b = Bdf::new(n, rtol, atol, max_step, &m.jac_pattern);
+                let b = Bdf::new(n, rtol, atol, max_step, &m.jac_pattern).with_jacobian(o.jacobian);
                 self.stats.jacobian_colors = b.n_colors();
                 Box::new(b)
+            }
+            Method::Radau => {
+                let r = Radau5::new(n, rtol, atol, max_step, &m.jac_pattern, o.jacobian);
+                self.stats.jacobian_colors = r.n_colors();
+                Box::new(r)
+            }
+            Method::Esdirk => {
+                let e = Esdirk::new(n, rtol, atol, max_step, &m.jac_pattern, o.jacobian);
+                self.stats.jacobian_colors = e.n_colors();
+                Box::new(e)
+            }
+            Method::Auto => {
+                let b = Bdf::new(n, rtol, atol, max_step, &m.jac_pattern).with_jacobian(o.jacobian);
+                self.stats.jacobian_colors = b.n_colors();
+                Box::new(AutoSwitch::new(Dopri5::new(n, rtol, atol, max_step), b))
             }
             Method::Dopri5 => Box::new(Dopri5::new(n, rtol, atol, max_step)),
             Method::Rk4 => Box::new(FixedStep::new(
@@ -896,6 +947,7 @@ impl<'m> Simulation<'m> {
                 t_lim
             };
             let tn = st.solver.step(&mut self.rt, t_lim)?;
+            self.log.extend(st.solver.take_log());
             let tp = st.solver.t_prev();
             self.rt.error = None;
             // Event detection at the end of the step.
