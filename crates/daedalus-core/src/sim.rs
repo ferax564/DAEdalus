@@ -404,8 +404,17 @@ impl<'m> Simulation<'m> {
                     .filter(|&&d| self.rt.r[d as usize] != self.rt.r[m.layout.pre0 + d as usize])
                     .map(|&d| format!("{}={}", m.vars[d as usize].name, self.rt.r[d as usize]))
                     .collect();
+                let rels: String = (0..m.layout.n_rel)
+                    .map(|i| {
+                        if self.rt.r[m.layout.rel0 + i] != 0.0 {
+                            '1'
+                        } else {
+                            '0'
+                        }
+                    })
+                    .collect();
                 eprintln!(
-                    "t={} fired={fired} rel={rel_changed} {}",
+                    "t={} fired={fired} rel={rel_changed} [{rels}] {}",
                     self.rt.time(),
                     ch.join(" ")
                 );

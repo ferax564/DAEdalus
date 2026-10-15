@@ -5733,6 +5733,8 @@ impl<'a, 't> Flattener<'a, 't> {
             _ => v.clone(),
         };
         let mut out = Vec::with_capacity(n);
+        // Record results (Complex): an array of records is stored field by field.
+        let mut rec_fields: Vec<(String, Vec<ExprId>)> = Vec::new();
         for k in 0..n {
             let a: Vec<Val> = argv
                 .iter()
@@ -5749,9 +5751,34 @@ impl<'a, 't> Flattener<'a, 't> {
                 .into_iter()
                 .next()
                 .ok_or_else(|| anyhow!("vectorized call of a function without outputs"))?;
-            // record or array results are left to the general call path
-            let Val::S(x) = first else { return Ok(None) };
-            out.push(x);
+            match first {
+                Val::S(x) if rec_fields.is_empty() => out.push(x),
+                Val::Rec(fs) if out.is_empty() => {
+                    if k == 0 {
+                        rec_fields = fs.iter().map(|(f, _)| (f.clone(), Vec::new())).collect();
+                    }
+                    if fs.len() != rec_fields.len() {
+                        return Ok(None);
+                    }
+                    for ((f, v), (g, col)) in fs.iter().zip(rec_fields.iter_mut()) {
+                        let Val::S(x) = v else { return Ok(None) };
+                        if f != g {
+                            return Ok(None);
+                        }
+                        col.push(*x);
+                    }
+                }
+                // array results are left to the general call path
+                _ => return Ok(None),
+            }
+        }
+        if !rec_fields.is_empty() {
+            return Ok(Some(Val::Rec(
+                rec_fields
+                    .into_iter()
+                    .map(|(f, col)| (f, Val::A(dims.clone(), col)))
+                    .collect(),
+            )));
         }
         Ok(Some(Val::A(dims, out)))
     }
