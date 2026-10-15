@@ -1,0 +1,58 @@
+# DAEdalus
+
+<p class="hero">An open (Apache-2.0) Modelica modeling and simulation environment. One Rust compiler
+and solver runs on the command line, on a server and in a browser tab, with a Dymola-style
+workbench, the Modelica Standard Library 4.1.0, 3-D animation, FMI export and CasADi
+optimal control.</p>
+
+<div class="cta">
+  <a class="btn primary" href="/#Daedalus.Examples.TorqueConverter.Launch">Open the workbench</a>
+  <a class="btn" href="getting-started.md">Get started</a>
+  <a class="btn" href="whats-new.md">What's new</a>
+</div>
+
+![The workbench after simulating TorqueConverter.Launch: two cars launch side by side, one with a static K-factor converter and one with fluid torque build-up](img/examples/tc_launch_anim.webp)
+
+The workbench runs entirely in the browser: the compiler and solvers are compiled to
+WebAssembly and run in a Web Worker, so nothing is installed and nothing is sent to a
+server. Pick a model in the package browser, press **Simulate**, then plot any variable or
+watch the 3-D animation.
+
+## Features
+
+<div class="cards">
+  <a class="card" href="workbench.md"><img src="img/wb/card.webp" alt=""><b>Browser workbench</b><span>Package browser, icon, diagram, text and documentation views, variable browser, plots with display units.</span></a>
+  <a class="card" href="animation.md"><img src="img/multibody/sevenpost_rig.webp" alt=""><b>3-D animation <span class="new">New</span></b><span>Replays MultiBody results and every example in 3-D, with camera presets, chase cameras and video recording.</span></a>
+  <a class="card" href="multibody.md"><img src="img/multibody/kc_rig.webp" alt=""><b>Multibody vehicles <span class="new">New</span></b><span>Double wishbone, pushrod, multilink and MacPherson corners, K&amp;C and seven-post rigs, a full car.</span></a>
+  <a class="card" href="msl.md"><img src="img/msl/card.webp" alt=""><b>Modelica Standard Library <span class="new">New</span></b><span>MSL 4.1.0 loads in the browser out of the box; 441 of its 534 examples simulate.</span></a>
+  <a class="card" href="examples.md"><img src="img/examples/card.webp" alt=""><b>Example library</b><span>Torque converters, landing gear, aileron actuator, hydraulic quarter car and EV efficiency, rebuilt from engineering blog posts.</span></a>
+  <a class="card" href="linearize.md"><img src="img/linearize_bode.png" alt=""><b>Linearization <span class="new">New</span></b><span>Exact A, B, C, D matrices at any time, as text, JSON or an OpenModelica-style <code>linearized_model</code>.</span></a>
+  <a class="card" href="fmi.md"><img src="img/fmu_stalltest.png" alt=""><b>FMI 2.0 export <span class="new">New</span></b><span>Model Exchange and Co-Simulation in one FMU, validated with FMPy in CI.</span></a>
+  <a class="card" href="optimal-control.md"><img src="img/ocp_aileron.png" alt=""><b>Optimal control <span class="new">New</span></b><span>Minimum-time moves, MPC and moving horizon estimation with CasADi, straight from Modelica models.</span></a>
+</div>
+
+## Under the hood
+
+DAEdalus does the symbolic work the commercial tools do before any numerics:
+
+- alias elimination, Pantelides index reduction with dummy derivatives, BLT sorting and
+  tearing, and exact symbolic Jacobians;
+- a compiled register tape that evaluates the model, natively or in WebAssembly;
+- variable-order BDF with dense or sparse LU, plus Dopri5, RK4 and Euler, with
+  zero-crossing events, `when` and `reinit`;
+- results as Dymola-format `.mat` files (readable by Dymola, OMEdit and DyMat) or CSV.
+
+It scales close to linearly: a chain of 10,000 masses (130,000 unknowns after alias
+elimination) translates in 2.5 s and simulates for one second in 3.9 s. See
+[Architecture](architecture.md) for how each stage works.
+
+## Where to go next
+
+- [Getting started](getting-started.md): use the live workbench, install a release, or
+  build from source.
+- [What's new](whats-new.md): the features added most recently.
+- [Example library](examples.md): every bundled example, with its results.
+- [Command line](cli.md): every `daedalus` command and option.
+
+> DAEdalus is under active development. Modelica is a registered trademark of the
+> Modelica Association; DAEdalus is not affiliated with or endorsed by it.

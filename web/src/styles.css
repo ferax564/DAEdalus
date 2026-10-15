@@ -93,6 +93,8 @@ input[type="number"] { width: 72px; }
 .sep { width: 1px; height: 20px; background: var(--line); }
 label.file { position: relative; overflow: hidden; border: 1px dashed var(--line); border-radius: 6px; padding: 3px 8px; cursor: pointer; color: var(--fg); }
 label.file input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+#docs-link { color: var(--fg); text-decoration: none; border: 1px solid var(--line); border-radius: 6px; padding: 3px 8px; }
+#docs-link:hover { border-color: var(--accent); color: var(--accent); }
 #app { display: grid; grid-template-columns: 280px minmax(0, 1fr) 280px; min-height: 0; min-width: 0; }
 .pane { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; margin: 6px; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
 #left, #right, #center { display: flex; flex-direction: column; min-height: 0; }
