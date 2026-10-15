@@ -32,7 +32,30 @@ All compilation runs in a Web Worker.
 > Status: under active development. See [docs/architecture.md](docs/architecture.md),
 > [docs/examples.md](docs/examples.md) and [docs/roadmap.md](docs/roadmap.md).
 
+## Install
+
+Prebuilt binaries for Linux (x86_64), macOS (Apple Silicon and Intel) and
+Windows (x86_64) are attached to each [GitHub Release](https://github.com/ferax564/DAEdalus/releases).
+Each archive holds the `daedalus` CLI, the FMI runtime it bundles into FMUs, and
+the `library/Daedalus` example library:
+
+```sh
+tar xzf daedalus-v0.1.0-x86_64-unknown-linux-gnu.tar.gz
+cd daedalus-v0.1.0-x86_64-unknown-linux-gnu
+./daedalus simulate library/Daedalus -m Daedalus.Examples.LandingGear.SinkRates -o sink.mat
+```
+
+On macOS, clear the download quarantine first with
+`xattr -dr com.apple.quarantine <folder>`, since the binaries are not notarized.
+The release also carries the `daedalus-casadi` Python wheel
+(`pip install daedalus_casadi-*.whl`). It drives the CLI, so put the extracted
+folder on `PATH` (or set `DAEDALUS_BIN` to the executable); it then finds the
+`library/Daedalus` shipped next to it, or `DAEDALUS_LIB` if set. Maintainers cut a release by pushing a
+tag that matches the workspace version, for example `git tag v0.1.0 && git push origin v0.1.0`.
+
 ## Quick start
+
+From source:
 
 ```sh
 cargo build --release
