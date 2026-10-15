@@ -10,6 +10,8 @@ use daedalus_core::sim::{SimOptions, simulate, simulate_profiled};
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
+mod analysis;
+
 #[wasm_bindgen]
 extern "C" {
     #[wasm_bindgen(js_namespace = performance, js_name = now)]
@@ -41,6 +43,8 @@ pub struct Workspace {
     compiled: Option<(String, daedalus_core::codegen::Model)>,
     /// Performance profile of the last simulation (JSON), when it was asked for.
     profile: Option<String>,
+    /// The running analysis (see `analysis.rs`).
+    job: Option<Box<dyn daedalus_core::uq::Job>>,
 }
 
 fn to_json<T: Serialize>(v: &T) -> String {

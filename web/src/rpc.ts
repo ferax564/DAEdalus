@@ -8,7 +8,14 @@ const pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Err
 /** Called with the progress of a library bundle being loaded. */
 let onProgress: ((p: BundleProgress) => void) | null = null;
 
+/** Called with the progress of a running analysis. */
+let onAnalysis: ((p: { done: number; total: number }) => void) | null = null;
+
 worker.onmessage = (ev) => {
+  if (ev.data.analysis) {
+    onAnalysis?.(ev.data.analysis);
+    return;
+  }
   if (ev.data.progress) {
     onProgress?.(ev.data.progress as BundleProgress);
     return;
@@ -75,6 +82,13 @@ export const api = {
   duplicateClass: (path: string, uri: string, pkg: string) => call<EditReply>("duplicateClass", path, uri, pkg),
   newModel: (uri: string, pkg: string, name: string) => call<EditReply>("newModel", uri, pkg, name),
   parameters: (path: string) => call<ParamInfo[]>("parameters", path),
+  /** Run an analysis (sensitivity | gsa | calibrate | optimize) in steps; resolves to its
+   * JSON result, or `{cancelled: true}` after `analysisCancel`. */
+  analysisRun: <T>(model: string, kind: string, spec: unknown, settings: SimSettings, progress?: (p: { done: number; total: number }) => void) => {
+    onAnalysis = progress ?? null;
+    return call<T | { cancelled: true }>("analysisRun", model, kind, spec, settings);
+  },
+  analysisCancel: () => call<void>("analysisCancel"),
 };
 
 export interface EditReply {

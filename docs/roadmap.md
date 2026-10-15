@@ -49,6 +49,12 @@
 - State selection without editing the model: `--state NAME=prefer|avoid|...`
   (globs allowed) on every command, and pin/forbid in the Structure view,
   with "copy as modifier".
+- Analysis (`sensitivity`, `montecarlo` / `gsa`, `calibrate`, `optimize`, and
+  the workbench's Analysis mode):
+  - exact forward sensitivities (tape tangents) or central differences;
+  - Monte Carlo bands, Sobol and Morris indices;
+  - Levenberg–Marquardt calibration against CSV data;
+  - Nelder–Mead design optimization (see the README).
 - Browser workbench:
   - package browser;
   - icon, diagram and text views;

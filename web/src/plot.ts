@@ -13,8 +13,12 @@ export interface Series {
   displayUnit?: string;
   /** Overlay from a stored run (experiments.ts): kept as is when a new result arrives. */
   run?: string;
-  /** Draw the samples as dots instead of a line. */
+  /** Filled band drawn behind the line (e.g. the 5–95 % range of a Monte Carlo run). */
+  band?: { lo: Float64Array; hi: Float64Array };
+  /** Draw markers at the points instead of a line (measured data). */
   points?: boolean;
+  /** Line dash pattern. */
+  dash?: number[];
 }
 
 export interface Subplot {
@@ -311,6 +315,14 @@ export class PlotWindow {
           if (v < ylo) ylo = v;
           if (v > yhi) yhi = v;
         }
+        if (s.band) {
+          for (let i = 0; i < s.band.lo.length; i++) {
+            const x = s.x[i];
+            if (x < xr[0] || x > xr[1]) continue;
+            ylo = Math.min(ylo, s.band.lo[i] * sc + of);
+            yhi = Math.max(yhi, s.band.hi[i] * sc + of);
+          }
+        }
       }
       if (!(ylo <= yhi)) {
         ylo = 0;
@@ -364,10 +376,18 @@ export class PlotWindow {
       g.rect(left, top, width, height);
       g.clip();
       for (const s of sp.series) {
+        if (s.band) this.drawBand(g, s, X, Y);
         g.strokeStyle = s.color;
         g.fillStyle = s.color;
         g.lineWidth = 1.5;
-        this.drawSeries(g, s, xr, X, sp.logY ? (y: number) => Y(ty(y)) : Y, !!sp.xName);
+        const Yt = sp.logY ? (y: number) => Y(ty(y)) : Y;
+        if (s.points) {
+          this.drawPoints(g, s, X, Yt);
+          continue;
+        }
+        if (s.dash) g.setLineDash(s.dash);
+        this.drawSeries(g, s, xr, X, Yt, !!sp.xName);
+        g.setLineDash([]);
       }
       if (!sp.xName) {
         for (const m of this.markers) {
@@ -444,6 +464,38 @@ export class PlotWindow {
     if (!(lo < hi)) return [lo - 1, hi + 1];
     const p = (hi - lo) * 0.03;
     return [lo - p, hi + p];
+  }
+
+  private drawBand(g: CanvasRenderingContext2D, s: Series, X: (x: number) => number, Y: (y: number) => number) {
+    const b = s.band!;
+    const sc = s.scale ?? 1;
+    const of = s.offset ?? 0;
+    const n = Math.min(s.x.length, b.lo.length, b.hi.length);
+    if (n === 0) return;
+    g.beginPath();
+    for (let i = 0; i < n; i++) {
+      const px = X(s.x[i]);
+      const py = Y(b.hi[i] * sc + of);
+      if (i === 0) g.moveTo(px, py);
+      else g.lineTo(px, py);
+    }
+    for (let i = n - 1; i >= 0; i--) g.lineTo(X(s.x[i]), Y(b.lo[i] * sc + of));
+    g.closePath();
+    g.globalAlpha = 0.18;
+    g.fillStyle = s.color;
+    g.fill();
+    g.globalAlpha = 1;
+  }
+
+  private drawPoints(g: CanvasRenderingContext2D, s: Series, X: (x: number) => number, Y: (y: number) => number) {
+    const sc = s.scale ?? 1;
+    const of = s.offset ?? 0;
+    g.fillStyle = s.color;
+    for (let i = 0; i < s.x.length; i++) {
+      g.beginPath();
+      g.arc(X(s.x[i]), Y(s.y[i] * sc + of), 2.5, 0, 2 * Math.PI);
+      g.fill();
+    }
   }
 
   private drawSeries(g: CanvasRenderingContext2D, s: Series, xr: [number, number], X: (x: number) => number, Y: (y: number) => number, parametric: boolean) {
@@ -527,4 +579,138 @@ export function interp(x: Float64Array, y: Float64Array, t: number): number {
   }
   const d = x[hi] - x[lo];
   return d > 0 ? y[lo] + ((y[hi] - y[lo]) * (t - x[lo])) / d : y[hi];
+}
+
+/** One row of a bar chart: a label and one value per legend entry. */
+export interface BarRow {
+  label: string;
+  values: number[];
+  /** Optional half-widths of error bars, per value. */
+  errors?: (number | null)[];
+}
+
+/** Horizontal grouped bar chart (rankings, Sobol indices, Morris effects). */
+export class BarChart {
+  readonly canvas: HTMLCanvasElement;
+  title = "";
+  legend: string[] = [];
+  rows: BarRow[] = [];
+
+  constructor(private host: HTMLElement) {
+    this.canvas = document.createElement("canvas");
+    this.canvas.className = "plot";
+    host.appendChild(this.canvas);
+    new ResizeObserver(() => this.draw()).observe(host);
+  }
+
+  set(title: string, legend: string[], rows: BarRow[]) {
+    this.title = title;
+    this.legend = legend;
+    this.rows = rows;
+    this.draw();
+  }
+
+  draw() {
+    const dpr = window.devicePixelRatio || 1;
+    const W = this.host.clientWidth;
+    const H = this.host.clientHeight;
+    if (W === 0 || H === 0) return;
+    this.canvas.width = W * dpr;
+    this.canvas.height = H * dpr;
+    this.canvas.style.width = `${W}px`;
+    this.canvas.style.height = `${H}px`;
+    const g = this.canvas.getContext("2d")!;
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const css = getComputedStyle(this.host);
+    const fg = css.getPropertyValue("--fg").trim() || "#222";
+    const muted = css.getPropertyValue("--muted").trim() || "#888";
+    const grid = css.getPropertyValue("--grid").trim() || "#e6e6e6";
+    g.clearRect(0, 0, W, H);
+    g.font = "11px system-ui, sans-serif";
+    if (!this.rows.length) {
+      g.fillStyle = muted;
+      g.textAlign = "center";
+      g.fillText(this.title || "No data", W / 2, H / 2);
+      return;
+    }
+    const labelW = Math.min(W * 0.4, Math.max(...this.rows.map((r) => g.measureText(r.label).width)) + 12);
+    const left = labelW + 4;
+    const right = W - 16;
+    const top = 40;
+    const bottom = H - 24;
+    let lo = 0;
+    let hi = 0;
+    for (const r of this.rows)
+      r.values.forEach((v, i) => {
+        if (!isFinite(v)) return;
+        const e = r.errors?.[i] ?? 0;
+        lo = Math.min(lo, v - (e ?? 0));
+        hi = Math.max(hi, v + (e ?? 0));
+      });
+    if (!(hi > lo)) hi = lo + 1;
+    const X = (v: number) => left + ((v - lo) / (hi - lo)) * (right - left);
+    // title and legend
+    g.fillStyle = fg;
+    g.textAlign = "left";
+    g.textBaseline = "alphabetic";
+    g.font = "600 12px system-ui, sans-serif";
+    g.fillText(this.title, 8, 16);
+    g.font = "11px system-ui, sans-serif";
+    let lx = 8;
+    this.legend.forEach((name, i) => {
+      g.fillStyle = PALETTE[i % PALETTE.length];
+      g.fillRect(lx, 25, 12, 8);
+      g.fillStyle = fg;
+      g.fillText(name, lx + 16, 33);
+      lx += g.measureText(name).width + 34;
+    });
+    // grid
+    g.strokeStyle = grid;
+    g.fillStyle = muted;
+    g.textAlign = "center";
+    g.textBaseline = "top";
+    for (const t of niceTicks(lo, hi, Math.max(2, Math.floor((right - left) / 80)))) {
+      const x = Math.round(X(t)) + 0.5;
+      g.beginPath();
+      g.moveTo(x, top);
+      g.lineTo(x, bottom);
+      g.stroke();
+      g.fillText(fmtTick(t), x, bottom + 4);
+    }
+    const rowH = (bottom - top) / this.rows.length;
+    const k = Math.max(1, this.legend.length);
+    const barH = Math.min(18, (rowH * 0.8) / k);
+    this.rows.forEach((r, ri) => {
+      const y0 = top + ri * rowH + (rowH - barH * k) / 2;
+      g.fillStyle = fg;
+      g.textAlign = "right";
+      g.textBaseline = "middle";
+      g.fillText(r.label, labelW, top + ri * rowH + rowH / 2);
+      r.values.forEach((v, i) => {
+        if (!isFinite(v)) return;
+        const y = y0 + i * barH;
+        const a = X(Math.min(0, v));
+        const b = X(Math.max(0, v));
+        g.fillStyle = PALETTE[i % PALETTE.length];
+        g.fillRect(a, y + 1, Math.max(1, b - a), barH - 2);
+        const e = r.errors?.[i];
+        if (e && isFinite(e)) {
+          g.strokeStyle = fg;
+          g.beginPath();
+          g.moveTo(X(v - e), y + barH / 2);
+          g.lineTo(X(v + e), y + barH / 2);
+          g.moveTo(X(v - e), y + 3);
+          g.lineTo(X(v - e), y + barH - 3);
+          g.moveTo(X(v + e), y + 3);
+          g.lineTo(X(v + e), y + barH - 3);
+          g.stroke();
+        }
+      });
+    });
+    g.strokeStyle = muted;
+    g.beginPath();
+    g.moveTo(Math.round(X(0)) + 0.5, top);
+    g.lineTo(Math.round(X(0)) + 0.5, bottom);
+    g.stroke();
+  }
 }

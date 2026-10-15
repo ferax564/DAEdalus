@@ -310,6 +310,79 @@ structure report and the performance profile, and open classes. Library files st
 only in that browser; requests go straight from the page to the Claude API. Other
 workbench features add their tools with `registerAssistantTool` (`web/src/assistant.ts`).
 
+## Sensitivity, uncertainty and calibration
+
+The CLI and the workbench's Analysis mode share the analyses in
+`daedalus-core`:
+- local sensitivities `dy/dp`, either exact (forward sensitivity equations with
+  tape tangents) or by central differences, with a parameter ranking;
+- Monte Carlo prediction bands, Sobol indices and Morris screening over
+  parameter distributions;
+- calibration against measured CSV data (projected Levenberg–Marquardt with
+  standard errors and a Modelica modifier of the fit);
+- design optimization of scalar quantities.
+
+```sh
+./target/release/daedalus sensitivity model.mo -m M --params k,c --outputs x
+./target/release/daedalus gsa model.mo -m M --dist k=normal:6:0.5 --dist c=0.2:0.6 --qoi 'max(x)'
+./target/release/daedalus calibrate model.mo -m M --data meas.csv --tune k=1:20 --tune c=0.05:2
+./target/release/daedalus optimize model.mo -m M --tune b=0:5 --target 'final(x)=2'
+```
+
+Only free parameters can be varied: public parameters with a literal value
+(the editable ones in the variable browser). Parameters computed from others,
+protected ones, and those evaluated at translation give an error that lists the
+free ones.
+
+- **sensitivity**: `--sens-method auto|exact|fd`.
+  - `exact` integrates `ds/dt = df/dx s + df/dp` next to the state (staggered,
+    an L-stable Radau IIA step per half output interval). `s(t0)` comes from a
+    tangent run of the initialization, and every derivative is an exact
+    forward-mode tangent of the tape, including algebraic loops. It needs a model
+    without when-clauses and `delay()`, and a run without events; it does not
+    apply jump conditions.
+  - `fd` uses two runs per parameter with a relative step of 1e-4 and the
+    tolerance tightened to at most 1e-8.
+  - `auto` uses `exact` where it applies and otherwise says why it used `fd`.
+  - The output holds the time series of `dy/dp` and `p/y dy/dp` (with |y|
+    floored at 1 % of its peak), plus a ranking by the time average of
+    |normalized sensitivity|.
+- **montecarlo / gsa**: `--dist p=lo:hi | normal:mean:std | lognormal:mean:std`
+  sets the distributions; sampling is Latin hypercube or random, seeded.
+  - Quantities: `final(x)`, `max(x)`, `min(x)`, `mean(x)`, `integral(x)` and
+    `at(x,t)`, with an optional window `max(x,t0,t1)`.
+  - `--sobol` gives first-order indices (Saltelli) and total indices (Jansen)
+    with bootstrap intervals, in N (k+2) runs.
+  - `--morris` gives mu*, mu and sigma, in r (k+1) runs.
+  - Runs are independent: natively they use all cores, and in the browser one
+    worker runs them in slices.
+- **calibrate**: the CSV holds a time column and measured columns, which are
+  fitted by name or mapped with `--map col=var`.
+  - Weights default to 1/std of each column, and `--window T0:T1` restricts the
+    fit in time.
+  - It reports the fitted values, the RMS before and after, standard errors and
+    correlations from J^T J, and the fit as a modifier such as
+    `(c = 0.55, body(m = 1.2))`.
+- **optimize**: Nelder–Mead in the bounds box. The objective sums `--minimize q`,
+  `--maximize q` and `--target q=v` (a squared error).
+- **Output**: a text summary, or JSON / CSV with `-o`.
+
+In the workbench, simulate a model, open **Analysis** and tick parameters. The
+tabs are:
+- Sensitivity: curves over time and a ranking bar chart;
+- Uncertainty: the mean with its 5–95 % band, and Sobol and Morris bar charts;
+- Calibrate: load a CSV, map its columns and set bounds; it plots measured data
+  against the model before and after the fit, with "Copy as modifier";
+- Optimize.
+
+A progress bar shows while an analysis runs, and **Cancel** stops it.
+
+Heavy dynamic optimization and estimation (optimal control, MHE, constraints)
+stay in the CasADi export below. The tests in
+`crates/daedalus-core/tests/analysis.rs` compare these analyses with analytic
+results: exponential decay, a mass-spring-damper, Ishigami Sobol indices,
+Monte Carlo moments, and parameter recovery from synthetic data.
+
 ## Performance
 
 The benchmark is `tools/gen_chain.py`: a chain of N masses and spring-dampers

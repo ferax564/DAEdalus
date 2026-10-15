@@ -154,7 +154,15 @@ fn return_and_break_under_runtime_conditions() {
 #[test]
 fn function_arguments_and_partial_application() {
     let r = run("function_args.mo", "FunctionArgs", 1.0, Method::Bdf);
-    assert!(close(r.final_value("fixedRoot").unwrap(), 2f64.sqrt(), 1e-9));
+    assert!(close(
+        r.final_value("fixedRoot").unwrap(),
+        2f64.sqrt(),
+        1e-9
+    ));
     assert!(close(r.at("movingRoot", 0.5).unwrap(), 1.5f64.sqrt(), 1e-9));
-    assert!(close(r.final_value("movingRoot").unwrap(), 2f64.sqrt(), 1e-9));
+    assert!(close(
+        r.final_value("movingRoot").unwrap(),
+        2f64.sqrt(),
+        1e-9
+    ));
 }

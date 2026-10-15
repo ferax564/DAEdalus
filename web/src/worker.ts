@@ -9,6 +9,9 @@ const ready = init().then(() => {
 
 type Req = { id: number; op: string; args: unknown[] };
 
+/** Set by an "analysisCancel" request; the running analysis checks it between steps. */
+let analysisCancelled = false;
+
 function progress(p: BundleProgress) {
   (self as unknown as Worker).postMessage({ progress: p });
 }
@@ -171,6 +174,33 @@ self.onmessage = async (ev: MessageEvent<Req>) => {
         break;
       case "parameters":
         result = JSON.parse(w.parameters(args[0] as string));
+        break;
+      case "analysisRun": {
+        // Runs in slices so progress is posted and a cancel request is seen between them.
+        const [model, kind, spec, settings] = args as [string, string, unknown, unknown];
+        analysisCancelled = false;
+        const st = JSON.parse(w.analysisStart(model, kind, JSON.stringify(spec), JSON.stringify(settings ?? {})));
+        if (!st.ok) throw new Error(st.error);
+        const post = (done: number, total: number) => (self as unknown as Worker).postMessage({ analysis: { done, total } });
+        post(st.done, st.total);
+        let cancelled = false;
+        for (;;) {
+          const r = JSON.parse(w.analysisStep(120));
+          if (r.error) throw new Error(r.error);
+          post(r.progress[0], r.progress[1]);
+          if (r.done) break;
+          await new Promise((res) => setTimeout(res, 0));
+          if (analysisCancelled) {
+            w.analysisCancel();
+            cancelled = true;
+            break;
+          }
+        }
+        result = cancelled ? { cancelled: true } : JSON.parse(w.analysisResult());
+        break;
+      }
+      case "analysisCancel":
+        analysisCancelled = true;
         break;
       default:
         throw new Error(`unknown op ${op}`);
