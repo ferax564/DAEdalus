@@ -1437,6 +1437,21 @@ impl<'a, 't> Flattener<'a, 't> {
             {
                 self.collect_dim_hints(src, &cprefix);
                 bound_src = Some(src);
+            } else if let Some(v) = &cm.value
+                && matches!(
+                    v.expr,
+                    E::Array { .. } | E::ArrayComprehension { .. } | E::If { .. }
+                )
+            {
+                // An element of a record array built from records (`{{if degraded then
+                // dataDegraded else dataOriginal for kp in 1:Np} for ks in 1:Ns}`): its
+                // fields take the sizes of the selected record, not of the declaration's
+                // default (`OCV_SOC[:,2] = [SOCmin, ..; SOCmax, 1]`).
+                match self.translate_scoped(v, &mut Ctx::default()) {
+                    Ok(Val::Inst(src)) => self.collect_dim_hints(src, &cprefix),
+                    Ok(Val::Rec(fields)) => self.rec_dim_hints(&fields, &cprefix),
+                    _ => {}
+                }
             }
             let child = self.instantiate(tc, cprefix, &cm, tenv.clone(), Some(inst))?;
             if let Some(src) = bound_src {
@@ -1669,6 +1684,21 @@ impl<'a, 't> Flattener<'a, 't> {
         }
     }
 
+    /// Record the array sizes of a record value's fields under `prefix` (see `dim_hints`).
+    fn rec_dim_hints(&mut self, fields: &[(String, Val)], prefix: &str) {
+        for (n, v) in fields {
+            let key = format!("{prefix}.{n}");
+            match v {
+                Val::A(d, _) | Val::IA(d, _) => {
+                    self.dim_hints.insert(key, d.clone());
+                }
+                Val::Rec(f) => self.rec_dim_hints(f, &key),
+                Val::Inst(i) => self.collect_dim_hints(*i, &key),
+                _ => {}
+            }
+        }
+    }
+
     /// Record the array sizes of instance `src`'s fields under `prefix` (see `dim_hints`).
     fn collect_dim_hints(&mut self, src: InstId, prefix: &str) {
         let comps: Vec<(String, Comp)> = self.insts[src as usize]
@@ -1679,7 +1709,13 @@ impl<'a, 't> Flattener<'a, 't> {
         for (n, c) in comps {
             let key = format!("{prefix}.{n}");
             match c {
-                Comp::Arr(d, _) => {
+                Comp::Arr(d, elems) => {
+                    // An array of records: each element's fields too (`cellData[Ns, Np]`).
+                    for (k, e) in elems.iter().enumerate() {
+                        if let Comp::Inst(i) = e {
+                            self.collect_dim_hints(*i, &format!("{key}[{}]", index_str(&d, k)));
+                        }
+                    }
                     self.dim_hints.insert(key, d);
                 }
                 Comp::Inst(i) => self.collect_dim_hints(i, &key),
