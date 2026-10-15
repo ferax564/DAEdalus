@@ -6,6 +6,7 @@ pub mod expr;
 pub mod flat;
 pub mod frontend;
 pub mod linalg;
+pub mod linearize;
 pub mod results;
 pub mod sim;
 pub mod solver;

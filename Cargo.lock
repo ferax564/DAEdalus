@@ -255,6 +255,7 @@ dependencies = [
  "daedalus-core",
  "rumoca-core",
  "rumoca-ir-ast",
+ "serde_json",
 ]
 
 [[package]]

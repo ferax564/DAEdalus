@@ -49,7 +49,19 @@ cargo build --release
 
 # Run every model with an experiment annotation, each in its own process
 ./target/release/daedalus test-library library/Daedalus -m Daedalus
+
+# Linear state-space model der(x) = A x + B u, y = C x + D u around the initial
+# point (or after simulating to --at T); --format text | json | mo
+./target/release/daedalus linearize model.mo -m MyModel --at 1.5 --format mo -o linearized_model.mo
 ```
+
+`linearize` takes `u` from the model's top-level Real inputs (held at their start
+values, 0 without one, while simulating to `--at`) and `y` from its top-level Real
+outputs, like Dymola's `linearizeModel` and OpenModelica's `linearize`. The
+matrices are exact: a forward-mode run of the compiled tape per state and input,
+with algebraic loops differentiated implicitly through their symbolic Jacobians
+(`--jacobian fd` uses central differences instead). `--format mo` writes the model
+`linearized_model` in the form OpenModelica writes it.
 
 Other source directories, such as the Modelica Standard Library, are loaded by
 passing them as extra sources or with `-L DIR`.

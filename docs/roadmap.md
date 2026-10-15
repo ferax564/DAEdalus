@@ -27,6 +27,10 @@
 **Tooling**
 - CLI: `check`, `flatten`, `dump`, `simulate`, and `test-library` (parallel,
   one process per model, with a time limit).
+- `linearize`: exact state-space matrices A, B, C, D (forward-mode tangents of
+  the tape, implicit differentiation of algebraic loops) at the initial point or
+  after simulating to a time; text, JSON or an OpenModelica-style
+  `linearized_model`.
 - Browser workbench:
   - package browser;
   - icon, diagram and text views;

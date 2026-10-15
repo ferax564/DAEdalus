@@ -18,6 +18,9 @@ COMMANDS:
   flatten     print the flat model
   dump        print the sorted, causalised equation system
   simulate    simulate and write results
+  linearize   linearize around the initial point (or --at T): the state-space
+              matrices A, B, C, D of der(x) = A x + B u, y = C x + D u for the
+              states x, top-level inputs u and outputs y
   test-library  translate and simulate every model with an experiment
                 annotation under --model (a package), each in its own
                 process with a time limit; prints a report
@@ -43,6 +46,11 @@ OPTIONS:
   --no-index-reduction    disable Pantelides index reduction
   --no-tearing            disable tearing
   --jobs N                parallel processes for test-library (default: cores)
+  --at T                  linearize: simulate to time T first (default: start)
+  --format F              linearize: text | json | mo (default text; mo writes
+                          model linearized_model, to linearized_model.mo
+                          unless -o is given)
+  --jacobian J            linearize: exact | fd (central differences)
   --timeout S             per-model time limit for test-library (default 60)
 ";
 
@@ -77,6 +85,9 @@ fn run() -> anyhow::Result<()> {
     let mut opts = Options::default();
     let mut jobs = std::thread::available_parallelism().map_or(1, |n| n.get());
     let mut timeout = 60.0f64;
+    let mut lin_at: Option<f64> = None;
+    let mut format = String::from("text");
+    let mut jac_method = daedalus_core::linearize::JacobianMethod::Exact;
     let mut i = 1;
     let next = |i: &mut usize| -> anyhow::Result<String> {
         *i += 1;
@@ -138,6 +149,17 @@ fn run() -> anyhow::Result<()> {
             "--no-tearing" => opts.tearing = false,
             "--jobs" => jobs = next(&mut i)?.parse::<usize>()?.max(1),
             "--timeout" => timeout = next(&mut i)?.parse()?,
+            "--at" => lin_at = Some(next(&mut i)?.parse()?),
+            "--format" => format = next(&mut i)?,
+            "--jacobian" => {
+                jac_method = match next(&mut i)?.as_str() {
+                    "exact" => daedalus_core::linearize::JacobianMethod::Exact,
+                    "fd" | "cd" | "central" => {
+                        daedalus_core::linearize::JacobianMethod::CentralDifference
+                    }
+                    j => anyhow::bail!("unknown jacobian method '{j}' (exact | fd)"),
+                }
+            }
             _ if a.starts_with('-') => anyhow::bail!("unknown option {a}\n\n{USAGE}"),
             _ => sources.push(a.to_string()),
         }
@@ -328,6 +350,47 @@ fn run() -> anyhow::Result<()> {
                         }
                     }
                 }
+            }
+            Ok(())
+        }
+        "linearize" => {
+            let m = with_all_files(&mut lib, |l| daedalus_core::translate(l, &model, &opts))?;
+            for w in &m.warnings {
+                eprintln!("warning: {w}");
+            }
+            let mut o = SimOptions::from_model(&m);
+            if set_start {
+                o.start_time = so.start_time;
+            }
+            if set_tol {
+                o.tolerance = so.tolerance;
+            }
+            if set_method {
+                o.method = so.method;
+            }
+            o.params = so.params.clone();
+            let lin = daedalus_core::linearize::linearize(&m, o, lin_at, jac_method)
+                .map_err(|e| anyhow::anyhow!(e))?;
+            let text = match format.as_str() {
+                "text" => lin.report(),
+                "json" => {
+                    let mut v = serde_json::to_value(&lin)?;
+                    v["eigenvalues"] = serde_json::to_value(lin.eigenvalues())?;
+                    serde_json::to_string_pretty(&v)? + "\n"
+                }
+                "mo" | "modelica" => lin.to_modelica(),
+                f => anyhow::bail!("unknown format '{f}' (text | json | mo)"),
+            };
+            let out = output.clone().or_else(|| {
+                matches!(format.as_str(), "mo" | "modelica")
+                    .then(|| "linearized_model.mo".to_string())
+            });
+            match out {
+                Some(path) => {
+                    std::fs::write(&path, text)?;
+                    eprintln!("wrote {path}");
+                }
+                None => print!("{text}"),
             }
             Ok(())
         }

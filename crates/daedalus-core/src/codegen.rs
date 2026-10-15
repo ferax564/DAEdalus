@@ -1853,6 +1853,66 @@ impl<'m> Runtime<'m> {
         self.get_derivs(dx);
     }
 
+    /// Forward-mode (tangent) run of `prog`: recomputes the values in `r` as [`run`]
+    /// does and propagates the directional derivatives `dr` alongside, exactly (no
+    /// differences). Algebraic loops are differentiated implicitly at their solution
+    /// (`J dtears = -dF/dseed` with the block's symbolic Jacobian `J`), so the tears in
+    /// `r` must already hold a converged solution (run `prog` first). Relations, when
+    /// conditions, `delay()` outputs and discrete values have zero tangent.
+    ///
+    /// [`run`]: Runtime::run
+    pub fn run_tangent(&mut self, prog: &[Ins], dr: &mut [f64]) {
+        let m = self.m;
+        let mut pc = 0;
+        while pc < prog.len() {
+            let ins = &prog[pc];
+            pc += 1;
+            match *ins {
+                Ins::Jz(c, k) => {
+                    if self.r[c as usize] == 0.0 {
+                        pc += k as usize;
+                    }
+                }
+                Ins::Jmp(k) => pc += k as usize,
+                Ins::Delay(d, ..) => {
+                    self.run(std::slice::from_ref(ins));
+                    dr[d as usize] = 0.0;
+                }
+                Ins::Newton(bi) => {
+                    let b = &m.newton[bi as usize];
+                    let n = b.tears.len();
+                    for &t in &b.tears {
+                        dr[t as usize] = 0.0;
+                    }
+                    // Tangent of the residuals with the tears held: -J dt = dF.
+                    self.run_tangent(&b.body, dr);
+                    let mut rhs: Vec<f64> = b.residuals.iter().map(|&s| -dr[s as usize]).collect();
+                    self.run(&b.jac);
+                    let mut jm: Vec<f64> =
+                        b.jac_slots.iter().map(|&s| self.r[s as usize]).collect();
+                    let mut piv = vec![0usize; n];
+                    if crate::linalg::lu_factor(&mut jm, n, &mut piv) {
+                        crate::linalg::lu_solve(&jm, n, &piv, &mut rhs);
+                    } else {
+                        rhs.iter_mut().for_each(|x| *x = f64::NAN);
+                    }
+                    for (k, &t) in b.tears.iter().enumerate() {
+                        dr[t as usize] = rhs[k];
+                    }
+                    // Inner variables with the tears' tangents.
+                    self.run_tangent(&b.body, dr);
+                }
+                _ => run_sub_tangent(
+                    m,
+                    &mut self.loops,
+                    std::slice::from_ref(ins),
+                    &mut self.r,
+                    dr,
+                ),
+            }
+        }
+    }
+
     /// Copy current values into `pre` slots.
     pub fn save_pre(&mut self) {
         let nv = self.m.layout.nv;

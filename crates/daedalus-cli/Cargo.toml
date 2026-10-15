@@ -11,3 +11,4 @@ daedalus-core = { path = "../daedalus-core" }
 anyhow = { workspace = true }
 rumoca-ir-ast = { workspace = true }
 rumoca-core = { workspace = true }
+serde_json = { workspace = true }
