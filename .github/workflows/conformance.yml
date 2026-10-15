@@ -1,0 +1,48 @@
+name: MSL conformance
+
+# Simulates every MSL 4.1.0 example and compares the comparison signals against the
+# Modelica Association reference results (Dymola-generated). Fails when a model
+# that passes in the committed baseline (docs/conformance/msl-4.1.0.json) no longer
+# passes. Runs nightly and on demand; it is too slow for every pull request.
+
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  msl:
+    name: MSL 4.1.0 against reference results
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build CLI
+        run: cargo build --release -p daedalus-cli
+      - name: Fetch MSL 4.1.0 and its reference results
+        run: |
+          git clone -q --depth 1 --branch v4.1.0 https://github.com/modelica/ModelicaStandardLibrary /tmp/msl
+          git clone -q --depth 1 --branch v4.1.0 --filter=blob:none --sparse \
+            https://github.com/modelica/MAP-LIB_ReferenceResults /tmp/ref
+          git -C /tmp/ref sparse-checkout set Modelica
+      - name: Compare
+        run: |
+          python3 tools/refcompare.py --daedalus target/release/daedalus \
+            --msl /tmp/msl --ref /tmp/ref --jobs 4 --timeout 120 \
+            --json conformance.json --markdown conformance.md \
+            --baseline docs/conformance/msl-4.1.0.json
+      - name: Summary
+        if: always()
+        run: test -f conformance.md && cat conformance.md >> "$GITHUB_STEP_SUMMARY" || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: conformance
+          path: |
+            conformance.json
+            conformance.md
