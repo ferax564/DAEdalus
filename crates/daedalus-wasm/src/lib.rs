@@ -47,6 +47,19 @@ pub struct Workspace {
     profile: Option<String>,
     /// The running analysis (see `analysis.rs`).
     job: Option<Box<dyn daedalus_core::uq::Job>>,
+    /// The model last translated for linear analysis (dropped when sources change).
+    lin_model: Option<(String, daedalus_core::codegen::Model)>,
+}
+
+/// Options of [`Workspace::linear_analysis`]: the linearization point and parameter
+/// overrides, plus the analysis options.
+#[derive(serde::Deserialize, Default)]
+#[serde(default)]
+struct LinearRequest {
+    at: Option<f64>,
+    params: Vec<(String, f64)>,
+    #[serde(flatten)]
+    analysis: daedalus_core::lti::LinearOptions,
 }
 
 fn to_json<T: Serialize>(v: &T) -> String {
@@ -103,6 +116,7 @@ impl Workspace {
     pub fn set_document(&mut self, uri: &str, text: &str) -> String {
         self.ensured.clear();
         self.compiled = None;
+        self.lin_model = None;
         to_json(&self.lib.set_document(uri, text))
     }
 
@@ -110,6 +124,7 @@ impl Workspace {
     pub fn remove_document(&mut self, uri: &str) {
         self.ensured.clear();
         self.compiled = None;
+        self.lin_model = None;
         self.lib.remove_document(uri);
     }
 
@@ -121,6 +136,7 @@ impl Workspace {
     pub fn add_library_file(&mut self, prefix: &str, rel: &str, text: &str) {
         self.ensured.clear();
         self.compiled = None;
+        self.lin_model = None;
         if let Some(dir) = rel.strip_suffix("package.order") {
             let class = lazy::class_for_path(&format!("{dir}package.mo"));
             self.lib.add_package_order(&class, text);
@@ -144,6 +160,7 @@ impl Workspace {
     pub fn load_all(&mut self) {
         self.ensured.clear();
         self.compiled = None;
+        self.lin_model = None;
         self.lib.load_all();
     }
 
@@ -353,6 +370,83 @@ impl Workspace {
     /// ran with `"profile": true`).
     pub fn profile(&self) -> String {
         self.profile.clone().unwrap_or_else(|| "null".into())
+    }
+
+    /// Linearize `model` (at `at`, default the start time) and analyze it: poles,
+    /// transmission zeros, Bode/Nyquist data with margins, step and impulse responses,
+    /// PID suggestions, and optionally balanced truncation and LQR. `options` is a JSON
+    /// [`LinearRequest`]. Returns `{"ok", "error"?, "analysis"?, "inputs", "outputs",
+    /// "states", "candidates", "translate_ms", "analysis_ms"}`; `candidates` are the
+    /// continuous variables that can be chosen as extra outputs.
+    #[wasm_bindgen(js_name = linearAnalysis)]
+    pub fn linear_analysis(&mut self, model: &str, options: &str) -> String {
+        let req: LinearRequest = match serde_json::from_str(options) {
+            Ok(r) => r,
+            Err(e) => {
+                return to_json(&serde_json::json!({"ok": false, "error": format!("options: {e}")}));
+            }
+        };
+        self.ensure(model, Some(true));
+        let t0 = now_ms();
+        if self.lin_model.as_ref().is_none_or(|(n, _)| n != model) {
+            match daedalus_core::translate(&self.lib, model, &Default::default()) {
+                Ok(m) => self.lin_model = Some((model.to_string(), m)),
+                Err(e) => {
+                    return to_json(&serde_json::json!({"ok": false, "error": format!("{e:#}")}));
+                }
+            }
+        }
+        let translate_ms = now_ms() - t0;
+        let m = &self.lin_model.as_ref().unwrap().1;
+        let names = |ids: &[u32]| -> Vec<String> {
+            ids.iter()
+                .map(|&v| m.vars[v as usize].name.clone())
+                .collect()
+        };
+        use daedalus_core::linearize as lz;
+        let inputs = names(&lz::real_inputs(m));
+        let outputs = names(&lz::real_outputs(m));
+        let states: Vec<String> = m
+            .states
+            .iter()
+            .map(|&s| m.vars[s as usize].name.clone())
+            .collect();
+        let mut candidates = names(&lz::output_candidates(m));
+        candidates.sort();
+        let t1 = now_ms();
+        let mut o = SimOptions::from_model(m);
+        o.params = req.params.clone();
+        let res = lz::linearize_with_outputs(
+            m,
+            o,
+            req.at,
+            lz::JacobianMethod::Exact,
+            &req.analysis.outputs,
+        )
+        .and_then(|lin| {
+            if lin.inputs.is_empty() {
+                return Err(format!(
+                    "{model} has no top-level Real inputs: linear analysis needs `input Real` variables at the top level"
+                ));
+            }
+            daedalus_core::lti::analyze(&lin, &req.analysis)
+        });
+        let analysis_ms = now_ms() - t1;
+        let (ok, error, analysis) = match res {
+            Ok(a) => (true, None, Some(a)),
+            Err(e) => (false, Some(e), None),
+        };
+        to_json(&serde_json::json!({
+            "ok": ok,
+            "error": error,
+            "analysis": analysis,
+            "inputs": inputs,
+            "outputs": outputs,
+            "states": states,
+            "candidates": candidates,
+            "translate_ms": translate_ms,
+            "analysis_ms": analysis_ms,
+        }))
     }
 
     /// Time axis of the last result.

@@ -15,6 +15,7 @@ pub mod linearize;
 pub mod modal;
 pub mod profile;
 pub mod optimize;
+pub mod lti;
 pub mod results;
 pub mod sensitivity;
 pub mod sim;

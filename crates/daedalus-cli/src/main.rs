@@ -32,6 +32,12 @@ COMMANDS:
   linearize   linearize around the initial point (or --at T): the state-space
               matrices A, B, C, D of der(x) = A x + B u, y = C x + D u for the
               states x, top-level inputs u and outputs y
+  linear-analysis  linearize (like linearize) and analyze chosen input ->
+              output pairs: poles, transmission zeros, DC gain, Bode and
+              Nyquist data with gain/phase margins, step and impulse
+              responses, PID suggestions (SIMC, Ziegler-Nichols), balanced
+              truncation (--reduce N) and LQR (--lqr Q,R); text summary on
+              stdout, data to -o file.json | file.csv
   steady      find a steady state (der(x) = 0) from the initial state, or from
               the state reached at --at-time; with --free/--target, trim: also
               solve for inputs or parameters so that variables hit targets
@@ -66,7 +72,7 @@ OPTIONS:
   --method M              bdf | radau | esdirk | auto | dopri5 | rk4 | euler
                           (default: the experiment's __Dymola_Algorithm, else
                           bdf; auto switches between dopri5 and bdf)
-  --step H                fixed step size
+  --step H                fixed step size (linear-analysis: --step is a flag)
   --store-events E        rows at events: all | none | N (default: about
                           50 million values, at least the output points)
   -p, --param NAME=VALUE  parameter override (repeatable)
@@ -82,6 +88,16 @@ OPTIONS:
   --jacobian J            linearize: exact | fd (central differences);
                           simulate: state Jacobian of bdf/radau/esdirk/auto,
                           exact (default) | fd (forward differences)
+  --inputs a,b            linear-analysis: inputs to analyze (default: all
+                          top-level Real inputs)
+  --outputs y,z           linear-analysis: outputs (default: all top-level
+                          Real outputs; any continuous variable or state)
+  --bode                  linear-analysis: write Bode/Nyquist data
+  --step                  linear-analysis: write step and impulse responses
+  --freq LO,HI            linear-analysis: frequency range in rad/s
+  --tfinal T              linear-analysis: step response horizon
+  --reduce N              linear-analysis: balanced truncation to N states
+  --lqr Q,R               linear-analysis: LQR gain for Q = q*I, R = r*I
   --at-time T             steady: simulate to time T first (default: start)
   --free a,b              steady: inputs or parameters to solve for (trim)
   --target y=v            steady: target value of a variable (repeatable or
@@ -206,6 +222,7 @@ fn run() -> anyhow::Result<()> {
     let mut targets: Vec<(String, f64)> = Vec::new();
     let mut check_units = false;
     let mut list_all = false;
+    let mut lti = daedalus_core::lti::LinearOptions::default();
     let mut i = 1;
     let next = |i: &mut usize| -> anyhow::Result<String> {
         *i += 1;
@@ -246,6 +263,8 @@ fn run() -> anyhow::Result<()> {
                 "none" => so.store_events = false,
                 n => so.max_event_rows = n.parse()?,
             },
+            // linear-analysis: a flag (write step responses); otherwise the fixed step size
+            "--step" if cmd == "linear-analysis" => lti.step = true,
             "--step" => so.fixed_step = next(&mut i)?.parse()?,
             "-p" | "--param" => {
                 let kv = next(&mut i)?;
@@ -308,6 +327,26 @@ fn run() -> anyhow::Result<()> {
             "--units" => check_units = true,
             "--json" => format = "json".into(),
             "--all" => list_all = true,
+            "--inputs" => lti.inputs = csv_list(&next(&mut i)?),
+            "--outputs" => lti.outputs = csv_list(&next(&mut i)?),
+            "--bode" => lti.bode = true,
+            "--reduce" => lti.reduce = Some(next(&mut i)?.parse()?),
+            "--tfinal" => lti.t_final = Some(next(&mut i)?.parse()?),
+            "--freq" => {
+                let v = next(&mut i)?;
+                let (lo, hi) = v
+                    .split_once(',')
+                    .ok_or_else(|| anyhow::anyhow!("expected --freq LO,HI"))?;
+                lti.w_min = Some(lo.trim().parse()?);
+                lti.w_max = Some(hi.trim().parse()?);
+            }
+            "--lqr" => {
+                let v = next(&mut i)?;
+                let (q, r) = v
+                    .split_once(',')
+                    .ok_or_else(|| anyhow::anyhow!("expected --lqr Q,R"))?;
+                lti.lqr = Some((q.trim().parse()?, r.trim().parse()?));
+            }
             "--jacobian" => {
                 let j = next(&mut i)?;
                 so.jacobian = daedalus_core::sim::JacobianMode::parse(&j)
@@ -680,6 +719,68 @@ fn run() -> anyhow::Result<()> {
                     eprintln!("wrote {path}");
                 }
                 None => print!("{text}"),
+            }
+            Ok(())
+        }
+        "linear-analysis" => {
+            let m = with_all_files(&mut lib, |l| daedalus_core::translate(l, &model, &opts))?;
+            for w in &m.warnings {
+                eprintln!("warning: {w}");
+            }
+            let mut o = SimOptions::from_model(&m);
+            if set_start {
+                o.start_time = so.start_time;
+            }
+            if set_tol {
+                o.tolerance = so.tolerance;
+            }
+            if set_method {
+                o.method = so.method;
+            }
+            o.params = so.params.clone();
+            let lin = daedalus_core::linearize::linearize_with_outputs(
+                &m,
+                o,
+                lin_at,
+                jac_method,
+                &lti.outputs,
+            )
+            .map_err(|e| anyhow::anyhow!(e))?;
+            if lin.inputs.is_empty() {
+                anyhow::bail!(
+                    "{model} has no top-level Real inputs: linear analysis needs `input Real` variables"
+                );
+            }
+            let csv = output.as_deref().is_some_and(|p| p.ends_with(".csv"));
+            let mut lo = lti.clone();
+            if output.is_some() && !lo.bode && !lo.step {
+                // a data file without --bode/--step gets both
+                lo.bode = true;
+                lo.step = true;
+            }
+            let res = daedalus_core::lti::analyze(&lin, &lo).map_err(|e| anyhow::anyhow!(e))?;
+            print!("{}", res.report());
+            if let Some(path) = &output {
+                if csv {
+                    let mut written = Vec::new();
+                    if lo.bode {
+                        std::fs::write(path, res.bode_csv())?;
+                        written.push(path.clone());
+                    }
+                    if lo.step {
+                        let p = if lo.bode {
+                            format!("{}_step.csv", path.trim_end_matches(".csv"))
+                        } else {
+                            path.clone()
+                        };
+                        std::fs::write(&p, res.step_csv())?;
+                        written.push(p);
+                    }
+                    eprintln!("wrote {}", written.join(", "));
+                } else {
+                    std::fs::write(path, serde_json::to_string_pretty(&res)? + "\n")?;
+                    eprintln!("wrote {path}");
+                }
             }
             Ok(())
         }
@@ -1160,4 +1261,11 @@ fn with_all_files<T>(
         return f(lib);
     }
     r
+}
+
+fn csv_list(s: &str) -> Vec<String> {
+    s.split(',')
+        .map(|x| x.trim().to_string())
+        .filter(|x| !x.is_empty())
+        .collect()
 }

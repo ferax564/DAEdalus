@@ -1,5 +1,5 @@
 // Promise-based calls into the simulation worker.
-import type { BundleInfo, BundleProgress, ClassEntry, ClassInfo, SimSettings, SimSummary, UnitSummary } from "./types";
+import type { BundleInfo, BundleProgress, ClassEntry, ClassInfo, LinearOptions, LinearResult, SimSettings, SimSummary, UnitSummary } from "./types";
 import type { Profile } from "./performance";
 
 const worker = new Worker(new URL("./worker.ts", import.meta.url), { type: "module" });
@@ -70,6 +70,8 @@ export const api = {
   check: (model: string) => call<{ ok: boolean; error?: string; stats?: Record<string, number>; warnings?: string[]; states?: number; units?: UnitSummary }>("check", model),
   flatten: (model: string) => call<string>("flatten", model),
   simulate: (model: string, settings: SimSettings) => call<SimSummary>("simulate", model, settings),
+  /** Linearize and analyze (poles, zeros, Bode, step, reduction, LQR). */
+  linearAnalysis: (model: string, options: LinearOptions) => call<LinearResult>("linearAnalysis", model, options),
   values: (names: string[]) => call<{ time: Float64Array; cols: Float64Array[] }>("values", names),
   resultMat: () => call<Uint8Array>("resultMat"),
   resultCsv: (names: string) => call<string>("resultCsv", names),
