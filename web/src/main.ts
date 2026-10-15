@@ -259,7 +259,32 @@ async function refreshTree() {
   renderTree();
 }
 
-async function openClass(path: string) {
+// ---------------------------------------------------------------- navigation
+// Every class opened gets its own browser history entry, so Back/Forward (browser buttons,
+// Alt+←/→, mouse side buttons, or the arrows next to the class name) walk through them.
+let navIdx = 0;
+let navLen = 1;
+function updateNav() {
+  ($("nav-back") as HTMLButtonElement).disabled = navIdx <= 0;
+  ($("nav-fwd") as HTMLButtonElement).disabled = navIdx >= navLen - 1;
+}
+$("nav-back").onclick = () => history.back();
+$("nav-fwd").onclick = () => history.forward();
+window.addEventListener("popstate", (e) => {
+  const st = e.state as { idx?: number } | null;
+  if (typeof st?.idx === "number") navIdx = st.idx;
+  else {
+    // The hash was edited by hand: that made a new entry.
+    navIdx++;
+    navLen = navIdx + 1;
+    history.replaceState({ idx: navIdx }, "");
+  }
+  updateNav();
+  const h = decodeURIComponent(location.hash.slice(1));
+  if (h && h !== current?.path) openClass(h, false);
+});
+
+async function openClass(path: string, push = true) {
   const info = await src.get(path);
   if (!info) {
     log(`class ${path} not found`, "err");
@@ -284,7 +309,15 @@ async function openClass(path: string) {
     ($("set-n") as HTMLInputElement).placeholder =
       typeof st === "number" && typeof dt === "number" && dt > 0 ? String(Math.round((st - t0) / dt)) : "auto";
   }
-  history.replaceState(null, "", `#${encodeURIComponent(path)}`);
+  const hash = `#${encodeURIComponent(path)}`;
+  if (push && location.hash !== hash) {
+    navIdx++;
+    navLen = navIdx + 1;
+    history.pushState({ idx: navIdx }, "", hash);
+  } else {
+    history.replaceState({ idx: navIdx }, "", hash);
+  }
+  updateNav();
   if (view !== "text" && view !== "doc" && view !== "flat") view = info.kind !== "connector" && info.kind !== "package" && info.components.some((c) => c.type_kind !== "type" && !c.protected) ? "diagram" : "icon";
   renderTree();
   renderVariables();
@@ -662,12 +695,14 @@ async function start() {
     log(`${hash} opens once the Modelica Standard Library is loaded…`);
     await msl;
   }
-  await openClass(hash || "Daedalus.Examples.TorqueConverter.Launch");
+  // After a reload the entries behind this one are still in the browser history.
+  const st = history.state as { idx?: number } | null;
+  if (typeof st?.idx === "number") {
+    navIdx = st.idx;
+    navLen = navIdx + 1;
+  }
+  await openClass(hash || "Daedalus.Examples.TorqueConverter.Launch", false);
   timings.interactive = performance.now();
 }
 start();
 void interp;
-window.addEventListener("hashchange", () => {
-  const h = decodeURIComponent(location.hash.slice(1));
-  if (h && h !== current?.path) openClass(h);
-});
