@@ -180,6 +180,64 @@ Assumed values:
 - a 20 l/min valve at 70 bar with a 100 Hz spool;
 - an 80 mm horn.
 
+## Multibody suspension and full vehicle
+
+`library/MultiBodyVehicle` is a separate library built on the Modelica Standard
+Library's `Modelica.Mechanics.MultiBody`. It needs MSL 4.1.0 on the source
+path:
+
+```sh
+MSL=path/to/ModelicaStandardLibrary   # git clone -b v4.1.0 https://github.com/modelica/ModelicaStandardLibrary
+./target/release/daedalus test-library $MSL/Modelica $MSL/ModelicaServices $MSL/Complex.mo \
+    library/MultiBodyVehicle -m MultiBodyVehicle
+```
+
+In the workbench, load the MSL folders and `library/MultiBodyVehicle` with
+**Library**.
+
+Components:
+- `DoubleWishbone`: a short-long-arm corner from hardpoints, with a coil-over on
+  the lower arm and a steerable upright. The loop is closed analytically by a
+  `JointRRR`, so a corner adds one state pair and no constraint equations.
+- `MacPherson`: a strut on a top-mount hinge with a lower control arm, closed by
+  a `RevolutePlanarLoopConstraint`.
+- `Tyre`: a point contact that can lift off, with a Pacejka-type lateral force
+  and rolling resistance applied at the contact patch.
+- `AntiRollBar`: a torsion bar between the left and right lower-arm pivots.
+- `Vehicle`: a free 6-DOF sprung body on four double-wishbone corners, with
+  front steering, anti-roll bars and a rear-axle speed controller. It starts in
+  static equilibrium at design ride height.
+
+| Example | What it shows | States | CPU |
+| --- | --- | ---: | ---: |
+| SuspensionKinematics | Camber, track change and motion ratio over ±75 mm travel, double wishbone vs MacPherson | 6 | 0.4 s |
+| QuarterCarBump | 3-D corner vs a 1-D quarter car with the equivalent wheel rate over a 50 mm bump | 10 | 0.3 s |
+| StepSteer | 2° front-wheel step at 72 km/h | 24 | 1.7 s |
+| LaneChange | One-period sine steer, 2° peak, at 72 km/h | 24 | 2.2 s |
+| BumpLeft | Left wheels cross a 50 mm bump at 36 km/h | 24 | 2.0 s |
+
+Results:
+- **Kinematics.** The double wishbone gains 2.2° negative camber at +73 mm
+  bump (−21°/m at design) with a near-constant 0.65 motion ratio. The
+  MacPherson strut gains 0.7°, with a motion ratio from 0.94 to 1.0.
+- **Quarter car.** The 3-D corner and the 1-D model with wheel rate `c·MR²`
+  agree to 0.1 mm in peak suspension travel (47 mm) and to 2 % in peak tyre
+  load (11.4 vs 11.6 kN). Both tyres leave the road behind the crest.
+- **Step steer.** The car settles at 14.6°/s yaw rate, 0.52 g and 2.3° roll.
+  The linear bicycle model is neutral steer for this tyre, giving `v/L` =
+  7.7 1/s; the multibody yaw gain is 7.5 1/s at 0.1° and 7.3 1/s at 2°.
+- **Lane change.** The car moves 3.3 m sideways and ends on its original
+  heading, with lateral acceleration peaks of ±0.4 g.
+- **One-sided bump.** The front-left and rear-left wheels travel 47 and
+  52 mm, 0.26 s apart. The body rolls 0.6°, and each left tyre leaves the road
+  for about 40 ms behind the crest.
+
+All five match OpenModelica 1.26.1 running the same models on MSL 4.1.0:
+the 98th-percentile difference is below 0.04 % of each signal's range. The
+only larger point errors are single samples at tyre lift-off and touchdown.
+In OpenModelica the full-car examples take 6 to 23 s of simulation time,
+against 1.5 to 2.2 s in DAEdalus.
+
 ## Note on sources
 
 From the build environment, modelon.com and claytex.com returned HTTP 403.

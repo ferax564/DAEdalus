@@ -110,6 +110,7 @@ of the EV model, which take 109k steps.
 | `crates/daedalus-cli` | `daedalus` command line tool |
 | `crates/daedalus-wasm` | WebAssembly bindings used by the workbench |
 | `library/Daedalus` | Component library (Blocks, Mechanics, Hydraulics, Vehicle) and the examples |
+| `library/MultiBodyVehicle` | 3-D suspension and full-car examples on MSL `Modelica.Mechanics.MultiBody` (needs MSL 4.1.0) |
 | `web` | Browser workbench (TypeScript, Vite, CodeMirror) |
 | `tools` | Benchmark generator, coast-down fit |
 

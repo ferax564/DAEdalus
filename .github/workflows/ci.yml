@@ -26,6 +26,11 @@ jobs:
         run: cargo build --release -p daedalus-cli
       - name: Simulate every Daedalus example
         run: ./target/release/daedalus test-library library/Daedalus -m Daedalus
+      - name: Simulate the MultiBody vehicle examples (MSL 4.1.0)
+        run: |
+          git clone --depth 1 --branch v4.1.0 https://github.com/modelica/ModelicaStandardLibrary /tmp/msl
+          ./target/release/daedalus test-library /tmp/msl/Modelica /tmp/msl/ModelicaServices /tmp/msl/Complex.mo \
+            library/MultiBodyVehicle -m MultiBodyVehicle
       - name: Scalability smoke test (2000-mass chain)
         run: |
           python3 tools/gen_chain.py 2000 > /tmp/chain.mo
