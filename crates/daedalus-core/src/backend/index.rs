@@ -176,6 +176,10 @@ pub fn create_derivative_vars(w: &mut Work) {
                     WhenAction::Assign(_, e)
                     | WhenAction::Reinit(_, e)
                     | WhenAction::Assert(e, _) => roots.push(*e),
+                    WhenAction::Effect(c, e) => {
+                        roots.push(*c);
+                        roots.push(*e);
+                    }
                     WhenAction::Terminate(_) => {}
                 }
             }
@@ -230,6 +234,10 @@ pub fn create_derivative_vars(w: &mut Work) {
                     WhenAction::Assign(_, e)
                     | WhenAction::Reinit(_, e)
                     | WhenAction::Assert(e, _) => {
+                        *e = w.arena.rewrite(*e, &mut memo, &mut f);
+                    }
+                    WhenAction::Effect(c, e) => {
+                        *c = w.arena.rewrite(*c, &mut memo, &mut f);
                         *e = w.arena.rewrite(*e, &mut memo, &mut f);
                     }
                     WhenAction::Terminate(_) => {}

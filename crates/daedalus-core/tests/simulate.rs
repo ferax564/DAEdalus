@@ -133,3 +133,11 @@ fn clocked_partitions() {
     assert!(close(r.at("x", 0.1).unwrap(), x1, 1e-6));
     assert!(close(r.at("u", 0.15).unwrap(), -2.0 * x1, 1e-6));
 }
+
+#[test]
+fn break_under_time_varying_condition() {
+    let r = run("break.mo", "B.Test", 1.0, Method::Bdf);
+    for (t, y) in [(0.1, 0.0), (0.3, 1.0), (0.6, 3.0), (0.8, 6.0), (1.0, 10.0)] {
+        assert_eq!(r.at("y", t).unwrap(), y, "t = {t}");
+    }
+}

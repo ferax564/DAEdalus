@@ -3,6 +3,7 @@
 pub mod backend;
 pub mod codegen;
 pub mod expr;
+pub mod external;
 pub mod flat;
 pub mod frontend;
 pub mod linalg;

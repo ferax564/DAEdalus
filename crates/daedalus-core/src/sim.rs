@@ -332,6 +332,10 @@ impl<'m> Simulation<'m> {
                         self.rt.run(&m.when_prog);
                     }
                     fired.push(wi);
+                    if !w.effects[bi].is_empty() {
+                        self.rt.run(&w.effects[bi]);
+                        self.drain_ext_log();
+                    }
                     let chained = w.chained[bi];
                     for (k, a) in acts.iter().enumerate() {
                         match a {
@@ -371,6 +375,27 @@ impl<'m> Simulation<'m> {
 
     fn rt_log(&mut self, s: String) {
         self.log.push(s);
+    }
+
+    /// The terminal event at the end of a successful simulation: `terminal()` is true and
+    /// the when-clauses it activates run (writing result files, for instance).
+    fn terminal_event(&mut self) {
+        let m = self.rt.m;
+        self.rt.run(&m.ode);
+        let prev = self.when_conds();
+        self.rt.r[m.layout.terminal] = 1.0;
+        let conds = self.when_conds();
+        self.fire(&conds, &prev);
+        self.rt.r[m.layout.terminal] = 0.0;
+        self.drain_ext_log();
+    }
+
+    /// Move the lines printed by external functions (`print`, errors) to the log.
+    fn drain_ext_log(&mut self) {
+        if !self.rt.loops.ext.log.is_empty() {
+            let lines = self.rt.loops.ext.take_log();
+            self.log.extend(lines);
+        }
     }
 
     /// Event iteration at the current time until discrete values settle.
@@ -669,11 +694,15 @@ impl<'m> Simulation<'m> {
         let t1 = crate::backend::web_time_now();
         self.stats.init_ms = (t1 - t_init) * 1000.0;
         let r = self.integrate(&mut rec);
+        if r.is_ok() {
+            self.terminal_event();
+        }
         self.stats.sim_ms = (crate::backend::web_time_now() - t1) * 1000.0;
         self.stats.newton_solves = self.rt.newton_stats.solves;
         self.stats.newton_iterations = self.rt.newton_stats.iterations;
         self.stats.output_points = rec.res.time.len();
         self.stats.states = m.states.len();
+        self.drain_ext_log();
         rec.res.log.append(&mut self.log);
         if let Some(msg) = &self.terminated {
             rec.res.log.push(format!("terminated: {msg}"));
