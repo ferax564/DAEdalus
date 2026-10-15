@@ -4182,6 +4182,42 @@ impl<'a, 't> Flattener<'a, 't> {
                 dims.extend(inner.unwrap_or_default());
                 Ok(Val::A(dims, out))
             }
+            ArrayConstructor::Horizontal | ArrayConstructor::Vertical
+                if vals.iter().any(|v| matches!(v, Val::A(d, _) if d.len() > 2)) =>
+            {
+                // [A] / [A, B] / [A; B] with arrays of three or more dimensions:
+                // cat along dimension 2 (`,`) or 1 (`;`); the others must agree.
+                let axis = usize::from(matches!(kind, ArrayConstructor::Horizontal));
+                let parts: Vec<(Vec<usize>, Vec<ExprId>)> =
+                    vals.iter().map(|v| v.elems()).collect::<Result<_>>()?;
+                let nd = parts.iter().map(|(d, _)| d.len()).max().unwrap_or(0);
+                let mut dims0: Option<Vec<usize>> = None;
+                let mut total = 0;
+                for (d, _) in &parts {
+                    if d.len() != nd {
+                        bail!("concatenation of arrays with different numbers of dimensions");
+                    }
+                    let mut other = d.clone();
+                    total += other[axis];
+                    other[axis] = 0;
+                    match &dims0 {
+                        Some(o) if *o != other => bail!("concatenation size mismatch"),
+                        Some(_) => {}
+                        None => dims0 = Some(other),
+                    }
+                }
+                let mut dims = dims0.unwrap_or_default();
+                dims[axis] = total;
+                let outer: usize = dims[..axis].iter().product();
+                let mut out = Vec::new();
+                for o in 0..outer {
+                    for (d, e) in &parts {
+                        let chunk: usize = d[axis..].iter().product();
+                        out.extend_from_slice(&e[o * chunk..(o + 1) * chunk]);
+                    }
+                }
+                Ok(Val::A(dims, out))
+            }
             ArrayConstructor::Horizontal => {
                 // [a, b, c]: concatenate along dim 2, promoting scalars/vectors to columns.
                 let mut rows: Option<usize> = None;
