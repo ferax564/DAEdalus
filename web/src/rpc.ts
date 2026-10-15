@@ -70,4 +70,29 @@ export const api = {
   structure: (model: string, opts: Record<string, unknown>) => call<unknown>("structure", model, opts),
   /** Performance profile and event log of the last simulation (null unless profiled). */
   profile: () => call<Profile | null>("profile"),
+  // graphical editing (see diagram-edit.ts): each returns the edited document's new text
+  editClass: (path: string, ops: unknown[]) => call<EditReply>("editClass", path, ops),
+  duplicateClass: (path: string, uri: string, pkg: string) => call<EditReply>("duplicateClass", path, uri, pkg),
+  newModel: (uri: string, pkg: string, name: string) => call<EditReply>("newModel", uri, pkg, name),
+  parameters: (path: string) => call<ParamInfo[]>("parameters", path),
 };
+
+export interface EditReply {
+  ok: boolean;
+  error?: string;
+  uri: string;
+  text: string;
+  /** Names of added components (editClass). */
+  added?: string[];
+  /** Path of the new class (duplicateClass, newModel). */
+  path?: string;
+}
+
+export interface ParamInfo {
+  name: string;
+  type_name: string;
+  unit: string;
+  description: string;
+  default: string | null;
+  declared_in: string;
+}

@@ -53,7 +53,11 @@
   - package browser;
   - icon, diagram and text views;
   - simulation setup and variable browser;
-  - plot window.
+  - plot window;
+  - graphical editing: drag components from the browser, draw connections with
+    compatible-connector highlighting and orthogonal routing, move, rotate,
+    flip, delete, a parameter dialog, undo and redo, all written back to the
+    text without disturbing its formatting.
 - Experiments: `daedalus sweep` (grid or grouped parameter sweeps on all cores,
   structural parameters translated again per value, summary table); in the
   workbench, stored runs (IndexedDB) with overlay and diff, sweeps over a pool
@@ -103,8 +107,8 @@ failures, which are the next work items:
 
 ### Workbench
 
-- Graphical editing: drag components from the browser, draw connections, edit
-  parameters in a dialog, and write the result back to the text.
+- Graphical editing, next steps: editing inherited components and connections,
+  array connectors (`u[1]`), connector names in the diagram, align and space.
 - Animation of mechanical models.
 
 ### FMI

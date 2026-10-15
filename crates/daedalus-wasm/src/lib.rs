@@ -4,7 +4,7 @@
 //! crosses the boundary as JSON strings; trajectories cross as `Float64Array`s so a plot of
 //! a million points costs one copy.
 
-use daedalus_core::frontend::{Library, inspect, lazy};
+use daedalus_core::frontend::{Library, edit, inspect, lazy};
 use daedalus_core::results::Results;
 use daedalus_core::sim::{SimOptions, simulate, simulate_profiled};
 use serde::Serialize;
@@ -479,5 +479,70 @@ impl Workspace {
         });
         self.results = Some(res);
         to_json(&out)
+    }
+}
+
+fn edit_error(e: impl std::fmt::Display) -> String {
+    to_json(&serde_json::json!({"ok": false, "error": e.to_string()}))
+}
+
+/// Graphical editing: source-preserving edits of a class (see `frontend::edit`).
+#[wasm_bindgen]
+impl Workspace {
+    /// Apply a JSON array of edit ops to class `path` and load the edited document.
+    /// Returns JSON `{"ok", "uri", "text", "added"}` or `{"ok": false, "error"}`.
+    #[wasm_bindgen(js_name = editClass)]
+    pub fn edit_class(&mut self, path: &str, ops: &str) -> String {
+        let ops: Vec<edit::EditOp> = match serde_json::from_str(ops) {
+            Ok(o) => o,
+            Err(e) => return edit_error(format!("bad edit: {e}")),
+        };
+        self.ensure(path, None);
+        match edit::edit_class(&self.lib, path, &ops) {
+            Ok(r) => {
+                self.set_document(&r.uri, &r.text);
+                to_json(
+                    &serde_json::json!({"ok": true, "uri": r.uri, "text": r.text, "added": r.added}),
+                )
+            }
+            Err(e) => edit_error(format!("{e:#}")),
+        }
+    }
+
+    /// Copy class `path` into package `package` of document `uri` (created if missing),
+    /// with its class names written out in full. JSON `{"ok", "uri", "text", "path"}`.
+    #[wasm_bindgen(js_name = duplicateClass)]
+    pub fn duplicate_class(&mut self, path: &str, uri: &str, package: &str) -> String {
+        self.ensure(path, Some(true));
+        let target = self.document_text(uri);
+        match edit::duplicate_class(&self.lib, path, target.as_deref(), package) {
+            Ok((text, new_path)) => {
+                self.set_document(uri, &text);
+                to_json(
+                    &serde_json::json!({"ok": true, "uri": uri, "text": text, "path": new_path}),
+                )
+            }
+            Err(e) => edit_error(format!("{e:#}")),
+        }
+    }
+
+    /// Add an empty model `name` to package `package` of document `uri` (created if
+    /// missing). JSON `{"ok", "uri", "text", "path"}`.
+    #[wasm_bindgen(js_name = newModel)]
+    pub fn new_model(&mut self, uri: &str, package: &str, name: &str) -> String {
+        let target = self.document_text(uri);
+        match edit::new_model(target.as_deref(), package, name) {
+            Ok((text, path)) => {
+                self.set_document(uri, &text);
+                to_json(&serde_json::json!({"ok": true, "uri": uri, "text": text, "path": path}))
+            }
+            Err(e) => edit_error(format!("{e:#}")),
+        }
+    }
+
+    /// JSON: public parameters of a class with units, descriptions and defaults.
+    pub fn parameters(&mut self, path: &str) -> String {
+        self.ensure(path, None);
+        to_json(&edit::parameters(&self.lib, path))
     }
 }

@@ -229,6 +229,36 @@ browser's IndexedDB across reloads. Runs can be renamed, pinned and deleted.
 The pool (`web/src/pool.ts`, `pool().run(model, options, vars)`) is generic, so
 other analyses can use it. `web/scripts/e2e-experiments.mjs` checks all of this in
 Chromium with Playwright against a running dev server.
+### Graphical editing
+
+Classes in your own documents can be edited in the Diagram view. The bundled
+`Daedalus` library and the MSL are read-only: **Duplicate to my models** copies
+the open class into `MyModels.mo`, with every class name it uses written out in
+full, and opens the copy for editing. **New model** adds an empty model there.
+`MyModels.mo` is kept in the browser's local storage and **Save .mo**
+downloads the edited file.
+
+With **✎ Edit** on:
+- drag a class from the package browser onto the diagram to add a component
+  (20×20 at the drop point, named `resistor1`, `resistor2`, ...);
+- click or rubber-band to select, Shift adds to the selection, drag to move
+  (2-unit grid), arrow keys nudge;
+- **R** rotates by 90°, **H** and **V** flip, **Del** deletes components with
+  their connections, the corner handle resizes;
+- drag from a connector to another to connect. Compatible connectors (same
+  class, same members, or one family such as `RealOutput`/`RealInput` or
+  `PositivePin`/`NegativePin`) light up, and the line is routed orthogonally.
+  Click a line to select it and drag its corners;
+- double-click a component for its parameter dialog: name, value, unit,
+  description and the class default of every parameter. Values are written
+  as modifiers, and an emptied field removes the modifier;
+- **Ctrl+Z** and **Ctrl+Y** undo and redo, over whole document versions.
+
+Every gesture is a list of edit operations applied to the source text in the
+worker (`crates/daedalus-core/src/frontend/edit.rs`). An edit replaces only the
+tokens it has to, so comments, layout and other annotations stay as written,
+and the result must parse before it is accepted. The Text view, **Check** and
+**Simulate** always use the edited text.
 
 ## Examples
 

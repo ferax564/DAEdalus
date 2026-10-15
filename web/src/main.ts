@@ -11,6 +11,7 @@ import { initPerformance, profileRequested, updatePerformance } from "./performa
 import { drawIcon, newCtx, SVG_NS, systemExtent, IDENTITY, el } from "./graphics";
 import * as experiments from "./experiments";
 import { StructureView, stateOverridesFor } from "./structure";
+import { DiagramEditor, DRAG_TYPE, editableUri } from "./diagram-edit";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -64,6 +65,26 @@ initPerformance(plot);
 
 diagram.onSelect = (c) => showInspector(c);
 diagram.onOpen = (p) => openClass(p);
+
+// Graphical editing: edits go to the source text in the worker, then every view refreshes.
+const editor = new DiagramEditor(diagram, {
+  current: () => current,
+  view: () => view,
+  classInfo: (p) => src.get(p),
+  log,
+  documentChanged: async (uri, t, open) => {
+    docs.set(uri, t);
+    for (const [k, v] of classes) if (v.source?.uri === uri) classes.delete(k);
+    expanded.add("MyModels");
+    await refreshTree();
+    if (open && open !== current?.path && (await src.get(open))) return openClass(open);
+    const info = current && (await src.get(current.path));
+    if (!info) return;
+    current = info;
+    if (view === "diagram" || view === "icon") await diagram.show(info, view, true);
+    else await showView();
+  },
+}, $("view-graphic"));
 
 let editTimer = 0;
 text.onChange = (t) => {
@@ -224,6 +245,9 @@ function renderTree() {
         row.appendChild(r);
       }
       row.onclick = () => openClass(e.path);
+      // drag onto an editable diagram to add a component
+      row.draggable = true;
+      row.ondragstart = (ev) => ev.dataTransfer?.setData(DRAG_TYPE, e.path);
       row.ondblclick = () => {
         if (expanded.has(e.path)) expanded.delete(e.path);
         else expanded.add(e.path);
@@ -293,7 +317,7 @@ async function openClass(path: string) {
       typeof st === "number" && typeof dt === "number" && dt > 0 ? String(Math.round((st - t0) / dt)) : "auto";
   }
   history.replaceState(null, "", `#${encodeURIComponent(path)}`);
-  if (view !== "text" && view !== "doc" && view !== "flat" && view !== "structure") view = info.kind !== "connector" && info.kind !== "package" && info.components.some((c) => c.type_kind !== "type" && !c.protected) ? "diagram" : "icon";
+  if (view !== "text" && view !== "doc" && view !== "flat" && view !== "structure") view = info.kind !== "connector" && info.kind !== "package" && (info.components.some((c) => c.type_kind !== "type" && !c.protected) || (editableUri(info.source?.uri) && ["model", "block", "class"].includes(info.kind))) ? "diagram" : "icon";
   renderTree();
   renderVariables();
   showInspector(null);
@@ -673,7 +697,7 @@ async function start() {
   const hash = share.model;
   // for automated checks
   const w = window as unknown as { daedalus: Record<string, unknown> };
-  w.daedalus = { api, simulate, openClass, plot, timings, togglePlot: (n: string) => togglePlot(n, summary!.vars.find((v) => v.name === n)!) };
+  w.daedalus = { api, simulate, openClass, plot, timings, togglePlot: (n: string) => togglePlot(n, summary!.vars.find((v) => v.name === n)!), editor };
   await load(bundledLibrary(), "Daedalus library");
   initAssistant({
     currentClass: () => current?.path ?? null,
@@ -690,6 +714,7 @@ async function start() {
       renderVariables();
     },
   });
+  await editor.restore();
   const msl = loadMsl();
   w.daedalus.msl = msl;
   if (hash && isMsl(hash)) {
