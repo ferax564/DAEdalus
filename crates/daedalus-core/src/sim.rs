@@ -7,7 +7,7 @@ use crate::expr::VarId;
 use crate::flat::VarKind;
 use crate::results::{ResultKind, ResultVar, Results};
 use crate::solver::{Bdf, Dopri5, FixedMethod, FixedStep, Integrator, SolverStats};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -364,6 +364,7 @@ impl<'m> Simulation<'m> {
     /// Event iteration at the current time until discrete values settle.
     fn event_iteration(&mut self) -> Result<(), String> {
         let m = self.rt.m;
+        let mut hist: Vec<Vec<f64>> = Vec::new();
         for _ in 0..100 {
             self.rt.save_pre();
             let rel_changed = self.rt.latch_relations();
@@ -413,6 +414,11 @@ impl<'m> Simulation<'m> {
                         }
                     })
                     .collect();
+                if std::env::var("DAEDALUS_DEBUG_EVENTS").as_deref() == Ok("2") {
+                    for (i, t) in m.rel_text.iter().enumerate() {
+                        eprintln!("  rel{i}: {t}");
+                    }
+                }
                 eprintln!(
                     "t={} fired={fired} rel={rel_changed} [{rels}] {}",
                     self.rt.time(),
@@ -428,11 +434,89 @@ impl<'m> Simulation<'m> {
                 self.rt.save_pre();
                 return Ok(());
             }
+            // Pure relation cycle (a Schmitt trigger switching between a saturated and the
+            // linear branch, neither consistent): fixed-point iteration never visits the
+            // consistent mode, so search the modes of the relations involved.
+            if !fired && !disc_changed {
+                let rels = self.rt.r[m.layout.rel0..m.layout.rel0 + m.layout.n_rel].to_vec();
+                if let Some(k) = hist.iter().position(|h| *h == rels) {
+                    let toggling: Vec<usize> = (0..rels.len())
+                        .filter(|&i| hist[k..].iter().any(|h| h[i] != rels[i]))
+                        .collect();
+                    if self.mode_search(&toggling) {
+                        self.rt.save_pre();
+                        return Ok(());
+                    }
+                }
+                hist.push(rels);
+            }
         }
         Err(format!(
             "event iteration did not converge at t = {}",
             self.rt.time()
         ))
+    }
+
+    /// Look for relation values that reproduce themselves: the relations that toggled in
+    /// a cycle, plus those comparing the same expression (the other limit of a limiter),
+    /// with duplicate copies of one relation kept equal. Tries the modes closest to the
+    /// current one first; returns whether a consistent one was found and latched.
+    fn mode_search(&mut self, toggling: &[usize]) -> bool {
+        let m = self.rt.m;
+        let lhs = |i: usize| {
+            let t = &m.rel_text[i];
+            let op = format!(" {:?} ", m.rel_ops[i]);
+            t.split(op.as_str()).next().unwrap_or(t).to_string()
+        };
+        let lhs_set: FxHashSet<String> = toggling.iter().map(|&i| lhs(i)).collect();
+        let mut atoms: Vec<&str> = Vec::new();
+        for i in 0..m.layout.n_rel {
+            if lhs_set.contains(&lhs(i)) && !atoms.contains(&m.rel_text[i].as_str()) {
+                atoms.push(&m.rel_text[i]);
+            }
+        }
+        if atoms.is_empty() || atoms.len() > 10 {
+            return false;
+        }
+        let members: Vec<Vec<usize>> = atoms
+            .iter()
+            .map(|a| {
+                (0..m.layout.n_rel)
+                    .filter(|&i| m.rel_text[i] == *a)
+                    .collect()
+            })
+            .collect();
+        let base: Vec<f64> = self.rt.r[m.layout.rel0..m.layout.rel0 + m.layout.n_rel].to_vec();
+        let cur: u32 = members
+            .iter()
+            .enumerate()
+            .map(|(k, ms)| u32::from(base[ms[0]] != 0.0) << k)
+            .sum();
+        let mut masks: Vec<u32> = (0..1u32 << atoms.len()).collect();
+        masks.sort_by_key(|&x| ((x ^ cur).count_ones(), x));
+        for mask in masks {
+            for (k, ms) in members.iter().enumerate() {
+                let v = f64::from((mask >> k) & 1);
+                for &i in ms {
+                    self.rt.r[m.layout.rel0 + i] = v;
+                }
+            }
+            self.rt.run(&m.ode);
+            if self.rt.error.is_some() {
+                self.rt.error = None;
+                continue;
+            }
+            self.rt.run(&m.zc);
+            let ok = (0..m.layout.n_rel)
+                .all(|i| self.rt.r[m.zc_raw[i] as usize] == self.rt.r[m.layout.rel0 + i]);
+            if ok {
+                return true;
+            }
+        }
+        self.rt.r[m.layout.rel0..m.layout.rel0 + m.layout.n_rel].copy_from_slice(&base);
+        self.rt.run(&m.ode);
+        self.rt.error = None;
+        false
     }
 
     fn check_newton(&mut self, phase: &str) -> Result<(), String> {
