@@ -1,0 +1,147 @@
+name: Release
+
+# Pushing a tag such as v0.1.0 builds the CLI and the FMI runtime for Linux,
+# macOS and Windows and publishes them as a GitHub Release. Pull requests that
+# touch this workflow run the same builds without publishing anything.
+
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths: [".github/workflows/release.yml"]
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+            smoke: true
+          - target: aarch64-apple-darwin
+            os: macos-14
+            smoke: true
+          # Cross-compiled on the Apple Silicon runner; it cannot run there.
+          - target: x86_64-apple-darwin
+            os: macos-14
+            smoke: false
+          - target: x86_64-pc-windows-msvc
+            os: windows-2022
+            smoke: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: Build CLI and FMI runtime
+        shell: bash
+        run: cargo build --release --locked --target ${{ matrix.target }} -p daedalus-cli -p daedalus-fmi
+      - name: Package
+        id: package
+        shell: bash
+        run: |
+          case "${{ github.ref }}" in
+            refs/tags/v*) version="${GITHUB_REF_NAME}" ;;
+            *) version="dev-${GITHUB_SHA::7}" ;;
+          esac
+          name="daedalus-${version}-${{ matrix.target }}"
+          out="target/${{ matrix.target }}/release"
+          mkdir -p "dist/$name"
+          case "${{ matrix.target }}" in
+            *windows*) cp "$out/daedalus.exe" "$out/daedalus_fmi.dll" "dist/$name/" ;;
+            *apple*)   cp "$out/daedalus" "$out/libdaedalus_fmi.dylib" "dist/$name/" ;;
+            *)         cp "$out/daedalus" "$out/libdaedalus_fmi.so" "dist/$name/" ;;
+          esac
+          cp -R library "dist/$name/library"
+          cp LICENSE README.md "dist/$name/"
+          cd dist
+          case "${{ matrix.target }}" in
+            *windows*) 7z a -tzip -bso0 "$name.zip" "$name"; archive="$name.zip" ;;
+            *)         tar czf "$name.tar.gz" "$name"; archive="$name.tar.gz" ;;
+          esac
+          echo "dir=dist/$name" >> "$GITHUB_OUTPUT"
+          echo "archive=dist/$archive" >> "$GITHUB_OUTPUT"
+      - name: Smoke test the packaged binary
+        if: matrix.smoke
+        shell: bash
+        working-directory: ${{ steps.package.outputs.dir }}
+        run: |
+          M=Daedalus.Examples.TorqueConverter.StallTest
+          ./daedalus check library/Daedalus -m $M
+          ./daedalus simulate library/Daedalus -m $M -o smoke.csv --vars rpm_engine
+          ./daedalus fmu library/Daedalus -m $M -o smoke.fmu
+          test -s smoke.csv && test -s smoke.fmu
+          rm smoke.csv smoke.fmu
+      - uses: actions/upload-artifact@v4
+        with:
+          name: daedalus-${{ matrix.target }}
+          path: ${{ steps.package.outputs.archive }}
+          if-no-files-found: error
+
+  python:
+    name: Build daedalus-casadi wheel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build sdist and wheel
+        run: |
+          python -m pip install --quiet build
+          python -m build python --outdir dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: daedalus-casadi
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build, python]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the tag matches the workspace version
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match workspace version $version"
+            exit 1
+          fi
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "DAEdalus $GITHUB_REF_NAME" \
+            --generate-notes \
+            --verify-tag
