@@ -128,6 +128,9 @@ pub struct Instance<'a> {
     pub comps: IndexMap<String, Comp>,
     /// Components declared `inner` (by name) for outer resolution.
     pub inners: FxHashSet<String>,
+    /// `inner outer` components: the local name refers to the outer instance, and
+    /// components below see this inner instance.
+    pub inner_of: FxHashMap<String, Comp>,
     pub parent: Option<InstId>,
     pub is_connector: bool,
     /// Connector components (by name) of this instance.
@@ -277,6 +280,11 @@ pub struct Flattener<'a, 't> {
     outlined: FxHashMap<String, (u32, usize, Vec<Val>)>,
     /// Functions that could not be compiled on their own.
     outline_failed: FxHashSet<ClassId>,
+    /// Sizes of `[:]` array fields of record components bound as a whole
+    /// (`cellData = data`): the bound record's own field sizes, by full name.
+    dim_hints: FxHashMap<String, Vec<usize>>,
+    /// Set while instantiating the inner part of an `inner outer` component.
+    instantiating_inner: bool,
     pub var_by_name: FxHashMap<String, VarId>,
     /// Declared but not yet instantiated components, instantiated on first reference so
     /// that declaration order does not matter (e.g. conditions on later parameters).
@@ -331,6 +339,8 @@ impl<'a, 't> Flattener<'a, 't> {
             outlining: FxHashSet::default(),
             outlined: FxHashMap::default(),
             outline_failed: FxHashSet::default(),
+            dim_hints: FxHashMap::default(),
+            instantiating_inner: false,
             var_by_name: FxHashMap::default(),
             deferred: FxHashMap::default(),
             oc_log: OcLog::default(),
@@ -875,6 +885,7 @@ impl<'a, 't> Flattener<'a, 't> {
             env: env.clone(),
             comps: IndexMap::new(),
             inners: FxHashSet::default(),
+            inner_of: FxHashMap::default(),
             parent,
             is_connector,
             connector_comps: FxHashSet::default(),
@@ -1061,14 +1072,29 @@ impl<'a, 't> Flattener<'a, 't> {
                 return Ok(());
             }
         }
-        if comp.outer {
+        if comp.outer && !std::mem::take(&mut self.instantiating_inner) {
             let mut p = self.insts[inst as usize].parent;
             while let Some(pi) = p {
                 // The inner may not be instantiated yet.
                 self.ensure_component(pi, &name)?;
-                if self.insts[pi as usize].inners.contains(&name)
-                    && let Some(c) = self.insts[pi as usize].comps.get(&name).cloned()
+                let pinst = &self.insts[pi as usize];
+                if pinst.inners.contains(&name)
+                    && let Some(c) = pinst
+                        .inner_of
+                        .get(&name)
+                        .or_else(|| pinst.comps.get(&name))
+                        .cloned()
                 {
+                    if comp.inner {
+                        // `inner outer`: instantiate the inner part, then point the local
+                        // name at the outer one.
+                        self.instantiating_inner = true;
+                        self.instantiate_component(inst, comp, env, m)?;
+                        if let Some(own) = self.insts[inst as usize].comps.insert(name.clone(), c) {
+                            self.insts[inst as usize].inner_of.insert(name, own);
+                        }
+                        return Ok(());
+                    }
                     self.insts[inst as usize].comps.insert(name, c);
                     return Ok(());
                 }
@@ -1117,6 +1143,14 @@ impl<'a, 't> Flattener<'a, 't> {
                     dims.push(v.round().max(0.0) as usize);
                 }
                 ast::Subscript::Range { .. } | ast::Subscript::Empty => {
+                    // A field of a record bound as a whole takes the bound field's size.
+                    let key = format!("{}{}", dot(&self.insts[inst as usize].prefix), name);
+                    if let Some(h) = self.dim_hints.get(&key)
+                        && let Some(&d) = h.get(dims.len())
+                    {
+                        dims.push(d);
+                        continue;
+                    }
                     // Unknown size `[:]`: derive from the binding value if possible.
                     let d = if let Some(v) = &m.value {
                         // `{a, b}`: the size without evaluating the elements (they may
@@ -1372,6 +1406,12 @@ impl<'a, 't> Flattener<'a, 't> {
             } else {
                 m.clone()
             };
+            if let Some(v) = &cm.value
+                && matches!(v.expr, E::ComponentReference(_))
+                && let Ok(Val::Inst(src)) = self.translate_scoped(v, &mut Ctx::default())
+            {
+                self.collect_dim_hints(src, &cprefix);
+            }
             let child = self.instantiate(tc, cprefix, &cm, tenv.clone(), Some(inst))?;
             if !matches!(var_prefix, Variability::Empty) {
                 self.propagate_variability(child, &var_prefix);
@@ -1569,6 +1609,25 @@ impl<'a, 't> Flattener<'a, 't> {
     // ------------------------------------------------------------------
     // Pass 2: translation
     // ------------------------------------------------------------------
+
+    /// Record the array sizes of instance `src`'s fields under `prefix` (see `dim_hints`).
+    fn collect_dim_hints(&mut self, src: InstId, prefix: &str) {
+        let comps: Vec<(String, Comp)> = self.insts[src as usize]
+            .comps
+            .iter()
+            .map(|(k, c)| (k.clone(), c.clone()))
+            .collect();
+        for (n, c) in comps {
+            let key = format!("{prefix}.{n}");
+            match c {
+                Comp::Arr(d, _) => {
+                    self.dim_hints.insert(key, d);
+                }
+                Comp::Inst(i) => self.collect_dim_hints(i, &key),
+                _ => {}
+            }
+        }
+    }
 
     /// Distribute whole-component bindings over the fields (see `record_bindings`).
     fn translate_record_bindings(&mut self) -> Result<()> {

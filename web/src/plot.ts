@@ -18,6 +18,8 @@ export interface Subplot {
   /** Parametric plot: the name of the x variable, if not time. */
   xName?: string;
   xUnit?: string;
+  /** Zoomed x range of a parametric subplot (time subplots share one range). */
+  xZoom?: [number, number];
 }
 
 const PALETTE = ["#0b5fff", "#d9480f", "#2b8a3e", "#ae3ec9", "#e8590c", "#1098ad", "#c2255c", "#5c940d", "#364fc7", "#862e9c"];
@@ -105,22 +107,31 @@ export class PlotWindow {
     this.canvas.addEventListener("pointerup", () => {
       if (this.dragStart !== null && this.dragNow !== null && Math.abs(this.dragNow - this.dragStart) > 6) {
         const [a, b] = [this.dragStart, this.dragNow].sort((p, q) => p - q);
-        const xr = this.currentXRange();
+        // A parametric subplot zooms its own x axis; time subplots share theirs.
+        const sp = this.subplots[this.active];
+        const xr = sp?.xName ? this.parametricRange(sp) : this.currentXRange();
         const { left, width } = this.plotArea();
         const t = (px: number) => xr[0] + ((px - left) / width) * (xr[1] - xr[0]);
-        this.xRange = [t(a), t(b)];
+        if (sp?.xName) sp.xZoom = [t(a), t(b)];
+        else this.xRange = [t(a), t(b)];
       }
       this.dragStart = this.dragNow = null;
       this.draw();
     });
     this.canvas.addEventListener("dblclick", () => {
-      this.xRange = null;
+      const sp = this.subplots[this.active];
+      if (sp?.xName && sp.xZoom) sp.xZoom = undefined;
+      else this.xRange = null;
       this.draw();
     });
   }
 
   nextColor(): string {
-    return PALETTE[this.colorIndex++ % PALETTE.length];
+    const i = this.colorIndex++;
+    if (i < PALETTE.length) return PALETTE[i];
+    // Beyond the palette: hues spread by the golden angle, alternating lightness.
+    const hue = (i * 137.508) % 360;
+    return `hsl(${hue.toFixed(0)}, 70%, ${i % 2 ? 38 : 48}%)`;
   }
 
   has(name: string): boolean {
@@ -160,18 +171,35 @@ export class PlotWindow {
     this.onChange();
   }
 
-  /** Replace the data of plotted series after a new simulation (same names). */
+  /** Replace the data of plotted series after a new simulation (same names); series the
+   * new result does not have (another model) are dropped, and a zoom outside the new time
+   * range is reset. */
   update(lookup: (name: string) => { x: Float64Array; y: Float64Array } | null) {
+    let dropped = false;
     for (const sp of this.subplots) {
-      for (const s of sp.series) {
+      sp.series = sp.series.filter((s) => {
         const d = lookup(s.name);
-        if (d) {
-          s.x = d.x;
-          s.y = d.y;
+        if (!d) {
+          dropped = true;
+          return false;
         }
-      }
+        s.x = d.x;
+        s.y = d.y;
+        return true;
+      });
+      sp.xZoom = undefined;
+    }
+    if (this.subplots.length > 1) this.subplots = this.subplots.filter((sp) => sp.series.length > 0);
+    if (this.subplots.length === 0) this.subplots = [{ series: [] }];
+    this.active = Math.min(this.active, this.subplots.length - 1);
+    if (this.xRange) {
+      const saved = this.xRange;
+      this.xRange = null;
+      const full = this.currentXRange();
+      if (saved[0] >= full[0] && saved[1] <= full[1] && !dropped) this.xRange = saved;
     }
     this.draw();
+    this.onChange();
   }
 
   private plotArea() {
@@ -225,12 +253,30 @@ export class PlotWindow {
     const timeRange = this.currentXRange();
     for (let k = 0; k < n; k++) {
       const sp = this.subplots[k];
-      const top = (k * H) / n + 22;
-      const height = H / n - 22 - 26;
+      // Legend entries wrap onto as many rows as the width needs.
+      const legend: { s: Series; label: string; x: number; row: number }[] = [];
+      {
+        let lx = left;
+        let row = 0;
+        for (const s of sp.series) {
+          const label = `${s.name}${s.displayUnit ? ` [${s.displayUnit}]` : ""}`;
+          const w = g.measureText(label).width + 34;
+          if (lx > left && lx + w - 16 > left + width) {
+            lx = left;
+            row++;
+          }
+          legend.push({ s, label, x: lx, row });
+          lx += w;
+        }
+      }
+      const rows = legend.length ? legend[legend.length - 1].row + 1 : 1;
+      const head = 8 + 14 * rows;
+      const top = (k * H) / n + head;
+      const height = H / n - head - 26;
       if (height < 20) continue;
       if (n > 1 && k === this.active) {
         g.fillStyle = accent;
-        g.fillRect(0, top - 22, 3, height + 48);
+        g.fillRect(0, top - head, 3, height + head + 26);
       }
       const xr = sp.xName ? this.parametricRange(sp) : timeRange;
       // y range of visible part
@@ -303,14 +349,12 @@ export class PlotWindow {
       // legend
       g.textAlign = "left";
       g.textBaseline = "alphabetic";
-      let lx = left;
-      for (const s of sp.series) {
-        const label = `${s.name}${s.displayUnit ? ` [${s.displayUnit}]` : ""}`;
+      for (const { s, label, x, row } of legend) {
+        const ly = top - head + 14 + 14 * row;
         g.fillStyle = s.color;
-        g.fillRect(lx, top - 12, 14, 3);
+        g.fillRect(x, ly - 5, 14, 3);
         g.fillStyle = fg;
-        g.fillText(label, lx + 18, top - 7);
-        lx += g.measureText(label).width + 34;
+        g.fillText(label, x + 18, ly);
       }
       // crosshair readout
       if (this.hover && !sp.xName && this.hover.px >= left && this.hover.px <= left + width) {
@@ -324,14 +368,18 @@ export class PlotWindow {
         g.setLineDash([]);
         let ry = top + 14;
         g.textAlign = "left";
-        const boxX = this.hover.px + 8 > left + width - 160 ? this.hover.px - 168 : this.hover.px + 8;
-        for (const s of sp.series) {
+        const lines = sp.series.map((s) => {
           const v = interp(s.x, s.y, t) * (s.scale ?? 1) + (s.offset ?? 0);
+          return { s, v, text: `${s.name} = ${fmtTick(v)}${s.displayUnit ? ` ${s.displayUnit}` : ""}` };
+        });
+        const boxW = Math.max(60, ...lines.map((l) => g.measureText(l.text).width)) + 8;
+        const boxX = this.hover.px + 8 + boxW > left + width ? this.hover.px - 8 - boxW : this.hover.px + 8;
+        for (const { s, v, text } of lines) {
           g.fillStyle = s.color;
           g.beginPath();
           g.arc(this.hover.px, Y(v), 3, 0, 2 * Math.PI);
           g.fill();
-          g.fillText(`${fmtTick(v)}`, boxX, ry);
+          g.fillText(text, boxX, ry);
           ry += 14;
         }
         g.fillStyle = muted;
@@ -351,6 +399,7 @@ export class PlotWindow {
   }
 
   private parametricRange(sp: Subplot): [number, number] {
+    if (sp.xZoom) return sp.xZoom;
     let lo = Infinity;
     let hi = -Infinity;
     for (const s of sp.series) for (const v of s.x) {

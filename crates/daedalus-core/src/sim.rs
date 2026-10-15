@@ -366,6 +366,14 @@ impl<'m> Simulation<'m> {
             let prev = std::mem::take(&mut self.cond_prev);
             let fired = self.fire(&conds, &prev);
             self.cond_prev = conds;
+            // Relations read the values the actions just assigned (`time >= t_start +
+            // waitTime` right after `t_start := time`), then the algebraics follow.
+            let rel_changed = if fired {
+                self.rt.run(&m.ode);
+                self.rt.latch_relations() || rel_changed
+            } else {
+                rel_changed
+            };
             // Recompute algebraics with the new discrete values.
             self.rt.run(&m.ode);
             let disc_changed = m.discretes.iter().any(|&d| {

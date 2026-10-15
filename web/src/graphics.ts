@@ -72,6 +72,8 @@ export interface RenderCtx {
   defIds: Map<string, string>;
   /** Text substitutions: %name, %par. */
   subst: (s: string) => string;
+  /** Value of a Boolean expression such as `visible = useAxisFlange` (null: unknown). */
+  cond: (expr: string) => boolean | null;
 }
 
 function el<K extends keyof SVGElementTagNameMap>(tag: K, attrs: Record<string, string | number>): SVGElementTagNameMap[K] {
@@ -181,6 +183,7 @@ function arrowHead(parent: SVGGElement, tip: [number, number], from: [number, nu
 export function drawGraphics(parent: SVGGElement, graphics: AnnRecord[], m: Mat, ctx: RenderCtx) {
   for (const g of graphics) {
     if (g.visible === false) continue;
+    if (typeof g.visible === "string" && ctx.cond(g.visible) === false) continue;
     const mm = mul(m, itemMatrix(g));
     const kind = g["@"];
     if (kind === "Line") {
@@ -250,7 +253,12 @@ export function drawGraphics(parent: SVGGElement, graphics: AnnRecord[], m: Mat,
       const bw = Math.max(...xs) - bx;
       const bh = Math.max(...ys) - by;
       const scaleLen = Math.hypot(m[0], m[1]);
-      const fs = num(g.fontSize) > 0 ? num(g.fontSize) * 0.35 * scaleLen * 2.83 : Math.min(bh * 0.9, (bw / Math.max(1, text.length)) * 1.7);
+      // Text stays upright, so a quarter-turned box keeps its own width and height: fit the
+      // text to the extent measured along the item's axes, not to the rotated bounding box.
+      const ew = Math.abs(e[1][0] - e[0][0]) * Math.hypot(mm[0], mm[1]);
+      const eh = Math.abs(e[1][1] - e[0][1]) * Math.hypot(mm[2], mm[3]);
+      const [fw, fh] = [ew, eh];
+      const fs = num(g.fontSize) > 0 ? num(g.fontSize) * 0.35 * scaleLen * 2.83 : Math.min(fh * 0.9, (fw / Math.max(1, text.length)) * 1.7);
       if (fs < 0.5) continue;
       const align = enumLit(g.horizontalAlignment, "Center");
       const tx = align === "Left" ? bx : align === "Right" ? bx + bw : bx + bw / 2;
@@ -276,6 +284,86 @@ export function drawGraphics(parent: SVGGElement, graphics: AnnRecord[], m: Mat,
 /** Fetch-and-cache access to class information. */
 export interface ClassSource {
   get(path: string): Promise<ClassInfo | null>;
+}
+
+/** Value text of parameter `name` for component `comp` of class `cls`: its modifier, or the
+ * default binding in the class or its bases. */
+function paramText(name: string, comp: ComponentInfo | null, cls: ClassInfo, classes: Map<string, ClassInfo>): string | null {
+  const mod = comp?.modifiers.find(([k]) => k === name);
+  if (mod) return mod[1];
+  for (const c of [cls, ...cls.extends.map((e) => classes.get(e)).filter((x): x is ClassInfo => !!x)]) {
+    const p = c.components.find((x) => x.name === name);
+    if (p?.binding) return p.binding;
+  }
+  return null;
+}
+
+/** Evaluate a small Boolean expression (`not a and (b or c)`, `n > 1`); null if unknown. */
+export function evalCond(expr: string, lookup: (name: string) => string | null, depth = 0): boolean | null {
+  if (depth > 8) return null;
+  const toks = expr.match(/[A-Za-z_][A-Za-z0-9_.]*|\d+(?:\.\d*)?(?:[eE][-+]?\d+)?|==|<>|<=|>=|[()<>]/g) ?? [];
+  let i = 0;
+  type V = boolean | number | null;
+  const atom = (): V => {
+    const t = toks[i++];
+    if (t === undefined) return null;
+    if (t === "(") {
+      const v = or();
+      i++;
+      return v;
+    }
+    if (t === "not") {
+      const v = atom();
+      return typeof v === "boolean" ? !v : null;
+    }
+    if (t === "true") return true;
+    if (t === "false") return false;
+    if (/^\d/.test(t)) return parseFloat(t);
+    const s = lookup(t);
+    if (s === null) return null;
+    if (s.trim() === "true") return true;
+    if (s.trim() === "false") return false;
+    const x = Number(s);
+    if (s.trim() !== "" && !Number.isNaN(x)) return x;
+    return evalCond(s, lookup, depth + 1);
+  };
+  const cmp = (): V => {
+    const a = atom();
+    const op = toks[i];
+    if (op && ["==", "<>", "<", ">", "<=", ">="].includes(op)) {
+      i++;
+      const b = atom();
+      if (a === null || b === null) return null;
+      const [x, y] = [Number(a), Number(b)];
+      return op === "==" ? x === y : op === "<>" ? x !== y : op === "<" ? x < y : op === ">" ? x > y : op === "<=" ? x <= y : x >= y;
+    }
+    return a;
+  };
+  const and = (): V => {
+    let a = cmp();
+    while (toks[i] === "and") {
+      i++;
+      const b = cmp();
+      a = a === false || b === false ? false : a === null || b === null ? null : Boolean(a) && Boolean(b);
+    }
+    return a;
+  };
+  const or = (): V => {
+    let a = and();
+    while (toks[i] === "or") {
+      i++;
+      const b = and();
+      a = a === true || b === true ? true : a === null || b === null ? null : Boolean(a) || Boolean(b);
+    }
+    return a;
+  };
+  const v = or();
+  return typeof v === "boolean" && i === toks.length ? v : null;
+}
+
+/** Boolean expressions of a component's icon, evaluated with its parameters. */
+export function condition(comp: ComponentInfo | null, cls: ClassInfo, classes: Map<string, ClassInfo>): (expr: string) => boolean | null {
+  return (expr) => evalCond(expr, (n) => paramText(n, comp, cls, classes));
 }
 
 function substitution(comp: ComponentInfo | null, cls: ClassInfo, classes: Map<string, ClassInfo>): (s: string) => string {
@@ -311,13 +399,19 @@ export async function drawIcon(
   depth = 0,
 ): Promise<void> {
   const saved = ctx.subst;
+  const savedCond = ctx.cond;
   ctx.subst = substitution(comp, cls, classes);
+  ctx.cond = condition(comp, cls, classes);
   drawGraphics(parent, cls.icon.graphics, m, ctx);
   ctx.subst = saved;
+  const visible = ctx.cond;
+  ctx.cond = savedCond;
   if (depth > 2) return;
   const inner = systemExtent(cls.icon.coordinate_system);
   for (const c of cls.components) {
     if (c.protected || c.type_kind !== "connector" || !c.type_path || !c.placement) continue;
+    // A conditional connector that is switched off (`heatPort if useHeatPort`) is not drawn.
+    if (c.condition && visible(c.condition) === false) continue;
     const pl = c.placement as AnnRecord;
     const tr = (pl.iconTransformation ?? pl.transformation) as AnnRecord | undefined;
     const sub = await src.get(c.type_path);
@@ -337,7 +431,7 @@ export function newCtx(svg: SVGSVGElement): RenderCtx {
     defs = el("defs", {});
     svg.appendChild(defs);
   }
-  return { defs, defIds: new Map(), subst: (s) => s };
+  return { defs, defIds: new Map(), subst: (s) => s, cond: () => null };
 }
 
 export { el };

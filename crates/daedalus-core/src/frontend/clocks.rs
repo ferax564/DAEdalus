@@ -17,7 +17,7 @@
 //!    unknowns and run, in data-dependency order, on the ticks where that partition
 //!    is active. Held values are the discrete variables themselves.
 //!
-//! Partitions with `der()` on a solver clock are discretised with explicit Euler.
+//! Partitions with `der()` on a solver clock are discretised with explicit or implicit Euler.
 
 use super::*;
 use crate::expr::ClkOp;
@@ -67,6 +67,8 @@ struct Base {
     kind: BaseKind,
     /// `Clock(c, solverMethod = ..)`: continuous equations are discretised.
     solver: bool,
+    /// The solver method is implicit (`ImplicitEuler`, `ImplicitTrapezoid`).
+    implicit: bool,
 }
 
 /// A clock relative to its base: ticks every `period` base intervals, offset by `shift`.
@@ -199,6 +201,11 @@ impl<'a, 't> Flattener<'a, 't> {
         if name != "sample" || args.len() != 2 {
             self.uses_clocks = true;
         }
+        // Second operand of a solver clock: 1 for an implicit method.
+        let implicit = match named_arg("solverMethod") {
+            Some(Val::Str(m)) if m.starts_with("Implicit") => Arena::ONE,
+            _ => z,
+        };
         match name {
             "Clock" => {
                 let a = &mut self.model.arena;
@@ -208,7 +215,7 @@ impl<'a, 't> Flattener<'a, 't> {
                         let x = sc(&args[0])?;
                         if self.is_clock_expr(x) {
                             // Clock(c, solverMethod = ..)
-                            self.model.arena.clk(ClkOp::Solver, x, z)
+                            self.model.arena.clk(ClkOp::Solver, x, implicit)
                         } else if self.is_boolean_expr(x) {
                             self.model.arena.clk(ClkOp::Event, x, z)
                         } else if args.len() >= 2 || named_arg("resolution").is_some() {
@@ -226,7 +233,7 @@ impl<'a, 't> Flattener<'a, 't> {
                 let e = if named_arg("solverMethod").is_some()
                     && !matches!(self.model.arena.node(e), Node::Clk(ClkOp::Solver, ..))
                 {
-                    self.model.arena.clk(ClkOp::Solver, e, z)
+                    self.model.arena.clk(ClkOp::Solver, e, implicit)
                 } else {
                     e
                 };
@@ -383,6 +390,7 @@ impl<'a, 't> Flattener<'a, 't> {
                             cs.bases.push(Base {
                                 kind: BaseKind::Periodic(Arena::ONE),
                                 solver: false,
+                                implicit: false,
                             });
                             cs.rational_base = Some(cs.bases.len() - 1);
                             cs.bases.len() - 1
@@ -410,6 +418,7 @@ impl<'a, 't> Flattener<'a, 't> {
                             cs.bases.push(Base {
                                 kind,
                                 solver: false,
+                                implicit: false,
                             });
                             cs.base_of_expr.insert(e, cs.bases.len() - 1);
                             cs.bases.len() - 1
@@ -425,6 +434,7 @@ impl<'a, 't> Flattener<'a, 't> {
                     let c = self.eval_clock(cs, a)?;
                     if let Some(c) = c {
                         cs.bases[c.base].solver = true;
+                        cs.bases[c.base].implicit |= b == Arena::ONE;
                     }
                     Ok(c)
                 }
@@ -499,7 +509,6 @@ impl<'a, 't> Flattener<'a, 't> {
             }
             groups.push(s0..all.len());
         }
-        self.shift_buffers(&mut all)?;
         let nvars = self.model.vars.len();
         let candidate = |s: &Self, v: VarId| {
             matches!(
@@ -863,7 +872,7 @@ impl<'a, 't> Flattener<'a, 't> {
                 let mut es = part_eqs.remove(&p).unwrap_or_default();
                 let mut vars = part_vars.remove(&p).unwrap_or_default();
                 if solver_part.contains(&p) || base.solver {
-                    self.discretize(&mut es, &mut vars, &info)?;
+                    self.discretize(&mut es, &mut vars, &info, base.implicit)?;
                 }
                 for e in &mut es {
                     e.lhs = self.strip_clk(e.lhs, Some(&info));
@@ -908,86 +917,6 @@ impl<'a, 't> Flattener<'a, 't> {
             var.start = Some(Arena::ZERO);
             var.is_protected = true;
             var.generated = true;
-        }
-        Ok(())
-    }
-
-    /// `shiftSample(u, k, r)` with `k/r >= 1` interval reads `u` from `floor(k/r)` ticks
-    /// back: a chain of `previous()` buffers in the partition of `u` holds those values.
-    fn shift_buffers(&mut self, all: &mut Vec<(Equation, Option<ExprId>)>) -> Result<()> {
-        let mut shifts: Vec<(ExprId, ExprId)> = Vec::new();
-        for (e, _) in all.iter() {
-            for side in [e.lhs, e.rhs] {
-                let mut seen = FxHashSet::default();
-                let mut stack = vec![side];
-                let mut ch = Vec::new();
-                while let Some(id) = stack.pop() {
-                    if !seen.insert(id) {
-                        continue;
-                    }
-                    if let Node::Clk(ClkOp::Shift, a, q) = self.model.arena.node(id)
-                        && !self.is_clock_expr(a)
-                        && !shifts.contains(&(a, q))
-                    {
-                        shifts.push((a, q));
-                    }
-                    ch.clear();
-                    self.model.arena.children(id, &mut ch);
-                    stack.extend(ch.iter().copied());
-                }
-            }
-        }
-        let o = self.model.origin("shiftSample buffer");
-        let mut repl: FxHashMap<Node, ExprId> = FxHashMap::default();
-        for (a, q) in shifts {
-            let f = self.eval_rat(q, "shift")?;
-            let d = f.0.div_euclid(f.1);
-            if d < 1 {
-                continue;
-            }
-            let start = match self.model.arena.node(a) {
-                Node::Var(v) => self.model.vars[v as usize].start,
-                _ => None,
-            };
-            let mut prev = a;
-            for i in 0..d {
-                let k = self.sample_count;
-                self.sample_count += 1;
-                let mut v = Variable::new(
-                    format!("$shift{k}.buffer[{}]", i + 1),
-                    VarKind::Discrete,
-                    VarType::Real,
-                );
-                v.generated = true;
-                v.is_protected = true;
-                v.start = start.or(Some(Arena::ZERO));
-                let z = self.model.add_var(v);
-                let a2 = &mut self.model.arena;
-                let zv = a2.var(z);
-                let p = a2.clk(ClkOp::Previous, prev, Arena::ZERO);
-                all.push((
-                    Equation {
-                        lhs: zv,
-                        rhs: p,
-                        origin: o,
-                    },
-                    None,
-                ));
-                prev = zv;
-            }
-            let new = self.model.arena.clk(ClkOp::Shift, prev, q);
-            repl.insert(Node::Clk(ClkOp::Shift, a, q), new);
-        }
-        if repl.is_empty() {
-            return Ok(());
-        }
-        for (e, _) in all.iter_mut() {
-            for side in [&mut e.lhs, &mut e.rhs] {
-                *side = self
-                    .model
-                    .arena
-                    .substitute(*side, &|n| repl.get(&n).copied());
-            }
         }
         Ok(())
     }
@@ -1283,13 +1212,15 @@ impl<'a, 't> Flattener<'a, 't> {
         Ok(sol)
     }
 
-    /// Explicit Euler for a clocked partition with `der()`: `x = previous(x) +
-    /// interval()*previous(der(x))`, with `der(x)` a new clocked unknown.
+    /// Euler for a clocked partition with `der()`: `x = previous(x) +
+    /// interval()*previous(der(x))` (explicit) or `x = previous(x) + interval()*der(x)`
+    /// (implicit), with `der(x)` a new clocked unknown.
     fn discretize(
         &mut self,
         es: &mut Vec<Equation>,
         vars: &mut Vec<VarId>,
         info: &PartInfo,
+        implicit: bool,
     ) -> Result<()> {
         let mut states: Vec<VarId> = Vec::new();
         for e in es.iter() {
@@ -1336,7 +1267,7 @@ impl<'a, 't> Flattener<'a, 't> {
             let d = dvar[&x];
             let a = &mut self.model.arena;
             let px = a.pre(x);
-            let pd = a.pre(d);
+            let pd = if implicit { a.var(d) } else { a.pre(d) };
             let step = a.mul(info.interval, pd);
             let rhs = a.add(px, step);
             let xv = a.var(x);

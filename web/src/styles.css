@@ -25,7 +25,8 @@
     --accent-soft: #233150;
     color-scheme: dark;
   }
-  svg.diagram { background: #f8f9fb; }
+  /* Modelica graphics assume a light canvas: invert the lightness and keep the hues. */
+  svg.diagram { background: white; filter: invert(0.9) hue-rotate(180deg); }
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
@@ -35,6 +36,7 @@ body {
   color: var(--fg);
   display: grid;
   grid-template-rows: auto 1fr 140px;
+  grid-template-columns: minmax(0, 1fr);
   overflow: hidden;
 }
 button, select, input { font: inherit; color: inherit; }
@@ -57,12 +59,13 @@ input[type="number"] { width: 72px; }
 .brand { font-weight: 700; font-size: 15px; letter-spacing: 0.2px; white-space: nowrap; }
 .logo { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 6px; background: var(--accent); color: white; margin-right: 4px; }
 .modes { display: flex; gap: 4px; }
-.tools { display: flex; align-items: center; gap: 10px; margin-left: auto; flex-wrap: wrap; }
+.tools { display: flex; align-items: center; gap: 10px; margin-left: auto; flex-wrap: nowrap; min-width: 0; overflow-x: auto; }
+.tools > * { flex: none; }
 .tools label { color: var(--muted); display: flex; gap: 4px; align-items: center; }
 .sep { width: 1px; height: 20px; background: var(--line); }
 label.file { position: relative; overflow: hidden; border: 1px dashed var(--line); border-radius: 6px; padding: 3px 8px; cursor: pointer; color: var(--fg); }
 label.file input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
-#app { display: grid; grid-template-columns: 280px 1fr 280px; min-height: 0; }
+#app { display: grid; grid-template-columns: 280px minmax(0, 1fr) 280px; min-height: 0; min-width: 0; }
 .pane { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; margin: 6px; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
 #left, #right, #center { display: flex; flex-direction: column; min-height: 0; }
 #left .pane, #center .pane { flex: 1; }
@@ -83,7 +86,8 @@ label.file input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
 .node input[type="checkbox"] { margin: 0; }
 .node input.par { width: 88px; margin-left: auto; font-family: var(--mono); font-size: 11.5px; padding: 0 4px; }
 .kids { padding-left: 14px; }
-.tabs { display: flex; align-items: center; gap: 4px; padding: 5px 8px; border-bottom: 1px solid var(--line); }
+.tabs { display: flex; align-items: center; gap: 4px; padding: 5px 8px; border-bottom: 1px solid var(--line); min-width: 0; overflow-x: auto; }
+.tabs button { white-space: nowrap; flex: none; }
 .tabs .spacer { flex: 1; }
 .tabs label { color: var(--muted); display: flex; gap: 4px; align-items: center; margin-left: 8px; }
 .model-title { font-weight: 600; margin-right: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 45%; }
@@ -116,3 +120,18 @@ canvas.plot { position: absolute; inset: 0; display: block; }
   white-space: pre-wrap;
 }
 .node input.par.ro { background: transparent; border-color: transparent; color: var(--muted, #888); }
+
+/* Narrow windows (1024 px laptops): compact toolbar and side panes. */
+@media (max-width: 1200px) {
+  #topbar { gap: 8px; padding: 5px 8px; min-width: 0; }
+  .brand-name { display: none; }
+  #set-tol { width: 56px; }
+  .tools { gap: 6px; }
+  .tools label { gap: 3px; }
+  input[type="number"] { width: 56px; }
+  #app { grid-template-columns: 220px minmax(0, 1fr) 230px; }
+  .pane { margin: 4px; }
+}
+@media (max-height: 700px) {
+  body { grid-template-rows: auto 1fr 96px; }
+}

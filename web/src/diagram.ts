@@ -3,6 +3,7 @@
 import type { AnnRecord, ClassInfo, ComponentInfo } from "./types";
 import {
   apply as applyM,
+  condition,
   type ClassSource,
   type Mat,
   drawGraphics,
@@ -107,16 +108,21 @@ export class DiagramView {
       await drawIcon(g, cls, null, IDENTITY, this.src, ctx, this.classes);
     } else {
       ctx.subst = (s) => s.replace("%name", cls.name);
+      ctx.cond = condition(null, cls, this.classes);
       drawGraphics(g, cls.diagram.graphics, IDENTITY, ctx);
       const mats = await this.layout(cls);
       if (token !== this.renderToken) return;
+      // Conditional components switched off by their parameters are not drawn.
+      const off = new Set(cls.components.filter((c) => c.condition && ctx.cond(c.condition) === false).map((c) => c.name));
       for (const comp of cls.components) {
         const m = mats.get(comp.name);
-        if (!m) continue;
+        if (!m || off.has(comp.name)) continue;
         await this.drawComponent(g, comp, m, ctx);
         if (token !== this.renderToken) return;
       }
+      const head = (r: string) => r.split(".")[0].replace(/\[.*$/, "");
       for (const c of cls.connections) {
+        if (off.has(head(c.from)) || off.has(head(c.to))) continue;
         if (c.line) this.drawConnection(g, c.line);
         else await this.drawAutoConnection(g, cls, mats, c.from, c.to);
       }
@@ -217,35 +223,33 @@ export class DiagramView {
     }
     if (auto.length === 0) return mats;
     const names = new Set(auto.map((c) => c.name));
-    const adj = new Map<string, Set<string>>();
-    for (const n of names) adj.set(n, new Set());
+    const order = auto.map((c) => c.name);
+    // Layers follow the direction of the connect statements (`connect(source.y, sink.u)`):
+    // a component sits one layer right of everything that feeds it. Cycles are cut by
+    // capping the layer index at the number of components.
     const head = (r: string) => r.split(".")[0].replace(/\[.*$/, "");
+    const edges: [string, string][] = [];
     for (const c of cls.connections) {
       const a = head(c.from);
       const b = head(c.to);
-      if (names.has(a) && names.has(b) && a !== b) {
-        adj.get(a)!.add(b);
-        adj.get(b)!.add(a);
-      }
+      if (names.has(a) && names.has(b) && a !== b) edges.push([a, b]);
     }
-    // breadth-first layers from components that are sources (outputs only) or the first one
-    const layer = new Map<string, number>();
-    const order = auto.map((c) => c.name);
-    for (const start of order) {
-      if (layer.has(start)) continue;
-      const base = layer.size ? Math.max(...layer.values()) + 1 : 0;
-      layer.set(start, base);
-      const q = [start];
-      while (q.length) {
-        const n = q.shift()!;
-        for (const k of adj.get(n)!) {
-          if (!layer.has(k)) {
-            layer.set(k, layer.get(n)! + 1);
-            q.push(k);
-          }
+    const layer = new Map<string, number>(order.map((n) => [n, 0]));
+    const cap = order.length - 1;
+    for (let it = 0; it < order.length; it++) {
+      let changed = false;
+      for (const [a, b] of edges) {
+        const L = Math.min(cap, layer.get(a)! + 1);
+        if (L > layer.get(b)!) {
+          layer.set(b, L);
+          changed = true;
         }
       }
+      if (!changed) break;
     }
+    // Compact: drop empty layers.
+    const used = [...new Set(layer.values())].sort((p, q) => p - q);
+    for (const n of order) layer.set(n, used.indexOf(layer.get(n)!));
     // Grid cells sized so that every layer and row fits inside the diagram extent.
     const rowOf = new Map<string, number>();
     const rows = new Map<number, number>();
@@ -268,7 +272,9 @@ export class DiagramView {
     const top = (y0 + y1) / 2 + (nR * ch) / 2;
     for (const n of order) {
       const x = left + (layer.get(n)! + 0.5) * cw;
-      const y = top - (rowOf.get(n)! + 0.5) * ch - 0.1 * ch;
+      // Layers with fewer components are centred vertically.
+      const shift = (nR - rows.get(layer.get(n)!)!) / 2;
+      const y = top - (rowOf.get(n)! + shift + 0.5) * ch - 0.1 * ch;
       const t = await this.src.get(auto.find((c) => c.name === n)!.type_path!);
       const m = placementMatrix({ extent: [[x - half, y - half], [x + half, y + half]] }, systemExtent(t!.icon.coordinate_system));
       if (m) mats.set(n, m);

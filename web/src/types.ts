@@ -33,6 +33,8 @@ export interface ComponentInfo {
   flow: boolean;
   protected: boolean;
   conditional: boolean;
+  /** Condition of a conditional component as source text (`useHeatPort`). */
+  condition: string | null;
   placement: AnnRecord | null;
   modifiers: [string, string][];
   binding: string | null;

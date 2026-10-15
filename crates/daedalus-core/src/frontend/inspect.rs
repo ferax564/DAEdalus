@@ -53,6 +53,8 @@ pub struct ComponentInfo {
     pub flow: bool,
     pub protected: bool,
     pub conditional: bool,
+    /// The condition of a conditional component as source text (`useHeatPort`).
+    pub condition: Option<String>,
     /// `Placement` annotation.
     pub placement: Option<Value>,
     /// Modifiers as source text, e.g. `("J", "0.5")`.
@@ -297,6 +299,7 @@ fn collect(lib: &Library, tree: &ClassTree, id: ClassId, info: &mut ClassInfo, d
             flow: matches!(c.connection, ast::Connection::Flow(_)),
             protected: c.is_protected,
             conditional: c.condition.is_some(),
+            condition: c.condition.as_ref().map(|x| src(text, x.span())),
             placement: find_annotation(&c.annotation, "Placement").map(|p| expr_json(p, text)),
             modifiers,
             binding: c.binding.as_ref().map(|b| src(text, b.span())),
@@ -522,7 +525,8 @@ pub fn expr_json(e: &ast::Expression, text: Option<&str>) -> Value {
             match (format!("{op:?}").as_str(), v.as_f64()) {
                 (o, Some(x)) if o.contains("Minus") => num(-x),
                 (_, Some(x)) => num(x),
-                _ => v,
+                // `not useAxisFlange`: keep the whole expression for the client to evaluate
+                _ => Value::String(text.map(|t| src(Some(t), e.span())).unwrap_or_default()),
             }
         }
         E::Binary { op, lhs, rhs, .. } => {
