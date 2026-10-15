@@ -22,6 +22,39 @@ The exit code is:
 Errors stop the script immediately. These are syntax errors, unknown variables,
 and wrong argument types; each is reported with its line number.
 
+### Example
+
+A Dymola-style regression script, with a parameter sweep:
+
+```modelica
+openModel("Plant.mo");
+ok := simulateModel("Plant.FirstOrder(k=4)", stopTime=5, numberOfIntervals=100,
+  method="Dassl", tolerance=1e-8, resultFile="FirstOrder_k4");
+if not ok then
+  print("simulation failed");
+  exit(2);
+end if;
+for T in {0.5, 1.0} loop
+  (ok, finals) := simulateExtendedModel("Plant.FirstOrder", stopTime=20,
+    initialNames={"T"}, initialValues={T}, finalNames={"y", "x"}, resultFile="sweep");
+  print("T = " + String(T) + ": y(20) = " + String(finals[1]));
+end for;
+linearizeModel("Plant.Pendulum", resultFile="pendulum_lin");
+s := steadyState("Plant.FirstOrder(k=4)");
+s.x
+```
+
+```
+= true
+T = 0.5: y(20) = 5.000000014410608
+T = 1: y(20) = 4.999999692229807
+wrote pendulum_lin.mat
+= true
+= 8.0
+```
+
+The full script and `Plant.mo` are in `crates/daedalus-cli/tests/mos/`, which CI runs.
+
 ### Output
 
 Every statement that is not an assignment prints its value in Dymola's style,

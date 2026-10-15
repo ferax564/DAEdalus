@@ -20,9 +20,14 @@ moves it and `DAEDALUS_NO_CACHE` turns it off).
 | `dump` | Print the sorted, causalized equation system (BLT blocks, tearing). |
 | `simulate` | Simulate and write a Dymola `.mat` file or a CSV file. |
 | `linearize` | State-space matrices A, B, C, D. See [Linearization](linearize.md). |
+| `steady` | Steady state (`der(x) = 0`) with its stability, or a trim with `--free` and `--target`. See [Scripts and steady states](scripting.md#steady-states-and-trim). |
 | `fmu` | Export an FMI 2.0 FMU. See [FMI 2.0 export](fmi.md). |
 | `export-casadi` | Write the index-reduced DAE as JSON for CasADi. See [Optimal control](optimal-control.md). |
+| `run` | Run a Dymola or OpenModelica script (`.mos`). See [Scripts and steady states](scripting.md). |
 | `test-library` | Translate and simulate every model with an `experiment` annotation in a package, each in its own process with a time limit, and print a report. |
+
+The same compiler is also a Python package, `import daedalus`, for notebooks and
+scripts: see [Python API](python.md).
 
 ## Simulating
 
@@ -60,6 +65,46 @@ daedalus simulate msl/Modelica msl/ModelicaServices msl/Complex.mo \
 `-L DIR` adds a library directory the same way, and `DAEDALUS_LIB` (or `--lib`) points at
 the bundled library.
 
+## Steady states and trim
+
+```sh
+daedalus steady crates/daedalus-core/tests/models/steady.mo -m Steady.Pendulum \
+    --free tau --target angle=0.5
+```
+
+```
+trim of Steady.Pendulum at t = 0 (2 Newton iterations, residual 0.000e0)
+
+states:
+  phi = 0.5
+  w   = 0
+
+free variables:
+  tau = 3.7625316269657856
+
+targets:
+  angle = 0.5 (target 0.5)
+
+eigenvalues of the state Jacobian (stable):
+  -2.343750e-1 - 3.272067e0i
+  -2.343750e-1 + 3.272067e0i
+```
+
+The torque that holds the pendulum at 0.5 rad is `m·g·L·sin(0.5)` = 3.76 N·m, and the
+equilibrium is stable. Without `--free` and `--target`, `steady` finds the equilibrium
+for the inputs as they are. See [Scripts and steady states](scripting.md#steady-states-and-trim).
+
+## Scripts
+
+```sh
+daedalus run regression.mos --msl ~/ModelicaStandardLibrary
+```
+
+runs a Dymola or OpenModelica `.mos` script: loading files and libraries, translating,
+`simulateModel` and `simulate`, parameter sweeps with `simulateExtendedModel`,
+`linearizeModel`, `steadyState` and `trim`, with loops and conditionals. See
+[Scripts and steady states](scripting.md).
+
 ## Testing a whole library
 
 ```sh
@@ -95,6 +140,9 @@ job runs the MSL examples against their reference results (see
 | `--format F` | `linearize`: `text`, `json` or `mo` |
 | `--jacobian J` | `linearize`: `exact` or `fd` (central differences) |
 | `--fmi-lib FILE` | `fmu`: the FMI runtime library to bundle |
+| `--at-time T` | `steady`: start from the state at time T |
+| `--free a,b`, `--target y=v` | `steady`: trim these inputs or parameters to hit these targets |
+| `--msl DIR` | `run`: an extra library root for `loadModel` |
 
 ## Performance
 
