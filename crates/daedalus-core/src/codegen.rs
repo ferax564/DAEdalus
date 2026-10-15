@@ -80,8 +80,8 @@ pub struct NewtonBlock {
     pub names: Vec<String>,
     /// Constant `min`/`max` bounds of the tears (Newton steps are clipped to them).
     pub bounds: Vec<(f64, f64)>,
-    /// Tears with a declared start value.
-    pub has_start: Vec<bool>,
+    /// The block's unknowns (tears and inner variables) with a declared start value.
+    pub started: Vec<Slot>,
 }
 
 #[derive(Clone, Debug)]
@@ -544,12 +544,15 @@ fn compile_blocks(
                                 | Ins::CallD(..)
                         )
                     });
-                let has_start = tears
+                let started = tears
                     .iter()
-                    .map(|&t| names[t as usize].start.is_some())
+                    .copied()
+                    .chain(inner.iter().map(|(v, _)| *v))
+                    .filter(|&v| names[v as usize].start.is_some())
+                    .map(|v| v as Slot)
                     .collect();
                 newton.push(NewtonBlock {
-                    has_start,
+                    started,
                     plain_linear,
                     bounds,
                     tears: tears.clone(),
@@ -1584,12 +1587,13 @@ impl<'m> Runtime<'m> {
         let m = self.m;
         let b = &m.newton[bi];
         let (err0, fail0) = (self.error.clone(), self.newton_stats.failures);
+        // Values on entry: the start values, as nothing has solved the block yet.
+        let x0: Vec<f64> = b.started.iter().map(|&s| self.r[s as usize]).collect();
         let dist = |rt: &Runtime| {
-            b.tears
+            b.started
                 .iter()
-                .enumerate()
-                .filter(|&(j, _)| b.has_start[j])
-                .map(|(j, &t)| (rt.r[t as usize] - entry[j]).abs() / (1.0 + entry[j].abs()))
+                .zip(&x0)
+                .map(|(&s, &x)| (rt.r[s as usize] - x).abs() / (1.0 + x.abs()))
                 .fold(0.0f64, f64::max)
         };
         self.newton_iterate(bi, work, piv, weights, best_x, entry);
