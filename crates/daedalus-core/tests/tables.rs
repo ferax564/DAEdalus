@@ -118,3 +118,36 @@ fn tables_read_from_text_and_csv_files() {
     check(&r, "y1b", 0.25, 15.0, 1e-9);
     check(&r, "y1b", 0.75, 30.0, 1e-9);
 }
+
+#[test]
+fn monotone_1d_splines_with_second_derivatives() {
+    // Reference values of ModelicaTest.Tables.CombiTable1Ds.Test26 and Test30 (the same
+    // on these points).
+    let r = run("TablesTest.Monotone1D", 4.0, 0.0008);
+    for (a, b, c) in [
+        ("fb.y", "dfb", "d2fb"),
+        ("steffen.y", "dsteffen", "d2steffen"),
+    ] {
+        check(&r, a, 0.7, 3.6, 1e-9);
+        check(&r, b, 0.7, -2.0, 1e-9);
+        check(&r, c, 0.7, 0.0, 1e-9);
+        check(&r, a, 1.296, 2.284636672, 1e-9);
+        check(&r, b, 1.296, -2.658304, 1e-9);
+        check(&r, c, 1.296, -0.448, 1e-9);
+        check(&r, a, 3.5, 1.0, 1e-9);
+        check(&r, b, 3.5, 0.0, 1e-9);
+    }
+}
+
+#[test]
+fn periodic_time_table_with_jumps() {
+    // Reference values of ModelicaTest.Tables.CombiTimeTable.Test1.
+    let r = run("TablesTest.PeriodicTime", 3.0, 0.005);
+    check(&r, "t.y", 0.505, -1.5, 1e-9);
+    check(&r, "dy", 0.505, -100.0, 1e-9);
+    check(&r, "t.y", 1.405, -1.5, 1e-9);
+    check(&r, "dy", 1.405, -100.0, 1e-9);
+    check(&r, "t.y", 1.95, 0.0, 1e-9);
+    check(&r, "t.y", 2.5, -2.0, 1e-9);
+    check(&r, "dy", 2.5, -20.0 / 3.0, 1e-9);
+}

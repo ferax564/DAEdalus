@@ -7,7 +7,7 @@
 
 use super::overconstrained::{OcAnswers, OcLog};
 use super::tree::{ClassId, ClassTree, ROOT, builtin_name};
-use crate::expr::{Arena, Cmp, ExprId, Fn1, Fn2, LoopProg, Node, Table, Table2, VarId};
+use crate::expr::{Arena, Cmp, ExprId, Fn1, Fn2, LoopProg, Node, Table, Table2, VarId, tkind};
 use crate::flat::*;
 use crate::table2::kind as k2;
 use anyhow::{Context, Result, anyhow, bail};
@@ -6395,13 +6395,14 @@ impl<'a, 't> Flattener<'a, 't> {
                 );
                 match smooth {
                     3 => t.smoothness = 1,
-                    2 | 6 => t.make_cubic(false),
-                    4 | 5 => t.make_cubic(true),
+                    2 | 4 | 5 | 6 => t.make_spline(smooth),
                     _ => {}
                 }
                 if time {
                     t.start = num(self, &args[5], "startTime")?;
                     t.shift = num(self, &args[9 + o], "shiftTime")?;
+                    let events = num(self, &args[10 + o], "timeEvents")? as u8;
+                    t.set_time_events(events);
                 }
                 if columns.iter().any(|&c| c == 0 || c > t.cols) {
                     bail!(
@@ -6417,32 +6418,38 @@ impl<'a, 't> Flattener<'a, 't> {
                         .constant((self.ext_tables.len() - 1) as f64),
                 )
             }
-            "getValue" => {
-                let (t, cols) = handle(self, &args[0])?;
-                let c = column(self, &cols, &args[1])?;
-                let mut x = args[2].scalar()?;
-                // (.., time, nextTimeEvent, pre(nextTimeEvent)): until the event at
-                // nextTimeEvent is handled, the table stays on the segment left of it.
-                if time && args.len() >= 4 {
-                    let ne = args[3].scalar()?;
-                    let a = &mut self.model.arena;
-                    let an = a.f1(Fn1::Abs, ne);
-                    let sc = a.f2(Fn2::Max, an, Arena::ONE);
-                    let eps = a.constant(1e-13);
-                    let d = a.mul(sc, eps);
-                    let left = a.sub(ne, d);
-                    let at = a.cmp(Cmp::Ge, x, ne);
-                    x = a.if_(at, left, x);
-                }
-                Val::S(self.model.arena.interp(t, c, x))
-            }
-            "getDerValue" => {
+            "getValue" | "getDerValue" | "getDer2Value" => {
+                // (tableID, icol, u, [nextTimeEvent, pre(nextTimeEvent),] [der_u, [der2_u]]):
+                // a time table stays on the event interval that ends at nextTimeEvent
+                // until that event has been handled (see `crate::table1`).
                 let (t, cols) = handle(self, &args[0])?;
                 let c = column(self, &cols, &args[1])?;
                 let x = args[2].scalar()?;
-                let dx = args[if time { 5 } else { 3 }].scalar()?;
-                let s = self.model.arena.interp_der(t, c, x);
-                Val::S(self.model.arena.mul(s, dx))
+                let ne = match args.get(3) {
+                    Some(v) if time => v.scalar()?,
+                    _ if time => self.model.arena.constant(f64::INFINITY),
+                    _ => Arena::ZERO,
+                };
+                let o = if time { 5 } else { 3 };
+                let a = &mut self.model.arena;
+                let v = match fun {
+                    "getValue" => a.table_lookup(t, c, tkind::VALUE, x, ne),
+                    "getDerValue" => {
+                        let s = a.table_lookup(t, c, tkind::D1, x, ne);
+                        a.mul(s, args[o].scalar()?)
+                    }
+                    _ => {
+                        // der2_y = y'(u) der2_u + y''(u) der_u^2
+                        let (du, ddu) = (args[o].scalar()?, args[o + 1].scalar()?);
+                        let s1 = a.table_lookup(t, c, tkind::D1, x, ne);
+                        let s2 = a.table_lookup(t, c, tkind::D2, x, ne);
+                        let p1 = a.mul(s1, ddu);
+                        let du2 = a.mul(du, du);
+                        let p2 = a.mul(s2, du2);
+                        a.add(p1, p2)
+                    }
+                };
+                Val::S(v)
             }
             "minimumTime" | "minimumAbscissa" | "maximumTime" | "maximumAbscissa" => {
                 let (t, _) = handle(self, &args[0])?;
@@ -6456,10 +6463,11 @@ impl<'a, 't> Flattener<'a, 't> {
             }
             "nextTimeEvent" => {
                 let (t, _) = handle(self, &args[0])?;
+                let x = args[1].scalar()?;
                 Val::S(
                     self.model
                         .arena
-                        .interp(t, Table::NEXT_EVENT, args[1].scalar()?),
+                        .table_lookup(t, 0, tkind::NEXT_EVENT, x, Arena::ZERO),
                 )
             }
             "close" => Val::S(Arena::ZERO),

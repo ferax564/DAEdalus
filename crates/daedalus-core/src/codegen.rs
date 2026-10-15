@@ -27,9 +27,8 @@ pub enum Ins {
     Cmp(Cmp, Slot, Slot, Slot),
     /// `d = if c != 0 { a } else { b }`
     Select(Slot, Slot, Slot, Slot),
-    /// `d = table[t].interp(col, x)`
-    Interp(Slot, u32, u32, Slot),
-    InterpDer(Slot, u32, u32, Slot),
+    /// `d = tables[t].eval(kind, col, x, ne)` with `(t, col) = views[vk >> 2]`, `kind = vk & 3`
+    Interp(Slot, u32, Slot, Slot),
     /// `d = tables2[tk >> 5].eval(tk & 31, u1, u2)` (value or partial derivative, see
     /// [`crate::table2::kind`])
     Interp2(Slot, u32, Slot, Slot),
@@ -127,6 +126,8 @@ pub struct Model {
     pub layout: Layout,
     pub consts: Vec<(Slot, f64)>,
     pub tables: Vec<Table>,
+    /// (table, column) of the [`Ins::Interp`] views.
+    pub views: Vec<(u32, u32)>,
     pub tables2: Vec<Table2>,
     pub newton: Vec<NewtonBlock>,
     /// Parameter bindings in dependency order, one segment per parameter so that
@@ -194,6 +195,21 @@ struct Emitter<'a> {
     /// Result slots of branched `if` expressions (written in two places).
     branched: FxHashSet<Slot>,
     site_of: FxHashMap<(u32, Vec<Slot>), u32>,
+}
+
+impl Model {
+    /// Evaluate a 1-D table lookup ([`Ins::Interp`]).
+    #[inline]
+    pub fn lookup(&self, vk: u32, x: f64, ne: f64) -> f64 {
+        let (t, c) = self.views[(vk >> 2) as usize];
+        let tb = &self.tables[t as usize];
+        tb.eval(
+            vk & 3,
+            c as usize,
+            x,
+            if tb.time { ne } else { f64::INFINITY },
+        )
+    }
 }
 
 impl Emitter<'_> {
@@ -375,8 +391,7 @@ impl Emitter<'_> {
                 Node::Cmp(op, ..) => Ins::Cmp(op, d, s[0], s[1]),
                 Node::Rel(r) => Ins::Cmp(self.arena.relations[r as usize].op, d, s[0], s[1]),
                 Node::If(..) => Ins::Select(d, s[0], s[1], s[2]),
-                Node::Interp(t, c, _) => Ins::Interp(d, t, c, s[0]),
-                Node::InterpDer(t, c, _) => Ins::InterpDer(d, t, c, s[0]),
+                Node::Interp(vk, ..) => Ins::Interp(d, vk, s[0], s[1]),
                 Node::Interp2(tk, ..) => Ins::Interp2(d, tk, s[0], s[1]),
                 Node::Delay(k, _) => Ins::Delay(d, k, s[0]),
                 Node::Call(c, out) => Ins::Call(d, self.site(c, s), out),
@@ -435,7 +450,6 @@ fn retarget(ins: &mut Ins, from: Slot, to: Slot) -> bool {
         | Ins::Cmp(_, d, ..)
         | Ins::Select(d, ..)
         | Ins::Interp(d, ..)
-        | Ins::InterpDer(d, ..)
         | Ins::Interp2(d, ..)
         | Ins::Delay(d, ..)
         | Ins::Call(d, ..)
@@ -628,6 +642,7 @@ pub fn compile(mut sys: System) -> Model {
         n_regs: 0,
     };
     let tables = sys.arena.tables.clone();
+    let views = sys.arena.views.clone();
     let tables2 = sys.arena.tables2.clone();
     let mut sites = Vec::new();
     let progs: Vec<ProgCode> = (0..sys.arena.progs.len())
@@ -803,6 +818,7 @@ pub fn compile(mut sys: System) -> Model {
         layout,
         consts,
         tables,
+        views,
         tables2,
         newton,
         params,
@@ -1277,15 +1293,14 @@ fn run_sub_tangent(m: &Model, ls: &mut LoopState, prog: &[Ins], r: &mut [f64], d
                 r[d as usize] = r[k as usize];
                 dr[d as usize] = dr[k as usize];
             }
-            Ins::Interp(d, t, c, x) => {
-                let tb = &m.tables[t as usize];
-                let xv = r[x as usize];
-                dr[d as usize] = tb.slope(c as usize, xv) * dr[x as usize];
-                r[d as usize] = tb.interp(c as usize, xv);
-            }
-            Ins::InterpDer(d, t, c, x) => {
-                r[d as usize] = m.tables[t as usize].slope(c as usize, r[x as usize]);
-                dr[d as usize] = 0.0;
+            Ins::Interp(d, vk, x, ne) => {
+                let (xv, nv) = (r[x as usize], r[ne as usize]);
+                dr[d as usize] = if vk & 3 < 2 {
+                    m.lookup(vk + 1, xv, nv) * dr[x as usize]
+                } else {
+                    0.0
+                };
+                r[d as usize] = m.lookup(vk, xv, nv);
             }
             Ins::Interp2(d, tk, a, b) => {
                 let tb = &m.tables2[(tk >> 5) as usize];
@@ -1388,11 +1403,8 @@ fn run_sub(m: &Model, ls: &mut LoopState, prog: &[Ins], r: &mut [f64]) {
                     r[b as usize]
                 }
             }
-            Ins::Interp(d, t, c, x) => {
-                r[d as usize] = m.tables[t as usize].interp(c as usize, r[x as usize])
-            }
-            Ins::InterpDer(d, t, c, x) => {
-                r[d as usize] = m.tables[t as usize].slope(c as usize, r[x as usize])
+            Ins::Interp(d, vk, x, ne) => {
+                r[d as usize] = m.lookup(vk, r[x as usize], r[ne as usize])
             }
             Ins::Interp2(d, tk, a, b) => {
                 r[d as usize] =
@@ -1463,7 +1475,6 @@ impl<'m> Runtime<'m> {
 
     #[inline]
     pub fn run(&mut self, prog: &[Ins]) {
-        let tables = &self.m.tables;
         let mut pc = 0;
         while pc < prog.len() {
             let ins = &prog[pc];
@@ -1496,11 +1507,8 @@ impl<'m> Runtime<'m> {
                         r[b as usize]
                     }
                 }
-                Ins::Interp(d, t, c, x) => {
-                    r[d as usize] = tables[t as usize].interp(c as usize, r[x as usize])
-                }
-                Ins::InterpDer(d, t, c, x) => {
-                    r[d as usize] = tables[t as usize].slope(c as usize, r[x as usize])
+                Ins::Interp(d, vk, x, ne) => {
+                    r[d as usize] = self.m.lookup(vk, r[x as usize], r[ne as usize])
                 }
                 Ins::Interp2(d, tk, a, b) => {
                     r[d as usize] = self.m.tables2[(tk >> 5) as usize].eval(

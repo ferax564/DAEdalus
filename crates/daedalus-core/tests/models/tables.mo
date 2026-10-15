@@ -136,4 +136,88 @@ package TablesTest
     Real y1a = getTable1DValue(t1, 1, 2*time);
     Real y1b = getTable1DValue(t1, 2, 2*time);
   end FileTables;
+  class ExternalCombiTimeTable
+    extends ExternalObject;
+    function constructor
+      input String tableName;
+      input String fileName;
+      input Real table[:, :];
+      input Real startTime;
+      input Integer columns[:];
+      input Integer smoothness;
+      input Integer extrapolation;
+      input Real shiftTime = 0;
+      input Integer timeEvents = 1;
+      output ExternalCombiTimeTable externalCombiTimeTable;
+    external "C" externalCombiTimeTable = ModelicaStandardTables_CombiTimeTable_init3(
+      fileName, tableName, table, size(table, 1), size(table, 2), startTime,
+      columns, size(columns, 1), smoothness, extrapolation, shiftTime, timeEvents,
+      0, ",", 0);
+    end constructor;
+    function destructor
+      input ExternalCombiTimeTable externalCombiTimeTable;
+    external "C" ModelicaStandardTables_CombiTimeTable_close(externalCombiTimeTable);
+    end destructor;
+  end ExternalCombiTimeTable;
+
+  function getTimeTableValue
+    input ExternalCombiTimeTable tableID;
+    input Integer icol;
+    input Real timeIn;
+    input Real nextTimeEvent;
+    input Real pre_nextTimeEvent;
+    output Real y;
+  external "C" y = ModelicaStandardTables_CombiTimeTable_getValue(tableID, icol, timeIn,
+    nextTimeEvent, pre_nextTimeEvent);
+  end getTimeTableValue;
+
+  function getNextTimeEvent
+    input ExternalCombiTimeTable tableID;
+    input Real timeIn;
+    output Real nextTimeEvent;
+  external "C" nextTimeEvent = ModelicaStandardTables_CombiTimeTable_nextTimeEvent(tableID, timeIn);
+  end getNextTimeEvent;
+
+  block Table1D "Like Modelica.Blocks.Tables.CombiTable1Ds with one column"
+    parameter Real table[:, :];
+    parameter Integer smoothness = 1 "1 linear, 2 Akima, 3 constant, 4 Fritsch-Butland, 5 Steffen, 6 modified Akima";
+    parameter Integer extrapolation = 2 "1 hold, 2 last two points, 3 periodic";
+    final parameter ExternalCombiTable1D tableID = ExternalCombiTable1D(
+      "NoName", "NoName", table, {2}, smoothness, extrapolation);
+    input Real u;
+    output Real y;
+  equation
+    y = getTable1DValue(tableID, 1, u);
+  end Table1D;
+
+  block TimeTable "Like Modelica.Blocks.Sources.CombiTimeTable with one column"
+    parameter Real table[:, :];
+    parameter Integer smoothness = 1;
+    parameter Integer extrapolation = 2;
+    parameter Real startTime = 0;
+    final parameter ExternalCombiTimeTable tableID = ExternalCombiTimeTable(
+      "NoName", "NoName", table, startTime, {2}, smoothness, extrapolation, startTime);
+    discrete Real nextTimeEvent(start = 0, fixed = true);
+    output Real y;
+  equation
+    when {time >= pre(nextTimeEvent), initial()} then
+      nextTimeEvent = getNextTimeEvent(tableID, time);
+    end when;
+    y = getTimeTableValue(tableID, 1, time, nextTimeEvent, pre(nextTimeEvent));
+  end TimeTable;
+
+  model Monotone1D "MSL ModelicaTest.Tables.CombiTable1Ds.Test26 (Fritsch-Butland) and Test30 (Steffen)"
+    Table1D fb(table = [0, 5; 1, 3; 2, 1; 3, 1; 4, 1; 5, 3], smoothness = 4, u = time);
+    Table1D steffen(table = [0, 5; 1, 3; 2, 1; 3, 1; 4, 1; 5, 3], smoothness = 5, u = time);
+    Real dfb = der(fb.y);
+    Real d2fb = der(dfb);
+    Real dsteffen = der(steffen.y);
+    Real d2steffen = der(dsteffen);
+  end Monotone1D;
+
+  model PeriodicTime "MSL ModelicaTest.Tables.CombiTimeTable.Test1: periodic, with jumps"
+    TimeTable t(table = [0.1, 0; 0.3, 0; 0.5, -1; 0.51, -2; 0.51, -3; 0.6, -2; 0.7, -2; 0.7, -2; 1, -4],
+      extrapolation = 3);
+    Real dy = der(t.y);
+  end PeriodicTime;
 end TablesTest;
