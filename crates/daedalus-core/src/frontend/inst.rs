@@ -3583,7 +3583,12 @@ impl<'a, 't> Flattener<'a, 't> {
             }
             E::NamedArgument { value, .. } => self.translate(value, scope, ctx),
             E::Modification { value, .. } => self.translate(value, scope, ctx),
-            E::ClassModification { .. } => bail!("unexpected class modification in expression"),
+            // `T(100)` parsed in a declaration context: a constructor or function call.
+            E::ClassModification {
+                target,
+                modifications,
+                ..
+            } => self.call(target, modifications, scope, ctx),
         }
     }
 
@@ -5762,6 +5767,9 @@ impl<'a, 't> Flattener<'a, 't> {
         if let Some(def) = self.tree.def(cls) {
             for ext in &def.extends {
                 for em in &ext.modifications {
+                    if em.redeclare {
+                        continue;
+                    }
                     if let E::Modification { target, value, .. } = &em.expr
                         && target.parts.len() == 1
                     {
@@ -7860,6 +7868,9 @@ fn split_args(args: &[E]) -> (Vec<&E>, Vec<(&str, &E)>) {
     for a in args {
         match a {
             E::NamedArgument { name, value, .. } => named.push((&*name.text, &**value)),
+            E::Modification { target, value, .. } if target.parts.len() == 1 => {
+                named.push((&*target.parts[0].ident.text, &**value))
+            }
             other => pos.push(other),
         }
     }
