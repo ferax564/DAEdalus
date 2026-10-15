@@ -252,6 +252,8 @@ pub struct Flattener<'a, 't> {
     conn_flow: FxHashMap<VarId, bool>,
     /// All flow variables of connectors that are inside connectors of some instance.
     connector_flows: Vec<VarId>,
+    /// `semiLinear(x, s, h)` calls on plain variables: (result, x, s, h).
+    semi_linear: Vec<(ExprId, VarId, VarId, ExprId)>,
     /// Translated parameter bindings (lazy; for structural evaluation).
     param_values: FxHashMap<VarId, f64>,
     binding_done: FxHashSet<VarId>,
@@ -323,6 +325,7 @@ impl<'a, 't> Flattener<'a, 't> {
             conn_parent: FxHashMap::default(),
             conn_flow: FxHashMap::default(),
             connector_flows: Vec::new(),
+            semi_linear: Vec::new(),
             param_values: FxHashMap::default(),
             binding_done: FxHashSet::default(),
             binding_mods: FxHashMap::default(),
@@ -2021,7 +2024,26 @@ impl<'a, 't> Flattener<'a, 't> {
         skip: Option<ConnPoint>,
         eps: f64,
     ) -> ExprId {
-        let others: Vec<ConnPoint> = set.iter().copied().filter(|p| Some(*p) != skip).collect();
+        let mut others: Vec<ConnPoint> = set.iter().copied().filter(|p| Some(*p) != skip).collect();
+        // A connector whose flow can only enter its component (`m_flow(min = 0)`, as on
+        // sensors) never supplies outflow to the others (MLS 15.2).
+        let supplies = |this: &mut Self, q: &ConnPoint| -> bool {
+            let v = &this.model.vars[q.var as usize];
+            let bound = if q.inside { v.min } else { v.max };
+            match bound.and_then(|b| this.eval_param_expr(b)) {
+                Some(b) if q.inside => b < 0.0,
+                Some(b) => b > 0.0,
+                None => true,
+            }
+        };
+        let keep: Vec<ConnPoint> = others
+            .iter()
+            .copied()
+            .filter(|q| supplies(self, q))
+            .collect();
+        if !keep.is_empty() {
+            others = keep;
+        }
         // (value, flow, sign): an inside connector supplies its own stream variable when
         // its flow is negative; an outside one supplies the parent's inStream when its flow
         // is positive.
@@ -2475,10 +2497,35 @@ impl<'a, 't> Flattener<'a, 't> {
         match v {
             Val::S(e) => Ok(e),
             Val::A(_, v) => {
-                // when {c1, c2}: triggers when any element becomes true.
+                // when {c1, c2}: triggers when any element becomes true, also while another
+                // one stays true (`when {u, not u}` fires on every change of u). Each
+                // element gets a Boolean whose rising edge is tested on its own.
                 let mut r = Arena::ZERO;
+                let o = self.model.origin("when condition");
                 for e in v {
-                    r = self.model.arena.f2(Fn2::Or, r, e);
+                    let term = if e == self.model.arena.initial() || v_len_one(&self.model.arena, e)
+                    {
+                        e
+                    } else {
+                        let k = self.model.vars.len();
+                        let mut b =
+                            Variable::new(format!("$when{k}"), VarKind::Discrete, VarType::Boolean);
+                        b.generated = true;
+                        b.is_protected = true;
+                        b.start = Some(Arena::ZERO);
+                        let b = self.model.add_var(b);
+                        let bv = self.model.arena.var(b);
+                        self.model.equations.push(Equation {
+                            lhs: bv,
+                            rhs: e,
+                            origin: o,
+                        });
+                        let a = &mut self.model.arena;
+                        let pb = a.pre(b);
+                        let npb = a.not(pb);
+                        a.f2(Fn2::And, bv, npb)
+                    };
+                    r = self.model.arena.f2(Fn2::Or, r, term);
                 }
                 Ok(r)
             }
@@ -3001,6 +3048,8 @@ impl<'a, 't> Flattener<'a, 't> {
             sets.entry(r).or_default().push(p);
         }
         let origin = self.model.origin("connection");
+        let mut flow_sets: Vec<(Vec<VarId>, usize)> = Vec::new();
+        let mut pot_set: FxHashMap<VarId, usize> = FxHashMap::default();
         let mut inside_connected: FxHashSet<VarId> = FxHashSet::default();
         // Bus signals that only link expandable connectors to each other, with no
         // component writing or reading them, are not part of the model.
@@ -3054,6 +3103,17 @@ impl<'a, 't> Flattener<'a, 't> {
                 }
             }
             let flow = self.conn_flow.get(&set[0].var).copied().unwrap_or(false);
+            if flow && set.iter().all(|p| p.inside) {
+                flow_sets.push((
+                    set.iter().map(|p| p.var).collect(),
+                    self.model.equations.len(),
+                ));
+            }
+            if !flow {
+                for p in set {
+                    pot_set.insert(p.var, k);
+                }
+            }
             if flow {
                 let mut sum = Arena::ZERO;
                 for p in set {
@@ -3084,6 +3144,7 @@ impl<'a, 't> Flattener<'a, 't> {
                 }
             }
         }
+        self.semi_linear_rule(&flow_sets, &pot_set);
         // Unconnected flow variables (as inside connectors) are zero (MLS §9.2).
         let flows = std::mem::take(&mut self.connector_flows);
         let mut seen = FxHashSet::default();
@@ -3101,6 +3162,93 @@ impl<'a, 't> Flattener<'a, 't> {
                 rhs: Arena::ZERO,
                 origin: o2,
             });
+        }
+    }
+
+    /// MLS 3.7.4.5: components joined by one connection, each with
+    /// `H_i = semiLinear(m_i, s, h_i)`, leave `s` undetermined at zero flow. The balance
+    /// `sum(H_i) = 0` becomes the mixing rule it implies,
+    /// `s = sum(max(-m_i, 0) h_i) / sum(max(-m_i, 0))` (`s = if m_1 >= 0 then h_2 else h_1`
+    /// for two), which falls back to `h_1` when nothing flows.
+    fn semi_linear_rule(
+        &mut self,
+        flow_sets: &[(Vec<VarId>, usize)],
+        pot_set: &FxHashMap<VarId, usize>,
+    ) {
+        if self.semi_linear.is_empty() {
+            return;
+        }
+        let by_res: FxHashMap<ExprId, usize> = self
+            .semi_linear
+            .iter()
+            .enumerate()
+            .map(|(i, r)| (r.0, i))
+            .collect();
+        // y variable of each semiLinear equation `y = semiLinear(..)`.
+        let mut semi_of: FxHashMap<VarId, usize> = FxHashMap::default();
+        for e in &self.model.equations {
+            for (a, b) in [(e.lhs, e.rhs), (e.rhs, e.lhs)] {
+                if let (Node::Var(y), Some(&i)) = (self.model.arena.node(a), by_res.get(&b)) {
+                    semi_of.insert(y, i);
+                }
+            }
+        }
+        let mut set_of: FxHashMap<VarId, usize> = FxHashMap::default();
+        for (k, (vs, _)) in flow_sets.iter().enumerate() {
+            for &v in vs {
+                set_of.insert(v, k);
+            }
+        }
+        for (ys, eq) in flow_sets {
+            let Some(mut recs) = ys
+                .iter()
+                .map(|y| semi_of.get(y).map(|&i| (*y, self.semi_linear[i])))
+                .collect::<Option<Vec<_>>>()
+            else {
+                continue;
+            };
+            // Members in name order, as OpenModelica orders a connection set; that
+            // decides which side wins at zero flow.
+            recs.sort_by(|a, b| {
+                self.model.vars[a.0 as usize]
+                    .name
+                    .cmp(&self.model.vars[b.0 as usize].name)
+            });
+            let recs: Vec<_> = recs.into_iter().map(|r| r.1).collect();
+            let (_, x0, s0, h0) = recs[0];
+            let mset = set_of.get(&x0);
+            let ok = mset.is_some()
+                && recs.iter().all(|&(_, x, s, _)| {
+                    set_of.get(&x) == mset
+                        && (s == s0 || pot_set.get(&s).is_some_and(|k| pot_set.get(&s0) == Some(k)))
+                })
+                && flow_sets[*mset.unwrap()].0.len() == recs.len();
+            if !ok {
+                continue;
+            }
+            let a = &mut self.model.arena;
+            let rhs = if recs.len() == 2 {
+                let xv = a.var(x0);
+                let c = a.cmp(Cmp::Ge, xv, Arena::ZERO);
+                a.if_(c, recs[1].3, h0)
+            } else {
+                let (mut w, mut num) = (Arena::ZERO, Arena::ZERO);
+                for &(_, x, _, h) in &recs {
+                    let xv = a.var(x);
+                    let nx = a.neg(xv);
+                    let out = a.f2(Fn2::Max, nx, Arena::ZERO);
+                    w = a.add(w, out);
+                    let t = a.mul(out, h);
+                    num = a.add(num, t);
+                }
+                let c = a.cmp(Cmp::Gt, w, Arena::ZERO);
+                let q = a.div(num, w);
+                a.if_(c, q, h0)
+            };
+            let lhs = a.var(s0);
+            let e = &mut self.model.equations[*eq];
+            e.lhs = lhs;
+            e.rhs = rhs;
         }
     }
 
@@ -4871,12 +5019,19 @@ impl<'a, 't> Flattener<'a, 't> {
                 let x = arg!(0).scalar()?;
                 let k1 = arg!(1);
                 let k2 = arg!(2);
-                return self.zip2(k1, k2, &mut |a, k1, k2| {
+                let r = self.zip2(k1.clone(), k2.clone(), &mut |a, k1, k2| {
                     let c = a.cmp(Cmp::Ge, x, Arena::ZERO);
                     let p1 = a.mul(k1, x);
                     let p2 = a.mul(k2, x);
                     a.if_(c, p1, p2)
-                });
+                })?;
+                if let (Val::S(res), Val::S(s), Val::S(h)) = (&r, &k1, &k2)
+                    && let (Node::Var(xv), Node::Var(sv)) =
+                        (self.model.arena.node(x), self.model.arena.node(*s))
+                {
+                    self.semi_linear.push((*res, xv, sv, *h));
+                }
+                return Ok(r);
             }
             "atan2" | "div" | "mod" | "rem" => {
                 let f = match name.as_str() {
@@ -6083,7 +6238,21 @@ impl<'a, 't> Flattener<'a, 't> {
             "getValue" => {
                 let (t, cols) = handle(self, &args[0])?;
                 let c = column(self, &cols, &args[1])?;
-                Val::S(self.model.arena.interp(t, c, args[2].scalar()?))
+                let mut x = args[2].scalar()?;
+                // (.., time, nextTimeEvent, pre(nextTimeEvent)): until the event at
+                // nextTimeEvent is handled, the table stays on the segment left of it.
+                if time && args.len() >= 4 {
+                    let ne = args[3].scalar()?;
+                    let a = &mut self.model.arena;
+                    let an = a.f1(Fn1::Abs, ne);
+                    let sc = a.f2(Fn2::Max, an, Arena::ONE);
+                    let eps = a.constant(1e-13);
+                    let d = a.mul(sc, eps);
+                    let left = a.sub(ne, d);
+                    let at = a.cmp(Cmp::Ge, x, ne);
+                    x = a.if_(at, left, x);
+                }
+                Val::S(self.model.arena.interp(t, c, x))
             }
             "getDerValue" => {
                 let (t, cols) = handle(self, &args[0])?;
@@ -7326,6 +7495,11 @@ fn builtin_enum_literal(enum_name: &str, lit: &str) -> Option<f64> {
 }
 
 /// Whether an equation (or one nested in it) is a connect equation.
+/// A constant condition element needs no edge variable.
+fn v_len_one(a: &Arena, e: ExprId) -> bool {
+    matches!(a.node(e), Node::Const(_))
+}
+
 fn has_connect(eq: &ast::Equation) -> bool {
     match eq {
         ast::Equation::Connect { .. } => true,

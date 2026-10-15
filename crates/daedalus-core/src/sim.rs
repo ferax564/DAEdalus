@@ -46,6 +46,11 @@ pub struct SimOptions {
     pub max_step: f64,
     /// Store values just before and after events.
     pub store_events: bool,
+    /// Most rows stored at events; 0 means as many as there are output points (at least
+    /// 2000), so a model with dense switching does not blow up the result file.
+    /// `usize::MAX` keeps every event.
+    #[serde(default)]
+    pub max_event_rows: usize,
     /// Parameter overrides by name.
     pub params: Vec<(String, f64)>,
     /// Abort after this many seconds of wall-clock time (0 = no limit).
@@ -65,6 +70,7 @@ impl Default for SimOptions {
             fixed_step: 0.0,
             max_step: 0.0,
             store_events: true,
+            max_event_rows: 0,
             params: Vec::new(),
             max_wall_time: 0.0,
         }
@@ -362,20 +368,48 @@ impl<'m> Simulation<'m> {
             self.rt.save_pre();
             let rel_changed = self.rt.latch_relations();
             self.rt.run(&m.ode);
-            let conds = self.when_conds();
+            let mut conds = self.when_conds();
             let prev = std::mem::take(&mut self.cond_prev);
             let fired = self.fire(&conds, &prev);
-            self.cond_prev = conds;
             // Relations read the values the actions just assigned (`time >= t_start +
-            // waitTime` right after `t_start := time`), then the algebraics follow.
-            let rel_changed = if fired {
-                self.rt.run(&m.ode);
-                self.rt.latch_relations() || rel_changed
-            } else {
-                rel_changed
-            };
+            // waitTime` right after `t_start := time`), then the algebraics follow. A
+            // condition that only becomes true with those values belongs to the same
+            // solution of the event equations: fire it before anything is committed.
+            let mut rel_changed = rel_changed;
+            if fired {
+                for _ in 0..100 {
+                    self.rt.run(&m.ode);
+                    rel_changed |= self.rt.latch_relations();
+                    self.rt.run(&m.ode);
+                    let now = self.when_conds();
+                    let seen: Vec<Vec<bool>> = conds
+                        .iter()
+                        .zip(&prev)
+                        .map(|(c, p)| c.iter().zip(p).map(|(&a, &b)| a || b).collect())
+                        .collect();
+                    let more = self.fire(&now, &seen);
+                    conds = now;
+                    if !more {
+                        break;
+                    }
+                }
+            }
+            self.cond_prev = conds;
             // Recompute algebraics with the new discrete values.
             self.rt.run(&m.ode);
+            if std::env::var("DAEDALUS_DEBUG_EVENTS").is_ok() {
+                let ch: Vec<String> = m
+                    .discretes
+                    .iter()
+                    .filter(|&&d| self.rt.r[d as usize] != self.rt.r[m.layout.pre0 + d as usize])
+                    .map(|&d| format!("{}={}", m.vars[d as usize].name, self.rt.r[d as usize]))
+                    .collect();
+                eprintln!(
+                    "t={} fired={fired} rel={rel_changed} {}",
+                    self.rt.time(),
+                    ch.join(" ")
+                );
+            }
             let disc_changed = m.discretes.iter().any(|&d| {
                 let a = self.rt.r[d as usize];
                 let b = self.rt.r[m.layout.pre0 + d as usize];
@@ -550,6 +584,12 @@ impl<'m> Simulation<'m> {
         rec.record(&mut self.rt);
         let mut k_out: u64 = 1;
         let next_out = |k: u64| o.start_time + k as f64 * dt;
+        let event_budget = if o.max_event_rows > 0 {
+            o.max_event_rows
+        } else {
+            ((span / dt).ceil() as usize).max(2000)
+        };
+        let mut event_rows = 0usize;
         solver.reset(&mut self.rt, t, &x);
         let n_rel = m.layout.n_rel;
         let mut xi = vec![0.0; n];
@@ -667,19 +707,28 @@ impl<'m> Simulation<'m> {
                 }
                 solver.interpolate(te, &mut xi);
                 self.rt.rhs(te, &xi, &mut x);
-                if o.store_events {
+                let store = o.store_events && event_rows < event_budget;
+                if store {
                     rec.record(&mut self.rt);
+                    event_rows += 2;
+                    if event_rows >= event_budget {
+                        self.log.push(format!(
+                            "more than {} event points at t = {te}: later events are not stored \
+                             (only output points)",
+                            event_budget
+                        ));
+                    }
                 }
                 self.record_delays();
                 self.event_iteration()?;
                 self.check_newton("event")?;
                 self.record_delays();
-                if o.store_events {
+                if store {
                     rec.record(&mut self.rt);
                 }
                 // Output point coinciding with the event.
                 if (next_out(k_out) - te).abs() <= 1e-12 * te.abs().max(1.0) {
-                    if !o.store_events {
+                    if !store {
                         rec.record(&mut self.rt);
                     }
                     k_out += 1;

@@ -253,23 +253,28 @@ export function drawGraphics(parent: SVGGElement, graphics: AnnRecord[], m: Mat,
       const bw = Math.max(...xs) - bx;
       const bh = Math.max(...ys) - by;
       const scaleLen = Math.hypot(m[0], m[1]);
-      // Text stays upright, so a quarter-turned box keeps its own width and height: fit the
-      // text to the extent measured along the item's axes, not to the rotated bounding box.
+      // Text turns with its component (a vertical label in a quarter-turned box) but is
+      // never drawn upside down; it fits the extent measured along the item's own axes.
       const ew = Math.abs(e[1][0] - e[0][0]) * Math.hypot(mm[0], mm[1]);
       const eh = Math.abs(e[1][1] - e[0][1]) * Math.hypot(mm[2], mm[3]);
-      const [fw, fh] = [ew, eh];
-      const fs = num(g.fontSize) > 0 ? num(g.fontSize) * 0.35 * scaleLen * 2.83 : Math.min(fh * 0.9, (fw / Math.max(1, text.length)) * 1.7);
+      let deg = (Math.atan2(mm[1], mm[0]) * 180) / Math.PI;
+      if (deg > 90.5) deg -= 180;
+      else if (deg <= -89.5) deg += 180;
+      deg = Math.round(deg * 1000) / 1000;
+      const fs = num(g.fontSize) > 0 ? num(g.fontSize) * 0.35 * scaleLen * 2.83 : Math.min(eh * 0.9, (ew / Math.max(1, text.length)) * 1.7);
       if (fs < 0.5) continue;
       const align = enumLit(g.horizontalAlignment, "Center");
-      const tx = align === "Left" ? bx : align === "Right" ? bx + bw : bx + bw / 2;
+      const cx = bx + bw / 2;
+      const cy = by + bh / 2;
+      const off = align === "Left" ? -ew / 2 : align === "Right" ? ew / 2 : 0;
       const t = el("text", {
-        x: tx,
-        y: -(by + bh / 2),
+        x: off,
+        y: 0,
         "font-size": fs,
         "text-anchor": align === "Left" ? "start" : align === "Right" ? "end" : "middle",
         "dominant-baseline": "central",
         fill: color(g.textColor ?? g.lineColor, "black"),
-        transform: "scale(1,-1)",
+        transform: `scale(1,-1) translate(${cx},${-cy})${deg ? ` rotate(${-deg})` : ""}`,
         "font-family": typeof g.fontName === "string" && g.fontName ? g.fontName : "inherit",
       });
       const styles = Array.isArray(g.textStyle) ? g.textStyle.map((s) => enumLit(s, "")) : [];
@@ -366,21 +371,96 @@ export function condition(comp: ComponentInfo | null, cls: ClassInfo, classes: M
   return (expr) => evalCond(expr, (n) => paramText(n, comp, cls, classes));
 }
 
+const CONSTANTS: Record<string, number> = {
+  pi: Math.PI,
+  e: Math.E,
+  "Modelica.Constants.pi": Math.PI,
+  "Modelica.Constants.e": Math.E,
+  "Modelica.Constants.D2R": Math.PI / 180,
+  "Modelica.Constants.R2D": 180 / Math.PI,
+  "Modelica.Constants.g_n": 9.80665,
+  "Modelica.Constants.sigma": 5.670374419e-8,
+  "Modelica.Constants.T_zero": -273.15,
+};
+const FUNS: Record<string, (x: number) => number> = {
+  sqrt: Math.sqrt, sin: Math.sin, cos: Math.cos, tan: Math.tan, exp: Math.exp, log: Math.log, log10: Math.log10, abs: Math.abs,
+};
+
+/** Evaluate an arithmetic parameter expression (`1/(2*Modelica.Constants.pi)`); null if unknown. */
+export function evalNum(expr: string, lookup: (name: string) => string | null, depth = 0): number | null {
+  if (depth > 8) return null;
+  const toks = expr.match(/[A-Za-z_][A-Za-z0-9_.]*|\d+(?:\.\d*)?(?:[eE][-+]?\d+)?|\.\d+(?:[eE][-+]?\d+)?|[-+*/^(),]|\S/g) ?? [];
+  let i = 0;
+  let bad = false;
+  const prim = (): number => {
+    const t = toks[i++];
+    if (t === undefined) return (bad = true), NaN;
+    if (t === "(") {
+      const v = sum();
+      if (toks[i++] !== ")") bad = true;
+      return v;
+    }
+    if (t === "-") return -pow();
+    if (t === "+") return pow();
+    if (/^[\d.]/.test(t)) return parseFloat(t);
+    if (/^[A-Za-z_]/.test(t)) {
+      const f = FUNS[t.replace(/^Modelica\.Math\./, "")];
+      if (f && toks[i] === "(") {
+        i++;
+        const v = sum();
+        if (toks[i++] !== ")") bad = true;
+        return f(v);
+      }
+      if (t in CONSTANTS) return CONSTANTS[t];
+      const s = lookup(t);
+      const v = s === null ? null : evalNum(s, lookup, depth + 1);
+      if (v === null) bad = true;
+      return v ?? NaN;
+    }
+    bad = true;
+    return NaN;
+  };
+  const pow = (): number => {
+    const a = prim();
+    if (toks[i] === "^") {
+      i++;
+      return a ** pow();
+    }
+    return a;
+  };
+  const prod = (): number => {
+    let a = pow();
+    while (toks[i] === "*" || toks[i] === "/") a = toks[i++] === "*" ? a * pow() : a / pow();
+    return a;
+  };
+  const sum = (): number => {
+    let a = prod();
+    while (toks[i] === "+" || toks[i] === "-") a = toks[i++] === "+" ? a + prod() : a - prod();
+    return a;
+  };
+  const v = sum();
+  return bad || i !== toks.length || !Number.isFinite(v) ? null : v;
+}
+
+/** A parameter value as icon text: computed expressions shown as their number. */
+function shownValue(v: string, lookup: (name: string) => string | null): string {
+  if (!/[-+*/^(]/.test(v.replace(/^-/, "")) && !/[A-Za-z]/.test(v)) return v;
+  if (/^\s*(true|false|"[^"]*")\s*$/.test(v)) return v;
+  const x = evalNum(v, lookup);
+  if (x === null) return v;
+  return String(Number(x.toPrecision(4)));
+}
+
 function substitution(comp: ComponentInfo | null, cls: ClassInfo, classes: Map<string, ClassInfo>): (s: string) => string {
+  const lookup = (n: string) => paramText(n, comp, cls, classes);
   return (s: string) =>
     s.replace(/%%|%\{?([A-Za-z_][A-Za-z0-9_.]*)\}?/g, (all, name: string | undefined) => {
       if (all === "%%") return "%";
       if (!name) return all;
       if (name === "name") return comp?.name ?? cls.name;
       if (name === "class") return cls.name;
-      const mod = comp?.modifiers.find(([k]) => k === name);
-      if (mod) return mod[1];
-      // default value of a parameter of the class (or one of its bases)
-      for (const c of [cls, ...cls.extends.map((e) => classes.get(e)).filter((x): x is ClassInfo => !!x)]) {
-        const p = c.components.find((x) => x.name === name);
-        if (p?.binding) return p.binding;
-      }
-      return name;
+      const v = lookup(name);
+      return v === null ? name : shownValue(v, lookup);
     });
 }
 

@@ -35,6 +35,8 @@ OPTIONS:
   --tol TOL               relative tolerance (default 1e-6)
   --method M              bdf | dopri5 | rk4 | euler
   --step H                fixed step size
+  --store-events E        rows at events: all | none | N (default: as many
+                          as output points)
   -p, --param NAME=VALUE  parameter override (repeatable)
   -o, --output FILE       result file (.mat Dymola format, or .csv)
   --vars a,b,c            variables written to CSV / printed
@@ -110,6 +112,11 @@ fn run() -> anyhow::Result<()> {
                     Method::parse(&m).ok_or_else(|| anyhow::anyhow!("unknown method '{m}'"))?;
                 set_method = true;
             }
+            "--store-events" => match next(&mut i)?.as_str() {
+                "all" => so.max_event_rows = usize::MAX,
+                "none" => so.store_events = false,
+                n => so.max_event_rows = n.parse()?,
+            },
             "--step" => so.fixed_step = next(&mut i)?.parse()?,
             "-p" | "--param" => {
                 let kv = next(&mut i)?;
@@ -249,6 +256,8 @@ fn run() -> anyhow::Result<()> {
             }
             o.intervals = so.intervals;
             o.fixed_step = so.fixed_step;
+            o.store_events = so.store_events;
+            o.max_event_rows = so.max_event_rows;
             o.params = so.params.clone();
             let (res, stats) = match daedalus_core::sim::simulate(&m, o) {
                 Ok(r) => r,

@@ -462,9 +462,35 @@ fn balanced(s: &str) -> Option<String> {
 }
 
 fn src(text: Option<&str>, span: rumoca_core::Span) -> String {
-    text.and_then(|t| t.get(span.start.0..span.end.0))
-        .map(|s| s.trim().to_string())
-        .unwrap_or_default()
+    let Some(t) = text else {
+        return String::new();
+    };
+    let Some(s) = t.get(span.start.0..span.end.0) else {
+        return String::new();
+    };
+    // An expression ending in a parenthesised operand can have its span stop before the
+    // closing parentheses: take them from the source that follows.
+    let open = s
+        .matches('(')
+        .count()
+        .saturating_sub(s.matches(')').count());
+    let mut end = span.end.0;
+    let rest = t[end..].char_indices();
+    let mut need = open;
+    for (i, c) in rest {
+        if need == 0 {
+            break;
+        }
+        match c {
+            ')' => {
+                need -= 1;
+                end = span.end.0 + i + 1;
+            }
+            c if c.is_whitespace() => {}
+            _ => break,
+        }
+    }
+    t[span.start.0..end].trim().to_string()
 }
 
 fn cref_text(c: &ast::ComponentReference) -> String {

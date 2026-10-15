@@ -181,8 +181,17 @@ impl Results {
     }
 }
 
+/// Shortest text that reads back as the same number; tiny and huge magnitudes in
+/// exponent form (Rust's `{}` would spell out every leading zero).
 fn fmt_num(x: f64) -> String {
-    format!("{x}")
+    let a = x.abs();
+    if a == 0.0 {
+        "0".to_string()
+    } else if (1e-3..1e16).contains(&a) || !a.is_finite() {
+        format!("{x}")
+    } else {
+        format!("{x:e}")
+    }
 }
 
 fn write_header(

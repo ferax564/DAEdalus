@@ -967,6 +967,17 @@ impl<'a, 't> Flattener<'a, 't> {
                             }
                             ClkOp::Interval => interval,
                             ClkOp::FirstTick => first,
+                            // `sample(u)` reads the left limit of u at the tick: the
+                            // value before this instant's events changed it.
+                            ClkOp::Sample if in_part => {
+                                a.rewrite(x, &mut FxHashMap::default(), &mut |a2, n| {
+                                    if let Node::Var(v) = n {
+                                        Some(a2.pre(v))
+                                    } else {
+                                        None
+                                    }
+                                })
+                            }
                             _ => x,
                         })
                     }

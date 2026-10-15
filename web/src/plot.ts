@@ -82,6 +82,12 @@ export class PlotWindow {
     this.canvas.className = "plot";
     host.appendChild(this.canvas);
     new ResizeObserver(() => this.draw()).observe(host);
+    // Colours come from CSS variables: redraw when the theme changes.
+    window.matchMedia?.("(prefers-color-scheme: dark)").addEventListener?.("change", () => this.draw());
+    new MutationObserver(() => this.draw()).observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["data-theme", "class"],
+    });
     this.canvas.addEventListener("pointermove", (e) => {
       const r = this.canvas.getBoundingClientRect();
       this.hover = { px: e.clientX - r.left, py: e.clientY - r.top };
@@ -287,7 +293,7 @@ export class PlotWindow {
         const of = s.offset ?? 0;
         for (let i = 0; i < s.y.length; i++) {
           const x = s.x[i];
-          if (!sp.xName && (x < xr[0] || x > xr[1])) continue;
+          if ((!sp.xName || sp.xZoom) && (x < xr[0] || x > xr[1])) continue;
           const v = s.y[i] * sc + of;
           if (v < ylo) ylo = v;
           if (v > yhi) yhi = v;
