@@ -741,12 +741,7 @@ impl<'m> Simulation<'m> {
             p.initial_event(self.rt.time());
         }
         // Parameter values into the result.
-        self.rt.run(&m.outputs);
-        for (k, &i) in order.iter().enumerate() {
-            if let ResultKind::Param(_) = rec.res.vars[k].kind {
-                rec.res.vars[k].kind = ResultKind::Param(self.rt.r[i]);
-            }
-        }
+        self.param_values_into(&mut rec, &order);
         let t1 = crate::backend::web_time_now();
         self.stats.init_ms = (t1 - t_init) * 1000.0;
         let r = self.integrate(&mut rec);
@@ -777,7 +772,18 @@ impl<'m> Simulation<'m> {
         }
         rec.record(&mut self.rt);
         self.restart(&mut st);
-        st.event_budget = if self.opts.max_event_rows > 0 {
+        st.event_budget = self.event_budget(rec);
+        let stop = self.opts.stop_time;
+        let r = self.advance(&mut st, stop, Some(&mut *rec));
+        self.stats.solver = st.solver.stats();
+        r?;
+        self.stop_time_event(&mut st, rec)?;
+        Ok(())
+    }
+
+    /// Most rows stored at events (see [`SimOptions::max_event_rows`]).
+    fn event_budget(&self, rec: &Recorder) -> usize {
+        if self.opts.max_event_rows > 0 {
             self.opts.max_event_rows
         } else {
             // About 10 million written values of event rows (every column, aliases
@@ -785,13 +791,18 @@ impl<'m> Simulation<'m> {
             // bounded file for a large one, however fine the output grid.
             let per_row = rec.res.vars.len().max(rec.stored.len()).max(1);
             (10_000_000 / per_row).max(2_000)
-        };
-        let stop = self.opts.stop_time;
-        let r = self.advance(&mut st, stop, Some(&mut *rec));
-        self.stats.solver = st.solver.stats();
-        r?;
-        self.stop_time_event(&mut st, rec)?;
-        Ok(())
+        }
+    }
+
+    /// Parameter values (as evaluated now) into the result's parameter entries.
+    fn param_values_into(&mut self, rec: &mut Recorder, order: &[usize]) {
+        let m = self.rt.m;
+        self.rt.run(&m.outputs);
+        for (k, &i) in order.iter().enumerate() {
+            if let ResultKind::Param(_) = rec.res.vars[k].kind {
+                rec.res.vars[k].kind = ResultKind::Param(self.rt.r[i]);
+            }
+        }
     }
 
     /// Integrator state for stepping the model forward from its current (initialized,
@@ -879,6 +890,7 @@ impl<'m> Simulation<'m> {
             last_event: f64::NEG_INFINITY,
             same_instant: 0,
             wall0: crate::backend::web_time_now(),
+            deadline: f64::INFINITY,
         }
     }
 
@@ -972,7 +984,19 @@ impl<'m> Simulation<'m> {
         let n_rel = m.layout.n_rel;
         let wall0 = st.wall0;
         let mut t = st.t;
+        let mut steps_here = 0u32;
         while t < t_stop * (1.0 - 1e-15) - 1e-300 && self.terminated.is_none() {
+            // A run in slices (`Incremental`) gives the caller control back once its wall
+            // clock budget is spent; the loop state lives in `st`, so the next call
+            // continues exactly where this one stopped.
+            if st.deadline.is_finite()
+                && steps_here > 0
+                && steps_here % 4 == 0
+                && crate::profile::now() > st.deadline
+            {
+                break;
+            }
+            steps_here += 1;
             st.guard += 1;
             if st.guard > 50_000_000 {
                 return Err("too many steps".into());
@@ -1331,6 +1355,8 @@ pub struct Stepper {
     last_event: f64,
     same_instant: u32,
     wall0: f64,
+    /// Wall-clock time (`profile::now`) at which `advance` returns early (slices).
+    deadline: f64,
 }
 
 impl Stepper {
@@ -1342,6 +1368,175 @@ impl Stepper {
 impl Simulation<'_> {
     pub fn log_messages(&self) -> &[String] {
         &self.log
+    }
+}
+
+/// A simulation run in slices, for live plotting and interactive dashboards: the caller
+/// advances it to a time or for a wall-clock budget, reads the result rows recorded so far
+/// between slices, and may change free Real parameters on the way.
+///
+/// Slices that end only on the wall-clock budget (`advance(stop_time, budget)`) take the
+/// very same steps as [`simulate`], so the result is identical to a full run. Slices that
+/// end on an intermediate time make the integrator stop there (paced runs).
+pub struct Incremental<'m> {
+    sim: Simulation<'m>,
+    st: Stepper,
+    rec: Recorder,
+    order: Vec<usize>,
+    finished: bool,
+    error: Option<String>,
+}
+
+impl<'m> Incremental<'m> {
+    /// Initialize the model and record the initial point.
+    pub fn new(m: &'m Model, opts: SimOptions) -> Result<Self, SimError> {
+        let mut sim = Simulation::new(m, opts);
+        let (mut rec, order) = Recorder::new(m);
+        let t_init = crate::profile::now();
+        if let Err(e) = sim.initialize() {
+            return Err(SimError {
+                message: e,
+                partial: None,
+            });
+        }
+        sim.param_values_into(&mut rec, &order);
+        sim.stats.init_ms = (crate::profile::now() - t_init) * 1000.0;
+        let mut st = sim.make_stepper();
+        rec.record(&mut sim.rt);
+        sim.restart(&mut st);
+        st.event_budget = sim.event_budget(&rec);
+        Ok(Incremental {
+            sim,
+            st,
+            rec,
+            order,
+            finished: false,
+            error: None,
+        })
+    }
+
+    /// Simulated time reached.
+    pub fn time(&self) -> f64 {
+        self.st.t
+    }
+
+    pub fn options(&self) -> &SimOptions {
+        &self.sim.opts
+    }
+
+    /// Whether the run reached its stop time, was terminated, or failed.
+    pub fn finished(&self) -> bool {
+        self.finished
+    }
+
+    /// The error that ended the run, if any.
+    pub fn error(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
+
+    /// The rows recorded so far.
+    pub fn results(&self) -> &Results {
+        &self.rec.res
+    }
+
+    /// Integrate to `t` (at most the stop time), or until `wall_budget` seconds of wall
+    /// clock time are spent (0: no budget). Returns whether the run is finished.
+    pub fn advance(&mut self, t: f64, wall_budget: f64) -> Result<bool, String> {
+        if self.finished {
+            return Ok(true);
+        }
+        let stop = self.sim.opts.stop_time;
+        let target = t.min(stop);
+        self.st.deadline = if wall_budget > 0.0 {
+            crate::profile::now() + wall_budget
+        } else {
+            f64::INFINITY
+        };
+        let r = self.sim.advance(&mut self.st, target, Some(&mut self.rec));
+        self.st.deadline = f64::INFINITY;
+        let r = r.and_then(|()| {
+            let reached = |x: f64, to: f64| x >= to * (1.0 - 1e-15) - 1e-300;
+            if self.sim.terminated.is_some() || reached(self.st.t, stop) {
+                self.sim.stop_time_event(&mut self.st, &mut self.rec)?;
+                self.finished = true;
+            } else if reached(self.st.t, target) {
+                // A time event due exactly where this slice ends: handle it here, as
+                // `advance_to` does, and store its right value.
+                if self.sim.endpoint_time_event(&mut self.st, target)? {
+                    if self.sim.opts.store_events && self.st.event_rows < self.st.event_budget {
+                        self.rec.record(&mut self.sim.rt);
+                        self.st.event_rows += 1;
+                    }
+                    self.sim.rt.get_states(&mut self.st.xi);
+                    self.st.solver.reset(&mut self.sim.rt, target, &self.st.xi);
+                }
+            }
+            Ok(())
+        });
+        if let Err(e) = r {
+            self.finished = true;
+            self.error = Some(e.clone());
+            return Err(e);
+        }
+        Ok(self.finished)
+    }
+
+    /// Change free Real parameters (see [`crate::sweep::classify`]) at the current time,
+    /// without restarting: parameters bound to them are evaluated again, the discrete
+    /// values settle in an event iteration and the integrator restarts from the current
+    /// states. Start values and `fixed = false` parameters keep what initialization gave
+    /// them. Fails, changing nothing, when a name is not such a parameter.
+    pub fn set_params(&mut self, params: &[(String, f64)]) -> Result<(), String> {
+        if self.finished {
+            return Err("the run is finished".into());
+        }
+        let m = self.sim.rt.m;
+        for (n, _) in params {
+            if crate::sweep::classify(m, n) != crate::sweep::ParamClass::Runtime {
+                return Err(format!(
+                    "'{n}' is not a free Real parameter: it can only change with a new run"
+                ));
+            }
+        }
+        for (n, v) in params {
+            match self.sim.opts.params.iter_mut().find(|(k, _)| k == n) {
+                Some(p) => p.1 = *v,
+                None => self.sim.opts.params.push((n.clone(), *v)),
+            }
+        }
+        // The consistent solution at the time reached (the registers hold whatever the
+        // solver evaluated last).
+        let t = self.st.t;
+        if (self.st.solver.t() - t).abs() <= 1e-15 * t.abs().max(1.0) {
+            self.st.x.copy_from_slice(self.st.solver.x());
+        } else {
+            self.st.solver.interpolate(t, &mut self.st.x);
+        }
+        self.sim.eval_params()?;
+        let xs = self.st.x.clone();
+        self.sim.rt.rhs(t, &xs, &mut self.st.xi);
+        self.sim.rt.error = None;
+        self.sim.param_values_into(&mut self.rec, &self.order);
+        self.sim.handle_event()?;
+        self.sim.restart(&mut self.st);
+        Ok(())
+    }
+
+    /// End the run where it is: the result so far, the statistics and the error, if any.
+    pub fn finish(mut self) -> (Results, SimStats, Option<String>) {
+        let m = self.sim.rt.m;
+        let s = &mut self.sim.stats;
+        s.solver = self.st.solver.stats();
+        s.newton_solves = self.sim.rt.newton_stats.solves;
+        s.newton_iterations = self.sim.rt.newton_stats.iterations;
+        s.output_points = self.rec.res.time.len();
+        s.states = m.states.len();
+        let stats = s.clone();
+        self.rec.res.log.append(&mut self.sim.log);
+        if let Some(msg) = &self.sim.terminated {
+            self.rec.res.log.push(format!("terminated: {msg}"));
+        }
+        (self.rec.res, stats, self.error)
     }
 }
 

@@ -46,6 +46,8 @@ pub struct Workspace {
     profile: Option<String>,
     /// The running analysis (see `analysis.rs`).
     job: Option<Box<dyn daedalus_core::uq::Job>>,
+    /// The run being advanced in slices (live plotting, dashboards).
+    live: Option<LiveRun>,
 }
 
 fn to_json<T: Serialize>(v: &T) -> String {
@@ -250,46 +252,7 @@ impl Workspace {
         };
         self.results = Some(res);
         let r = self.results.as_ref().unwrap();
-        let free: std::collections::HashSet<&str> = m
-            .free_params
-            .iter()
-            .map(|&p| m.vars[p as usize].name.as_str())
-            .collect();
-        let vars = r
-            .vars
-            .iter()
-            .filter(|v| !v.name.starts_with('$'))
-            .map(|v| {
-                use daedalus_core::results::ResultKind as K;
-                let (kind, value) = match v.kind {
-                    K::Series(_) => ("series", None),
-                    K::Param(x) => ("param", Some(x)),
-                    K::Alias { .. } => ("alias", None),
-                };
-                VarSummary {
-                    name: &v.name,
-                    unit: &v.unit,
-                    description: &v.description,
-                    kind,
-                    value,
-                    editable: kind == "param" && free.contains(v.name.as_str()),
-                }
-            })
-            .collect();
-        to_json(&SimSummary {
-            ok: error.is_none(),
-            error,
-            model,
-            vars,
-            points: r.time.len(),
-            log: &r.log,
-            warnings: m.warnings.clone(),
-            translate_ms,
-            load_ms,
-            stats,
-            model_stats: Some(m.stats.clone()),
-            experiment,
-        })
+        summary_json(&m, r, model, error, translate_ms, load_ms, stats, experiment)
     }
 
     /// JSON performance profile and event log of the last simulation (`null` unless it
@@ -368,6 +331,255 @@ impl Workspace {
                 to_json(&j)
             }
             Err(e) => to_json(&serde_json::json!({"ok": false, "error": format!("{e:#}")})),
+        }
+    }
+}
+
+/// The JSON summary of a simulation: variables (with which parameters are editable),
+/// statistics and messages.
+#[allow(clippy::too_many_arguments)]
+fn summary_json(
+    m: &daedalus_core::codegen::Model,
+    r: &Results,
+    model: &str,
+    error: Option<String>,
+    translate_ms: f64,
+    load_ms: f64,
+    stats: Option<daedalus_core::sim::SimStats>,
+    experiment: Option<serde_json::Value>,
+) -> String {
+    let free: std::collections::HashSet<&str> = m
+        .free_params
+        .iter()
+        .map(|&p| m.vars[p as usize].name.as_str())
+        .collect();
+    let vars = r
+        .vars
+        .iter()
+        .filter(|v| !v.name.starts_with('$'))
+        .map(|v| {
+            use daedalus_core::results::ResultKind as K;
+            let (kind, value) = match v.kind {
+                K::Series(_) => ("series", None),
+                K::Param(x) => ("param", Some(x)),
+                K::Alias { .. } => ("alias", None),
+            };
+            VarSummary {
+                name: &v.name,
+                unit: &v.unit,
+                description: &v.description,
+                kind,
+                value,
+                editable: kind == "param" && free.contains(v.name.as_str()),
+            }
+        })
+        .collect();
+    to_json(&SimSummary {
+        ok: error.is_none(),
+        error,
+        model,
+        vars,
+        points: r.time.len(),
+        log: &r.log,
+        warnings: m.warnings.clone(),
+        translate_ms,
+        load_ms,
+        stats,
+        model_stats: Some(m.stats.clone()),
+        experiment,
+    })
+}
+
+/// A run in slices (live plotting, dashboards). `inc` borrows the model behind `model`,
+/// which this struct owns: the borrow is dropped before the model (see `Drop`). `inc` is
+/// `None` only once [`Workspace::live_finish`] took it.
+struct LiveRun {
+    inc: Option<daedalus_core::sim::Incremental<'static>>,
+    model: *mut daedalus_core::codegen::Model,
+    name: String,
+    translate_ms: f64,
+    load_ms: f64,
+    t_sim0: f64,
+    experiment: Option<serde_json::Value>,
+}
+
+impl LiveRun {
+    fn model(&self) -> &daedalus_core::codegen::Model {
+        // SAFETY: `model` comes from `Box::into_raw` and is freed only in `drop`.
+        unsafe { &*self.model }
+    }
+}
+
+impl Drop for LiveRun {
+    fn drop(&mut self) {
+        self.inc = None;
+        // SAFETY: nothing borrows the model any more; it came from `Box::into_raw`.
+        unsafe { drop(Box::from_raw(self.model)) };
+    }
+}
+
+/// Simulation options: the experiment annotation's, with the JSON fields in `options`
+/// replacing them.
+fn sim_options(m: &daedalus_core::codegen::Model, options: &str) -> SimOptions {
+    let mut opts = SimOptions::from_model(m);
+    if let Ok(serde_json::Value::Object(o)) = serde_json::from_str::<serde_json::Value>(options) {
+        let mut base = serde_json::to_value(&opts).unwrap_or_default();
+        if let serde_json::Value::Object(b) = &mut base {
+            for (k, v) in o {
+                b.insert(k, v);
+            }
+        }
+        if let Ok(o2) = serde_json::from_value(base) {
+            opts = o2;
+        }
+    }
+    opts
+}
+
+/// Live runs: a simulation advanced in slices, with its rows readable in between.
+#[wasm_bindgen]
+impl Workspace {
+    /// Translate and initialize `model` for a run in slices ([`Workspace::live_advance`]).
+    /// JSON `{"ok", "error", "start_time", "stop_time"}`.
+    #[wasm_bindgen(js_name = liveStart)]
+    pub fn live_start(&mut self, model: &str, options: &str) -> String {
+        self.live = None;
+        let load_ms = self.ensure(model, Some(true));
+        let t0 = now_ms();
+        let m = match daedalus_core::translate(&self.lib, model, &backend_options(options)) {
+            Ok(m) => m,
+            Err(e) => {
+                self.results = None;
+                return to_json(
+                    &serde_json::json!({"ok": false, "error": format!("{e:#}"), "model": model}),
+                );
+            }
+        };
+        let translate_ms = now_ms() - t0;
+        let opts = sim_options(&m, options);
+        let experiment = serde_json::to_value(&m.experiment).ok();
+        let (start, stop) = (opts.start_time, opts.stop_time);
+        let ptr = Box::into_raw(Box::new(m));
+        // SAFETY: the model lives until `LiveRun::drop`, which drops the run first.
+        let mref: &'static daedalus_core::codegen::Model = unsafe { &*ptr };
+        let t1 = now_ms();
+        match daedalus_core::sim::Incremental::new(mref, opts) {
+            Ok(inc) => {
+                self.live = Some(LiveRun {
+                    inc: Some(inc),
+                    model: ptr,
+                    name: model.to_string(),
+                    translate_ms,
+                    load_ms,
+                    t_sim0: t1,
+                    experiment,
+                });
+                to_json(&serde_json::json!({"ok": true, "start_time": start, "stop_time": stop}))
+            }
+            Err(e) => {
+                // SAFETY: nothing borrows the model any more.
+                drop(unsafe { Box::from_raw(ptr) });
+                self.results = None;
+                to_json(&serde_json::json!({"ok": false, "error": e.message, "model": model}))
+            }
+        }
+    }
+
+    /// Advance the live run to time `t` (at most its stop time) or for `budget_ms` of
+    /// wall-clock time (0: no budget). JSON `{"t", "points", "done"}`; once done, the run
+    /// becomes the workspace's result and `"summary"` holds what `simulate` returns.
+    #[wasm_bindgen(js_name = liveAdvance)]
+    pub fn live_advance(&mut self, t: f64, budget_ms: f64) -> String {
+        let Some(run) = self.live.as_mut() else {
+            return to_json(&serde_json::json!({"done": true, "error": "no live run"}));
+        };
+        let inc = run.inc.as_mut().unwrap();
+        let r = inc.advance(t, budget_ms * 1e-3);
+        let done = matches!(r, Ok(true) | Err(_));
+        let out = serde_json::json!({
+            "t": inc.time(),
+            "points": inc.results().time.len(),
+            "done": done,
+        });
+        if !done {
+            return to_json(&out);
+        }
+        let summary = self.live_finish();
+        let mut out = out;
+        out["summary"] = serde_json::from_str(&summary).unwrap_or_default();
+        to_json(&out)
+    }
+
+    /// End the live run where it is; it becomes the workspace's result. Returns the
+    /// summary JSON (as `simulate`), or `null` without a live run.
+    #[wasm_bindgen(js_name = liveFinish)]
+    pub fn live_finish(&mut self) -> String {
+        let Some(mut run) = self.live.take() else {
+            return "null".into();
+        };
+        let inc = run.inc.take().unwrap();
+        let (res, mut stats, error) = inc.finish();
+        stats.init_ms = 0.0;
+        stats.sim_ms = now_ms() - run.t_sim0;
+        let experiment = run.experiment.take();
+        let json = summary_json(
+            run.model(),
+            &res,
+            &run.name,
+            error,
+            run.translate_ms,
+            run.load_ms,
+            Some(stats),
+            experiment,
+        );
+        self.results = Some(res);
+        json
+    }
+
+    /// Time axis of the live run's rows from index `from` on.
+    #[wasm_bindgen(js_name = liveTime)]
+    pub fn live_time(&self, from: usize) -> Vec<f64> {
+        self.live
+            .as_ref()
+            .and_then(|r| r.inc.as_ref())
+            .map(|i| i.results().time.get(from..).unwrap_or_default().to_vec())
+            .unwrap_or_default()
+    }
+
+    /// Values of one variable of the live run from row `from` on (empty if unknown).
+    #[wasm_bindgen(js_name = liveValues)]
+    pub fn live_values(&self, name: &str, from: usize) -> Vec<f64> {
+        use daedalus_core::results::ResultKind as K;
+        let Some(inc) = self.live.as_ref().and_then(|r| r.inc.as_ref()) else {
+            return Vec::new();
+        };
+        let r = inc.results();
+        let n = r.time.len();
+        let Some(v) = r.find(name) else {
+            return Vec::new();
+        };
+        let from = from.min(n);
+        match v.kind {
+            K::Series(c) => r.series[c][from..].to_vec(),
+            K::Param(x) => vec![x; n - from],
+            K::Alias { col, sign } => r.series[col][from..].iter().map(|x| sign * x).collect(),
+        }
+    }
+
+    /// Change free Real parameters of the live run at the time reached (JSON
+    /// `[[name, value], ...]`). JSON `{"ok", "error"}`.
+    #[wasm_bindgen(js_name = liveSetParams)]
+    pub fn live_set_params(&mut self, params: &str) -> String {
+        let Some(inc) = self.live.as_mut().and_then(|r| r.inc.as_mut()) else {
+            return to_json(&serde_json::json!({"ok": false, "error": "no live run"}));
+        };
+        let ps: Vec<(String, f64)> = match serde_json::from_str(params) {
+            Ok(p) => p,
+            Err(e) => return to_json(&serde_json::json!({"ok": false, "error": e.to_string()})),
+        };
+        match inc.set_params(&ps) {
+            Ok(()) => to_json(&serde_json::json!({"ok": true, "t": inc.time()})),
+            Err(e) => to_json(&serde_json::json!({"ok": false, "error": e})),
         }
     }
 }
