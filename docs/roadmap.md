@@ -38,7 +38,11 @@
   - package browser;
   - icon, diagram and text views;
   - simulation setup and variable browser;
-  - plot window.
+  - plot window;
+  - graphical editing: drag components from the browser, draw connections with
+    compatible-connector highlighting and orthogonal routing, move, rotate,
+    flip, delete, a parameter dialog, undo and redo, all written back to the
+    text without disturbing its formatting.
 - CI: Rust tests, a simulation of every example, a 2000-mass scalability smoke
   test, and the WebAssembly and workbench build.
 
@@ -83,8 +87,8 @@ failures, which are the next work items:
 
 ### Workbench
 
-- Graphical editing: drag components from the browser, draw connections, edit
-  parameters in a dialog, and write the result back to the text.
+- Graphical editing, next steps: editing inherited components and connections,
+  array connectors (`u[1]`), connector names in the diagram, align and space.
 - Animation of mechanical models.
 
 ### FMI

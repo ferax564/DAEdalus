@@ -143,6 +143,18 @@ self.onmessage = async (ev: MessageEvent<Req>) => {
       case "resultCsv":
         result = w.resultCsv(args[0] as string);
         break;
+      case "editClass":
+        result = JSON.parse(w.editClass(args[0] as string, JSON.stringify(args[1])));
+        break;
+      case "duplicateClass":
+        result = JSON.parse(w.duplicateClass(args[0] as string, args[1] as string, args[2] as string));
+        break;
+      case "newModel":
+        result = JSON.parse(w.newModel(args[0] as string, args[1] as string, args[2] as string));
+        break;
+      case "parameters":
+        result = JSON.parse(w.parameters(args[0] as string));
+        break;
       default:
         throw new Error(`unknown op ${op}`);
     }

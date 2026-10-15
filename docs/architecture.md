@@ -63,6 +63,13 @@ classes.
 `inspect.rs` parses annotations with a small recursive-descent parser over the
 source text. This keeps annotations out of the simulation path.
 
+**Editing (`edit.rs`)** backs the diagram editor. It scans the document's
+tokens into class structure (sections, declarations with their modification,
+binding and annotation, connect equations, compound equations), then edits
+by replacing token ranges: comments and layout outside the touched tokens are
+kept byte for byte. An edit and its inverse give back the original file; the
+tests check this on every Daedalus example and on 613 MSL classes.
+
 ## Expression arena (`src/expr.rs`)
 
 Every expression is a hash-consed node in one arena. This gives three things:

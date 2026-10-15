@@ -46,4 +46,29 @@ export const api = {
   values: (names: string[]) => call<{ time: Float64Array; cols: Float64Array[] }>("values", names),
   resultMat: () => call<Uint8Array>("resultMat"),
   resultCsv: (names: string) => call<string>("resultCsv", names),
+  // graphical editing (see diagram-edit.ts): each returns the edited document's new text
+  editClass: (path: string, ops: unknown[]) => call<EditReply>("editClass", path, ops),
+  duplicateClass: (path: string, uri: string, pkg: string) => call<EditReply>("duplicateClass", path, uri, pkg),
+  newModel: (uri: string, pkg: string, name: string) => call<EditReply>("newModel", uri, pkg, name),
+  parameters: (path: string) => call<ParamInfo[]>("parameters", path),
 };
+
+export interface EditReply {
+  ok: boolean;
+  error?: string;
+  uri: string;
+  text: string;
+  /** Names of added components (editClass). */
+  added?: string[];
+  /** Path of the new class (duplicateClass, newModel). */
+  path?: string;
+}
+
+export interface ParamInfo {
+  name: string;
+  type_name: string;
+  unit: string;
+  description: string;
+  default: string | null;
+  declared_in: string;
+}
