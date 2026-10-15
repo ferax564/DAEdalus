@@ -6,8 +6,8 @@ use daedalus_core::sim::{Method, SimOptions};
 mod analysis;
 mod fmu;
 mod mcp;
-mod sweep;
 mod mos;
+mod sweep;
 
 use std::path::Path;
 use std::process::ExitCode;

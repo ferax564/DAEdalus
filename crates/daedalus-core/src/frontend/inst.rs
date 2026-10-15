@@ -719,6 +719,39 @@ impl<'a, 't> Flattener<'a, 't> {
         if comp.is_final {
             m.final_ = true;
         }
+        // The class modification of a constraining clause (`replaceable C c constrainedby
+        // C(n = n)`) applies to the declaration and to every redeclaration of it, below
+        // the declaration's own modifiers (MLS 7.3.2).
+        let mut cm = Mod::default();
+        for (key, v) in comp.modifications.iter() {
+            let Some(name) = key.strip_prefix(rumoca_core::CONSTRAINEDBY_MOD_PREFIX) else {
+                continue;
+            };
+            let each = comp.each_modifications.contains(key);
+            let final_ = comp.final_attributes.contains(key);
+            match v {
+                E::ClassModification { .. } | E::Binary { .. } => {
+                    self.add_mod_expr(&mut cm, v, each, final_, false, scope)
+                }
+                _ => {
+                    let path: Vec<String> = name.split('.').map(str::to_string).collect();
+                    let sub = Mod {
+                        value: Some(Scoped {
+                            expr: v,
+                            scope: scope.clone(),
+                            sel: Vec::new(),
+                        }),
+                        each,
+                        final_,
+                        ..Default::default()
+                    };
+                    cm.set_path(&path, sub);
+                }
+            }
+        }
+        if !cm.subs.is_empty() {
+            m = merge(&m, &cm);
+        }
         m
     }
 
