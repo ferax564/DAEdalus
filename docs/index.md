@@ -24,7 +24,10 @@ watch the 3-D animation.
   <a class="card" href="workbench.md"><img src="img/wb/card.webp" alt=""><b>Browser workbench</b><span>Package browser, icon, diagram, text and documentation views, variable browser, plots with display units.</span></a>
   <a class="card" href="animation.md"><img src="img/multibody/sevenpost_rig.webp" alt=""><b>3-D animation <span class="new">New</span></b><span>Replays MultiBody results and every example in 3-D, with camera presets, chase cameras and video recording.</span></a>
   <a class="card" href="multibody.md"><img src="img/multibody/kc_rig.webp" alt=""><b>Multibody vehicles <span class="new">New</span></b><span>Double wishbone, pushrod, multilink and MacPherson corners, K&amp;C and seven-post rigs, a full car.</span></a>
-  <a class="card" href="msl.md"><img src="img/msl/card.webp" alt=""><b>Modelica Standard Library <span class="new">New</span></b><span>MSL 4.1.0 loads in the browser out of the box; 441 of its 534 examples simulate.</span></a>
+  <a class="card" href="msl.md"><img src="img/msl/card.webp" alt=""><b>Modelica Standard Library <span class="new">New</span></b><span>MSL 4.1.0 loads in the browser out of the box; 424 of its 534 examples match the reference results.</span></a>
+  <a class="card" href="https://daedalus.apps.ezkeel.com/scoreboard.html"><img src="img/scoreboard_card.webp" alt=""><b>Accuracy scoreboard <span class="new">New</span></b><span>Every MSL example compared with the reference results, signal by signal, by package.</span></a>
+  <a class="card" href="python.md"><img src="img/python_card.webp" alt=""><b>Python API <span class="new">New</span></b><span><code>import daedalus</code>: load, set parameters, simulate to NumPy, linearize and export FMUs in-process.</span></a>
+  <a class="card" href="scripting.md"><img src="img/scripting_card.webp" alt=""><b>.mos scripts and trim <span class="new">New</span></b><span>Run Dymola and OpenModelica regression scripts; find steady states and trim with exact Jacobians.</span></a>
   <a class="card" href="examples.md"><img src="img/examples/card.webp" alt=""><b>Example library</b><span>Torque converters, landing gear, aileron actuator, hydraulic quarter car and EV efficiency, rebuilt from engineering blog posts.</span></a>
   <a class="card" href="linearize.md"><img src="img/linearize_bode.png" alt=""><b>Linearization <span class="new">New</span></b><span>Exact A, B, C, D matrices at any time, as text, JSON or an OpenModelica-style <code>linearized_model</code>.</span></a>
   <a class="card" href="fmi.md"><img src="img/fmu_stalltest.png" alt=""><b>FMI 2.0 export <span class="new">New</span></b><span>Model Exchange and Co-Simulation in one FMU, validated with FMPy in CI.</span></a>
@@ -53,6 +56,7 @@ elimination) translates in 2.5 s and simulates for one second in 3.9 s. See
 - [What's new](whats-new.md): the features added most recently.
 - [Example library](examples.md): every bundled example, with its results.
 - [Command line](cli.md): every `daedalus` command and option.
+- [Python API](python.md): scripting DAEdalus from Python and Jupyter.
 
 > DAEdalus is under active development. Modelica is a registered trademark of the
 > Modelica Association; DAEdalus is not affiliated with or endorsed by it.

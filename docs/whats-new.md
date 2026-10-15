@@ -2,6 +2,43 @@
 
 The most recent additions, newest first. Each links to the page that covers it in full.
 
+## MSL accuracy scoreboard
+
+The [scoreboard](https://daedalus.apps.ezkeel.com/scoreboard.html) compares every MSL
+4.1.0 example with the Modelica Association's reference results, signal by signal:
+**424 of 534 match**, 49 run but differ somewhere, 56 fail and 5 hit the time limit.
+It breaks the results down by package, shows the signals that differ and the error
+text for each model, and links each example to the workbench.
+
+![The MSL accuracy scoreboard](img/scoreboard.webp)
+
+See [Modelica Standard Library](msl.md#checked-against-the-reference-results).
+
+## Python API
+
+The `daedalus` Python package (`crates/daedalus-py`, built with maturin) runs the compiler
+in-process, with no server and no licence: load a model, change parameters, simulate to
+NumPy arrays or pandas, linearize and export FMUs.
+
+```python
+import daedalus
+
+m = daedalus.Model("library/Daedalus", "Daedalus.Examples.TorqueConverter.StallTest")
+m.set_parameters({"engine.J": 0.3})
+r = m.simulate(stop=2.0, vars=["rpm_engine"])
+r.time, r["rpm_engine"]
+```
+
+See [Python API](python.md), which also maps OMPython and Dymola calls onto it.
+
+## `.mos` scripts, steady states and trim
+
+`daedalus run script.mos` runs Dymola and OpenModelica regression scripts:
+`loadModel`, `simulateModel`, `simulate`, `simulateExtendedModel`, `linearizeModel`,
+`val`, loops and conditionals. `daedalus steady` finds equilibria with an exact Jacobian
+and reports their stability, and with `--free` and `--target` it trims, for example the
+input that holds an output at a set value. See [Scripts and steady states](scripting.md).
+
 ## 3-D animation for every example
 
 After **Simulate**, models with shapes open in the new **Animation** view: a WebGL scene
@@ -84,9 +121,8 @@ work, which is what the suspension models above are built on.
 
 These are being built now and get their pages here when they land:
 
-- an accuracy scoreboard against OpenModelica and the MSL reference results;
-- a Python API for scripting simulations, and `.mos` scripts;
-- steady-state (trim) solving, then lookup-table and state-machine work;
+- external C libraries (`Modelica.Utilities`, `Math.Random` and friends) and more
+  lookup-table support;
 - from the competitor survey: a Jacobian and structure view, state selection control,
   more solvers and sensitivity analysis.
 
