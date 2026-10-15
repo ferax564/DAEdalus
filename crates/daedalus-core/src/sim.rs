@@ -136,7 +136,12 @@ impl Recorder {
             if is_param[i] || hidden(&v.name) {
                 continue;
             }
-            if let Some(AliasKind::Var { .. }) = alias_of.get(&id) {
+            // An alias of another stored series shares its column.
+            // An alias of a parameter is constant too.
+            if let Some(AliasKind::Var { of, .. }) = alias_of.get(&id)
+                && (is_param[*of as usize]
+                    || (!hidden(&m.vars[*of as usize].name) && !alias_of.contains_key(of)))
+            {
                 continue;
             }
             col_of.insert(id, stored.len());
@@ -151,6 +156,8 @@ impl Recorder {
             }
             let kind = if is_param[i] {
                 ResultKind::Param(0.0)
+            } else if let Some(&c) = col_of.get(&id) {
+                ResultKind::Series(c)
             } else if let Some(AliasKind::Var { of, sign }) = alias_of.get(&id) {
                 match col_of.get(of) {
                     Some(&c) => ResultKind::Alias {
@@ -379,6 +386,9 @@ impl<'m> Simulation<'m> {
         self.rt.save_pre();
         self.rt.run(&m.init);
         self.check_newton("initialization")?;
+        for &(v, p) in &m.pre_init {
+            self.rt.r[m.layout.pre0 + v as usize] = self.rt.r[p as usize];
+        }
         self.rt.latch_relations();
         for &r in &m.sample_rels {
             self.rt.r[m.layout.rel0 + r] = 0.0;
@@ -421,6 +431,7 @@ impl<'m> Simulation<'m> {
             });
         }
         // Parameter values into the result.
+        self.rt.run(&m.outputs);
         for (k, &i) in order.iter().enumerate() {
             if let ResultKind::Param(_) = rec.res.vars[k].kind {
                 rec.res.vars[k].kind = ResultKind::Param(self.rt.r[i]);

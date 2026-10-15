@@ -225,6 +225,12 @@ pub struct Flattener<'a, 't> {
     pub tree: &'t ClassTree<'a>,
     pub model: FlatModel,
     pub insts: Vec<Instance<'a>>,
+    /// Modifiers of a redeclared class `redeclare function f = g(a = ..)` per instance.
+    class_mods: FxHashMap<(InstId, String), Vec<(String, Scoped<'a>)>>,
+    /// Number of connect equations per connector (for `cardinality`), keyed by its
+    /// first leaf variable.
+    conn_count: FxHashMap<VarId, usize>,
+    counting_connects: bool,
     pending: Vec<PendingVar<'a>>,
     env_cache: FxHashMap<ClassId, Rc<Env>>,
     const_cache: FxHashMap<(ClassId, String), Val>,
@@ -278,6 +284,9 @@ impl<'a, 't> Flattener<'a, 't> {
                 ..Default::default()
             },
             insts: Vec::new(),
+            class_mods: FxHashMap::default(),
+            conn_count: FxHashMap::default(),
+            counting_connects: false,
             pending: Vec::new(),
             env_cache: FxHashMap::default(),
             const_cache: FxHashMap::default(),
@@ -634,6 +643,7 @@ impl<'a, 't> Flattener<'a, 't> {
         }
         // Pass 2: attribute/binding translation and equations
         self.translate_pending()?;
+        self.count_connects()?;
         let n = self.insts.len();
         for i in 0..n {
             self.translate_instance(i as InstId)
@@ -785,6 +795,18 @@ impl<'a, 't> Flattener<'a, 't> {
             self.expandable_insts.insert(self.insts.len() as InstId);
         }
         let id = self.insts.len() as InstId;
+        for (name, _, _) in &m.redeclares {
+            if let Some(sub) = m.sub(name) {
+                let vals: Vec<(String, Scoped<'a>)> = sub
+                    .subs
+                    .iter()
+                    .filter_map(|(n, sm)| sm.value.clone().map(|v| (n.clone(), v)))
+                    .collect();
+                if !vals.is_empty() {
+                    self.class_mods.insert((id, name.clone()), vals);
+                }
+            }
+        }
         self.insts.push(Instance {
             prefix: prefix.clone(),
             class,
@@ -947,6 +969,8 @@ impl<'a, 't> Flattener<'a, 't> {
         if comp.outer {
             let mut p = self.insts[inst as usize].parent;
             while let Some(pi) = p {
+                // The inner may not be instantiated yet.
+                self.ensure_component(pi, &name)?;
                 if self.insts[pi as usize].inners.contains(&name)
                     && let Some(c) = self.insts[pi as usize].comps.get(&name).cloned()
                 {
@@ -1625,6 +1649,69 @@ impl<'a, 't> Flattener<'a, 't> {
             }
         }
         Ok(())
+    }
+
+    /// Count the connect equations of every instance before equations are translated,
+    /// so `cardinality(c)` is known wherever it is used.
+    fn count_connects(&mut self) -> Result<()> {
+        self.counting_connects = true;
+        let mut i = 0;
+        let r = loop {
+            if i >= self.insts.len() {
+                break Ok(());
+            }
+            let eqs = self.insts[i].equations.clone();
+            for (eq, env) in &eqs {
+                let scope = Scope {
+                    inst: Some(i as InstId),
+                    env: env.clone(),
+                };
+                // Connections this pass cannot resolve are left to the real translation.
+                let _ = self.count_connect_eq(eq, &scope, &mut Ctx::default());
+            }
+            i += 1;
+        };
+        self.counting_connects = false;
+        r
+    }
+
+    fn count_connect_eq(
+        &mut self,
+        eq: &'a ast::Equation,
+        scope: &Scope,
+        ctx: &mut Ctx,
+    ) -> Result<()> {
+        match eq {
+            ast::Equation::Connect { lhs, rhs } => self.translate_connect(lhs, rhs, scope, ctx),
+            ast::Equation::For { indices, equations } => {
+                if !equations.iter().any(has_connect) {
+                    return Ok(());
+                }
+                self.for_loop(indices, scope, ctx, &mut |this, ctx| {
+                    for e in equations {
+                        let _ = this.count_connect_eq(e, scope, ctx);
+                    }
+                    Ok(())
+                })
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// `cardinality(c)`: connect equations naming connector `c`.
+    fn cardinality(&mut self, arg: &'a E, scope: &Scope, ctx: &mut Ctx) -> Result<usize> {
+        let (E::ComponentReference(cr), Some(inst)) = (arg, scope.inst) else {
+            bail!("cardinality() expects a connector");
+        };
+        let (c, _) = self.resolve_connector(cr, inst, scope, ctx)?;
+        let Some(c) = c else { return Ok(0) };
+        let mut leaves = Vec::new();
+        self.connector_leaves(&c, &mut leaves);
+        Ok(leaves
+            .first()
+            .and_then(|v| self.conn_count.get(v))
+            .copied()
+            .unwrap_or(0))
     }
 
     fn translate_instance(&mut self, id: InstId) -> Result<()> {
@@ -2331,6 +2418,18 @@ impl<'a, 't> Flattener<'a, 't> {
         let mut pb: Vec<VarId> = Vec::new();
         self.connector_leaves(&ca, &mut pa);
         self.connector_leaves(&cb, &mut pb);
+        if self.counting_connects {
+            for c in [&ca, &cb] {
+                for el in comp_elements(c) {
+                    let mut l = Vec::new();
+                    self.connector_leaves(&el, &mut l);
+                    if let Some(&v) = l.first() {
+                        *self.conn_count.entry(v).or_default() += 1;
+                    }
+                }
+            }
+            return Ok(());
+        }
         if pa.len() != pb.len() {
             bail!(
                 "connect({}, {}): incompatible connectors ({} vs {} variables)",
@@ -4418,10 +4517,11 @@ impl<'a, 't> Flattener<'a, 't> {
             "String" => return Ok(Val::Str(String::new())),
             "assert" | "terminate" | "print" => return Ok(Val::S(Arena::ZERO)),
             "cardinality" => {
-                self.model
-                    .warnings
-                    .push("cardinality() is not supported; assuming 1".into());
-                return Ok(Val::S(Arena::ONE));
+                let arg = pos
+                    .first()
+                    .ok_or_else(|| anyhow!("cardinality() needs an argument"))?;
+                let n = self.cardinality(arg, scope, ctx)?;
+                return Ok(Val::S(self.model.arena.constant(n as f64)));
             }
             "getInstanceName" => return Ok(Val::Str(String::new())),
             "Connections.isRoot" | "Connections.rooted" => {
@@ -4451,6 +4551,7 @@ impl<'a, 't> Flattener<'a, 't> {
         } else {
             scope.env.clone()
         };
+        let mut redeclare_defaults: Vec<(String, Scoped<'a>)> = Vec::new();
         let (cls, mod_scope) = match self.lookup_class(&env, &parts) {
             Some(c) => {
                 let penv = self.env_of(self.tree.node(c).parent.unwrap_or(ROOT));
@@ -4473,7 +4574,15 @@ impl<'a, 't> Flattener<'a, 't> {
                 } else {
                     None
                 };
-                found.ok_or_else(|| anyhow!("function '{}' not found", name))?
+                let found = found.ok_or_else(|| anyhow!("function '{}' not found", name))?;
+                if let Some(i) = found.1.inst
+                    && let Some(ms) = self
+                        .class_mods
+                        .get(&(i, parts[parts.len() - 1].to_string()))
+                {
+                    redeclare_defaults = ms.clone();
+                }
+                found
             }
         };
         let mut argv = Vec::new();
@@ -4483,6 +4592,13 @@ impl<'a, 't> Flattener<'a, 't> {
         let mut nargv = Vec::new();
         for (n, e) in &named {
             nargv.push((n.to_string(), self.translate(e, scope, ctx)?));
+        }
+        // Modifiers of the redeclaration that selected the function.
+        for (n, v) in &redeclare_defaults {
+            if !nargv.iter().any(|(m, _)| m == n) {
+                let x = self.translate(v.expr, &v.scope, &mut Ctx::default())?;
+                nargv.push((n.clone(), x));
+            }
         }
         // Defaults from a short function definition `function f = g(a = ..)`.
         if let Some(def) = self.tree.def(cls) {
@@ -4577,7 +4693,9 @@ impl<'a, 't> Flattener<'a, 't> {
         }
         let Comp::Inst(i) = cur else { return Ok(None) };
         let class = self.insts[i as usize].class;
-        let Some(f) = self.tree.member_class(class, parts[parts.len() - 1]) else {
+        let fname = parts[parts.len() - 1];
+        let redeclared = self.insts[i as usize].env.overrides.get(fname).copied();
+        let Some(f) = redeclared.or_else(|| self.tree.member_class(class, fname)) else {
             return Ok(None);
         };
         let env = self.env_of(class);
@@ -5864,5 +5982,22 @@ fn builtin_enum_literal(enum_name: &str, lit: &str) -> Option<f64> {
         }),
         "Init" | "InitPID" => None,
         _ => None,
+    }
+}
+
+/// Whether an equation (or one nested in it) is a connect equation.
+fn has_connect(eq: &ast::Equation) -> bool {
+    match eq {
+        ast::Equation::Connect { .. } => true,
+        ast::Equation::For { equations, .. } => equations.iter().any(has_connect),
+        _ => false,
+    }
+}
+
+/// The scalar connectors of a connect argument: the elements of a connector array.
+fn comp_elements(c: &Comp) -> Vec<Comp> {
+    match c {
+        Comp::Arr(_, el) => el.iter().flat_map(comp_elements).collect(),
+        other => vec![other.clone()],
     }
 }

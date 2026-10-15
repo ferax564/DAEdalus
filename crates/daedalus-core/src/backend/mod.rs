@@ -89,6 +89,8 @@ pub struct System {
     pub blocks: Vec<Block>,
     /// Initialization blocks: compute states and all unknowns at t0.
     pub init_blocks: Vec<Block>,
+    /// `(v, p)`: initialization solved `pre(v)` as variable `p`.
+    pub pre_init: Vec<(VarId, VarId)>,
     pub whens: Vec<WhenClause>,
     pub asserts: Vec<(ExprId, String)>,
     pub aliases: Vec<Alias>,
@@ -130,6 +132,10 @@ pub struct Work {
     pub invariant: FxHashSet<VarId>,
     /// The equations that define the `invariant` unknowns.
     pub invariant_eqs: FxHashSet<usize>,
+    /// Variables only the initialization problem determines (`fixed = false` parameters).
+    pub init_only: FxHashSet<VarId>,
+    /// `(v, p)`: initialization solved `pre(v)` as variable `p`.
+    pub pre_init: Vec<(VarId, VarId)>,
 }
 
 impl Work {
@@ -237,6 +243,61 @@ pub fn compile(flat: FlatModel, opts: &Options) -> Result<System> {
         experiment,
         warnings,
     } = flat;
+    let mut vars = vars;
+    let mut arena = arena;
+    let mut initial_equations = initial_equations;
+    let mut origins = origins;
+    // Parameters with `fixed = false` are unknowns of the initialization problem and
+    // constant afterwards, as are parameters whose bindings depend on them. They become
+    // discrete variables that only initialization assigns.
+    let mut init_only: FxHashSet<VarId> = FxHashSet::default();
+    for (i, v) in vars.iter().enumerate() {
+        if v.kind == VarKind::Parameter && v.fixed == Some(false) {
+            init_only.insert(i as VarId);
+        }
+    }
+    if !init_only.is_empty() {
+        loop {
+            let mut grew = false;
+            for (i, v) in vars.iter().enumerate() {
+                if v.kind != VarKind::Parameter || init_only.contains(&(i as VarId)) {
+                    continue;
+                }
+                let Some(b) = v.binding else { continue };
+                let mut dep = false;
+                arena.visit_leaves(b, &mut |n| {
+                    if let Node::Var(x) = n
+                        && init_only.contains(&x)
+                    {
+                        dep = true;
+                    }
+                });
+                if dep {
+                    init_only.insert(i as VarId);
+                    grew = true;
+                }
+            }
+            if !grew {
+                break;
+            }
+        }
+        let mut ids: Vec<VarId> = init_only.iter().copied().collect();
+        ids.sort();
+        for v in ids {
+            let var = &mut vars[v as usize];
+            var.kind = VarKind::Discrete;
+            if let Some(b) = var.binding.take() {
+                let lhs = arena.var(v);
+                origins.push(format!("binding of {}", var.name));
+                initial_equations.push(crate::flat::Equation {
+                    lhs,
+                    rhs: b,
+                    origin: origins.len() as u32 - 1,
+                });
+            }
+            var.fixed = None;
+        }
+    }
     let n = vars.len();
     let mut when_assigned = FxHashSet::default();
     for w in &whens {
@@ -248,6 +309,7 @@ pub fn compile(flat: FlatModel, opts: &Options) -> Result<System> {
             }
         }
     }
+    when_assigned.extend(init_only.iter().copied());
     let unknown: Vec<bool> = vars
         .iter()
         .enumerate()
@@ -293,6 +355,8 @@ pub fn compile(flat: FlatModel, opts: &Options) -> Result<System> {
         dummy: FxHashSet::default(),
         invariant: FxHashSet::default(),
         invariant_eqs: FxHashSet::default(),
+        init_only,
+        pre_init: Vec::new(),
     };
 
     // 1. Parameters
@@ -381,6 +445,7 @@ pub fn compile(flat: FlatModel, opts: &Options) -> Result<System> {
         discretes,
         blocks,
         init_blocks,
+        pre_init: w.pre_init,
         whens: w.whens,
         asserts: w.asserts,
         aliases: w.aliases,

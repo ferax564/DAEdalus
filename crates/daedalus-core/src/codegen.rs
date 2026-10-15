@@ -117,6 +117,8 @@ pub struct Model {
     pub states: Vec<Slot>,
     pub derivs: Vec<Slot>,
     pub discretes: Vec<Slot>,
+    /// `(v, p)`: after initialization `pre(v)` takes the value of `p`.
+    pub pre_init: Vec<(VarId, VarId)>,
     pub param_vars: Vec<VarId>,
     pub inputs: Vec<VarId>,
     /// For each state derivative, the states it structurally depends on.
@@ -552,6 +554,7 @@ pub fn compile(mut sys: System) -> Model {
         states: sys.states.clone(),
         derivs: sys.state_derivs.clone(),
         discretes: sys.discretes.clone(),
+        pre_init: sys.pre_init.clone(),
         param_vars: sys.params.clone(),
         inputs: sys.inputs.clone(),
         jac_pattern,
