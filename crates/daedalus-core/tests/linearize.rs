@@ -1,5 +1,44 @@
 //! Linearization against hand-derived state-space matrices.
 
+#[test]
+fn dslin_mat_layout() {
+    let l = lin("Lin.MassSpringDamper", None, JacobianMethod::Exact);
+    let mut buf = Vec::new();
+    l.write_dslin(&mut buf).unwrap();
+    // Walk the MATLAB v4 matrices: (type, rows, cols, imag, namelen, name, data).
+    let mut pos = 0;
+    let mut mats = Vec::new();
+    let i32_at = |p: usize| i32::from_le_bytes(buf[p..p + 4].try_into().unwrap()) as usize;
+    while pos < buf.len() {
+        let (ty, rows, cols, nl) = (
+            i32_at(pos),
+            i32_at(pos + 4),
+            i32_at(pos + 8),
+            i32_at(pos + 16),
+        );
+        let name = String::from_utf8_lossy(&buf[pos + 20..pos + 20 + nl - 1]).to_string();
+        pos += 20 + nl;
+        let size = if ty == 0 { 8 } else { 1 };
+        let data = buf[pos..pos + rows * cols * size].to_vec();
+        pos += rows * cols * size;
+        mats.push((name, rows, cols, data));
+    }
+    let names: Vec<&str> = mats.iter().map(|m| m.0.as_str()).collect();
+    assert_eq!(names, ["Aclass", "nx", "xuyName", "ABCD"]);
+    assert_eq!(f64::from_le_bytes(mats[1].3[..8].try_into().unwrap()), 2.0);
+    let (_, rows, cols, data) = &mats[3];
+    assert_eq!((*rows, *cols), (3, 3));
+    let at = |i: usize, j: usize| {
+        f64::from_le_bytes(data[(j * rows + i) * 8..][..8].try_into().unwrap())
+    };
+    // [A B; C D] in the backend's state order
+    let ix = idx(&l.states, "x");
+    let iv = idx(&l.states, "v");
+    close(at(iv, ix), -4.0, 1e-14);
+    close(at(iv, 2), 0.5, 1e-14);
+    close(at(2, ix), 1.0, 1e-14);
+}
+
 use daedalus_core::frontend::Library;
 use daedalus_core::linearize::{JacobianMethod, Linearization, linearize};
 use daedalus_core::sim::SimOptions;

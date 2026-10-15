@@ -64,6 +64,22 @@ with algebraic loops differentiated implicitly through their symbolic Jacobians
 `linearized_model` in the form OpenModelica writes it.
 
 ```sh
+# Steady state: x with der(x) = 0, from the initial state (or after simulating
+# to --at-time T); prints states, derivatives, outputs and the eigenvalues
+./target/release/daedalus steady model.mo -m MyModel --at-time 10
+# Trim: also solve for inputs/parameters so that variables hit targets
+./target/release/daedalus steady model.mo -m MyModel --free u1,u2 --target y1=3,y2=0.5
+
+# Dymola / OpenModelica scripts (simulateModel, simulate, linearizeModel, loadModel, ...)
+DAEDALUS_MSL=/path/to/msl ./target/release/daedalus run regression.mos
+```
+
+`steady` runs a damped Newton iteration on the state derivatives with the exact
+Jacobian of the linearization (Levenberg–Marquardt steps where it is singular).
+`run` executes the common scripting commands of both tools so existing
+regression scripts run unchanged; see [docs/scripting.md](docs/scripting.md).
+
+```sh
 # FMI 2.0 FMU (Model Exchange and Co-Simulation) for linux64
 cargo build --release -p daedalus-cli -p daedalus-fmi
 ./target/release/daedalus fmu library/Daedalus -m Daedalus.Examples.TorqueConverter.StallTest -o StallTest.fmu
