@@ -795,6 +795,12 @@ impl<'m> Simulation<'m> {
         self.advance(st, t_stop, None)?;
         let m = self.rt.m;
         let t = st.t;
+        // A time event exactly at `t_stop` is handled here, as at the end of a full run:
+        // the caller sees its right value, and the next call starts after it.
+        if self.endpoint_time_event(st, t_stop)? {
+            self.rt.get_states(&mut st.xi);
+            st.solver.reset(&mut self.rt, t, &st.xi);
+        }
         // The registers hold whatever the solver evaluated last: recompute the solution.
         if (st.solver.t() - t).abs() <= 1e-15 * t.abs().max(1.0) {
             st.x.copy_from_slice(st.solver.x());
@@ -1056,28 +1062,42 @@ impl<'m> Simulation<'m> {
     /// when the last step ends, inside the hysteresis band of the crossing test. It is
     /// still an event of the run: process it and store its right value.
     fn stop_time_event(&mut self, st: &mut Stepper, rec: &mut Recorder) -> Result<(), String> {
+        if self.endpoint_time_event(st, self.opts.stop_time)? {
+            rec.record(&mut self.rt);
+        }
+        Ok(())
+    }
+
+    /// Process a time event (`sample()`, a relation on `time`) due exactly at `t_end`,
+    /// where the last step of [`Simulation::advance`] ended; returns whether one fired.
+    /// The relations are latched to their right values, so a later step from `t_end`
+    /// does not see the event again.
+    fn endpoint_time_event(&mut self, st: &mut Stepper, t_end: f64) -> Result<bool, String> {
         let m = self.rt.m;
         let n_rel = m.layout.n_rel;
         let t = st.t;
-        let stop = self.opts.stop_time;
-        if self.terminated.is_none() && n_rel > 0 && (t - stop).abs() <= 1e-12 * stop.abs().max(1.0)
+        if self.terminated.is_some()
+            || n_rel == 0
+            || (t - t_end).abs() > 1e-12 * t_end.abs().max(1.0)
         {
-            let xs = st.solver.x().to_vec();
-            self.rt.rhs(stop, &xs, &mut st.xi);
-            self.rt.eval_zc();
-            let due = (0..n_rel).any(|i| {
-                (m.sample_rels.contains(&i) || mentions_time(&m.rel_text[i]))
-                    && self.rt.r[m.zc_raw[i] as usize] != self.rt.r[m.layout.rel0 + i]
-            });
-            if due {
-                self.stats.events += 1;
-                self.rt.delay_right = true;
-                self.event_iteration()?;
-                self.check_newton("event")?;
-                rec.record(&mut self.rt);
-            }
+            return Ok(false);
         }
-        Ok(())
+        let xs = st.solver.x().to_vec();
+        self.rt.rhs(t_end, &xs, &mut st.xi);
+        self.rt.eval_zc();
+        let due = (0..n_rel).any(|i| {
+            (m.sample_rels.contains(&i) || mentions_time(&m.rel_text[i]))
+                && self.rt.r[m.zc_raw[i] as usize] != self.rt.r[m.layout.rel0 + i]
+        });
+        if due {
+            self.stats.events += 1;
+            st.last_event = t_end;
+            self.rt.delay_right = true;
+            self.event_iteration()?;
+            self.check_newton("event")?;
+            self.record_delays();
+        }
+        Ok(due)
     }
 
     fn check_asserts(&mut self) -> Result<(), String> {
