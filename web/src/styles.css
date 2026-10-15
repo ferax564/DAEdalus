@@ -73,6 +73,9 @@ label.file input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
 .pane-title input { margin-left: auto; width: 120px; text-transform: none; font-weight: 400; letter-spacing: 0; }
 .pane-title button { margin-left: auto; font-size: 11px; padding: 1px 8px; }
 .hidden { display: none !important; }
+.lib-progress { padding: 6px 10px; border-bottom: 1px solid var(--line); font-size: 11px; color: var(--muted); }
+.lib-progress .track { height: 4px; border-radius: 2px; background: var(--grid); overflow: hidden; margin-bottom: 4px; }
+.lib-progress .fill { height: 100%; width: 0; background: var(--accent); transition: width 0.15s; }
 .tree { overflow: auto; flex: 1; padding: 4px 0; }
 .node { display: flex; align-items: center; gap: 4px; padding: 1px 6px; cursor: default; white-space: nowrap; user-select: none; }
 .node:hover { background: var(--accent-soft); }

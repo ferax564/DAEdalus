@@ -346,7 +346,7 @@ async function simulate() {
       const st = s.stats;
       log(
         `${name}: ${st.states} states, ${st.solver.steps} steps (${st.solver.rejected} rejected), ${st.events} events; ` +
-          `translate ${s.translate_ms.toFixed(0)} ms, simulate ${(st.init_ms + st.sim_ms).toFixed(0)} ms, total ${(performance.now() - t0).toFixed(0)} ms`,
+          `${s.load_ms ? `parse library ${s.load_ms.toFixed(0)} ms, ` : ""}translate ${s.translate_ms.toFixed(0)} ms, simulate ${(st.init_ms + st.sim_ms).toFixed(0)} ms, total ${(performance.now() - t0).toFixed(0)} ms`,
         "ok",
       );
     }
@@ -604,12 +604,66 @@ document.body.addEventListener("drop", async (e) => {
   if (e.dataTransfer?.files.length) await load(await readPicked(e.dataTransfer.files), "dropped");
 });
 
+// The Modelica Standard Library ships as a bundle next to the page (scripts/fetch-msl.mjs).
+// Its files are registered in the worker without being parsed; a class is parsed, with
+// what it needs, when it is opened or simulated.
+const MSL_ROOTS = ["Modelica", "ModelicaServices", "Complex"];
+const isMsl = (path: string) => MSL_ROOTS.includes(path.split(".")[0]);
+
+async function loadMsl(): Promise<boolean> {
+  const bar = $("lib-progress");
+  const fill = bar.querySelector<HTMLElement>(".fill")!;
+  const label = bar.querySelector<HTMLElement>(".label")!;
+  const PHASE = { download: "Downloading", unpack: "Unpacking", register: "Indexing" };
+  bar.classList.remove("hidden");
+  label.textContent = "Modelica Standard Library…";
+  try {
+    // Relative to the page, not to the worker script under assets/.
+    const info = await api.loadBundle(new URL("msl/", document.baseURI).href, "msl/", (p) => {
+      const frac = p.total ? p.done / p.total : 0;
+      // download 0–70 %, unpack 70–75 %, indexing 75–100 %
+      const pct = p.phase === "download" ? 70 * frac : p.phase === "unpack" ? 72 : 75 + 25 * frac;
+      fill.style.width = `${pct.toFixed(1)}%`;
+      label.textContent =
+        p.phase === "download" ? `${PHASE[p.phase]} Modelica Standard Library… ${(p.done / 1e6).toFixed(1)} / ${(p.total / 1e6).toFixed(1)} MB` : `${PHASE[p.phase]} Modelica Standard Library…`;
+    });
+    if (!info) {
+      log("Modelica Standard Library not bundled with this site (see web/scripts/fetch-msl.mjs).", "warn");
+      return false;
+    }
+    await refreshTree();
+    log(
+      `${info.name} ${info.version}: ${info.files} files (${(info.bytes / 1e6).toFixed(1)} MB) ready to browse in ${(info.download_ms + info.unpack_ms + info.register_ms).toFixed(0)} ms ` +
+        `(download ${info.download_ms.toFixed(0)}, unpack ${info.unpack_ms.toFixed(0)}, index ${info.register_ms.toFixed(0)}); classes are parsed when opened`,
+      "ok",
+    );
+    timings.mslBrowsable = performance.now();
+    return true;
+  } catch (e) {
+    log(`Modelica Standard Library: ${e}`, "err");
+    return false;
+  } finally {
+    bar.classList.add("hidden");
+  }
+}
+
+/** Milestones since navigation start, for automated checks. */
+const timings: { interactive?: number; mslBrowsable?: number } = {};
+
 async function start() {
-  await load(bundledLibrary(), "Daedalus library");
   const hash = decodeURIComponent(location.hash.slice(1));
-  await openClass(hash || "Daedalus.Examples.TorqueConverter.Launch");
   // for automated checks
-  (window as unknown as { daedalus: unknown }).daedalus = { api, simulate, openClass, plot, togglePlot: (n: string) => togglePlot(n, summary!.vars.find((v) => v.name === n)!) };
+  const w = window as unknown as { daedalus: Record<string, unknown> };
+  w.daedalus = { api, simulate, openClass, plot, timings, togglePlot: (n: string) => togglePlot(n, summary!.vars.find((v) => v.name === n)!) };
+  await load(bundledLibrary(), "Daedalus library");
+  const msl = loadMsl();
+  w.daedalus.msl = msl;
+  if (hash && isMsl(hash)) {
+    log(`${hash} opens once the Modelica Standard Library is loaded…`);
+    await msl;
+  }
+  await openClass(hash || "Daedalus.Examples.TorqueConverter.Launch");
+  timings.interactive = performance.now();
 }
 start();
 void interp;

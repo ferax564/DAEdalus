@@ -51,6 +51,13 @@ jobs:
       - name: Install
         working-directory: web
         run: npm ci
+      - uses: actions/cache@v4
+        with:
+          path: web/public/msl
+          key: msl-4.1.0-${{ hashFiles('web/scripts/fetch-msl.mjs') }}
+      - name: Fetch and pack the Modelica Standard Library
+        working-directory: web
+        run: npm run msl
       - name: Build WebAssembly module
         working-directory: web
         run: npm run wasm
