@@ -133,3 +133,20 @@ fn clocked_partitions() {
     assert!(close(r.at("x", 0.1).unwrap(), x1, 1e-6));
     assert!(close(r.at("u", 0.15).unwrap(), -2.0 * x1, 1e-6));
 }
+
+#[test]
+fn return_and_break_under_runtime_conditions() {
+    let r = run("functions_control.mo", "FnTest", 1.0, Method::Bdf);
+    // firstIdx({time > 0.3, time > 0.6, true}): 3 before 0.3, then 1
+    assert_eq!(r.at("k", 0.1).unwrap(), 3.0);
+    assert_eq!(r.at("k", 0.9).unwrap(), 1.0);
+    // break at a translation-time condition ends the loop (not just the iteration)
+    assert_eq!(r.final_value("s").unwrap(), 6.0);
+    // break at a run-time condition: count up while y <= 10*time
+    assert_eq!(r.at("d", 0.1).unwrap(), 2.0);
+    assert_eq!(r.at("d", 0.45).unwrap(), 5.0);
+    // early return keeps the value assigned before it
+    assert_eq!(r.at("r", 0.1).unwrap(), 10.0);
+    assert_eq!(r.at("r", 0.4).unwrap(), 30.0);
+    assert_eq!(r.at("r", 0.9).unwrap(), 2.0);
+}

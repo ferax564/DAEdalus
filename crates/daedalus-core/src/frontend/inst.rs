@@ -227,6 +227,13 @@ pub struct Ctx {
     /// Condition under which the statements being executed run (inside the branches of
     /// a time-varying `if`); `None` means always.
     path: Option<ExprId>,
+    /// A `break` was executed unconditionally in the innermost loop.
+    broke: bool,
+    /// Run-time condition under which the function has already returned (a `return`
+    /// under a time-varying `if`): later assignments only take effect when it is false.
+    sret: Option<ExprId>,
+    /// The same for a `break` in the innermost loop.
+    sbrk: Option<ExprId>,
 }
 
 pub struct Flattener<'a, 't> {
@@ -6611,14 +6618,19 @@ impl<'a, 't> Flattener<'a, 't> {
         returned: &mut bool,
     ) -> Result<()> {
         for s in stmts {
-            if *returned {
+            if *returned || ctx.broke {
                 return Ok(());
             }
             match s {
                 ast::Statement::Empty => {}
                 ast::Statement::Assignment { comp, value } => {
                     let v = self.translate(value, scope, ctx)?;
+                    let guard = self.exit_guard(ctx);
+                    let before = guard.map(|_| ctx.locals.clone());
                     self.assign_local(comp, v, scope, ctx)?;
+                    if let (Some(g), Some(b)) = (guard, before) {
+                        self.keep_if_exited(g, b, ctx)?;
+                    }
                 }
                 ast::Statement::FunctionCall {
                     comp,
@@ -6630,10 +6642,15 @@ impl<'a, 't> Flattener<'a, 't> {
                         Val::Tuple(t) => t,
                         other => vec![other],
                     };
+                    let guard = self.exit_guard(ctx);
+                    let before = guard.map(|_| ctx.locals.clone());
                     for (o, val) in outputs.iter().zip(vals) {
                         if let E::ComponentReference(cr) = o {
                             self.assign_local(cr, val, scope, ctx)?;
                         }
+                    }
+                    if let (Some(g), Some(b)) = (guard, before) {
+                        self.keep_if_exited(g, b, ctx)?;
                     }
                 }
                 ast::Statement::If {
@@ -6649,20 +6666,24 @@ impl<'a, 't> Flattener<'a, 't> {
                     let range = self.translate(&idx.range, scope, ctx)?;
                     let (_, vals) = range.elems()?;
                     let name = idx.ident.text.to_string();
+                    let outer_brk = ctx.sbrk.take();
                     for v in vals {
                         ctx.locals
                             .last_mut()
                             .unwrap()
                             .insert(name.clone(), Val::S(v));
                         self.exec(equations, scope, ctx, returned)?;
-                        if *returned {
+                        if *returned || ctx.broke {
                             break;
                         }
                     }
+                    ctx.broke = false;
+                    ctx.sbrk = outer_brk;
                     ctx.locals.last_mut().unwrap().remove(&name);
                 }
                 ast::Statement::While(block) => {
                     let mut n = 0;
+                    let outer_brk = ctx.sbrk.take();
                     loop {
                         let c = self.translate(&block.cond, scope, ctx)?.scalar()?;
                         let Some(cv) = self.eval_param_expr(c) else {
@@ -6675,13 +6696,21 @@ impl<'a, 't> Flattener<'a, 't> {
                         }
                         self.exec(&block.stmts, scope, ctx, returned)?;
                         n += 1;
-                        if n > 100_000 || *returned {
+                        if n > 100_000 || *returned || ctx.broke {
                             break;
                         }
+                        // A `break` under a run-time condition: once it holds for good the
+                        // remaining iterations change nothing, but the loop still has to
+                        // run to its translation-time end.
                     }
+                    ctx.broke = false;
+                    ctx.sbrk = outer_brk;
                 }
                 ast::Statement::Return { .. } => *returned = true,
-                ast::Statement::Break { .. } => return Ok(()),
+                ast::Statement::Break { .. } => {
+                    ctx.broke = true;
+                    return Ok(());
+                }
                 ast::Statement::Assert { .. } => {}
                 ast::Statement::When(_) | ast::Statement::Reinit { .. } => {
                     bail!("when-statements are not supported inside functions")
@@ -7055,11 +7084,21 @@ impl<'a, 't> Flattener<'a, 't> {
             Some(p) => a.f2(Fn2::And, p, c),
             None => c,
         };
+        let (outer_ret, outer_brk) = (ctx.sret, ctx.sbrk);
         ctx.path = Some(and(&mut self.model.arena, saved_path, c));
         let mut r1 = false;
         let res = self.exec(&first.stmts, scope, ctx, &mut r1);
         ctx.path = saved_path;
         res?;
+        // How each branch leaves: unconditionally (static flag) or under a run-time
+        // condition (symbolic flag); `None` if it falls through.
+        let exit_of = |stat: bool, sym: Option<ExprId>| -> ExprId {
+            if stat { Arena::ONE } else { sym.unwrap_or(Arena::ZERO) }
+        };
+        let t_ret = exit_of(r1, ctx.sret);
+        let t_brk = exit_of(ctx.broke, ctx.sbrk);
+        let then_broke = ctx.broke;
+        (ctx.sret, ctx.sbrk, ctx.broke) = (outer_ret, outer_brk, false);
         let then_locals = std::mem::replace(&mut ctx.locals, base);
         let nc = self.model.arena.not(c);
         ctx.path = Some(and(&mut self.model.arena, saved_path, nc));
@@ -7067,9 +7106,24 @@ impl<'a, 't> Flattener<'a, 't> {
         let res = self.exec_if(rest, else_block, scope, ctx, &mut r2);
         ctx.path = saved_path;
         res?;
-        if r1 || r2 {
-            bail!("return inside a branch with a time-varying condition is not supported");
-        }
+        let e_ret = exit_of(r2, ctx.sret);
+        let e_brk = exit_of(ctx.broke, ctx.sbrk);
+        let else_broke = ctx.broke;
+        // Both branches leave: so does the `if`. Otherwise later statements are guarded
+        // by the run-time condition under which one of them left.
+        *returned = r1 && r2;
+        ctx.broke = !*returned && then_broke && else_broke;
+        let merge_flag = |a: &mut Arena, t: ExprId, e: ExprId| -> Option<ExprId> {
+            if t == Arena::ZERO && e == Arena::ZERO {
+                None
+            } else if t == e {
+                Some(t)
+            } else {
+                Some(a.if_(c, t, e))
+            }
+        };
+        ctx.sret = merge_flag(&mut self.model.arena, t_ret, e_ret);
+        ctx.sbrk = merge_flag(&mut self.model.arena, t_brk, e_brk);
         let else_locals = std::mem::take(&mut ctx.locals);
         let mut merged = else_locals.clone();
         for (fi, frame) in then_locals.iter().enumerate() {
@@ -7083,6 +7137,40 @@ impl<'a, 't> Flattener<'a, 't> {
             }
         }
         ctx.locals = merged;
+        Ok(())
+    }
+
+    /// Run-time condition under which a statement no longer takes effect: the function
+    /// has returned, or the innermost loop has broken, under a time-varying condition.
+    fn exit_guard(&mut self, ctx: &Ctx) -> Option<ExprId> {
+        match (ctx.sret, ctx.sbrk) {
+            (None, None) => None,
+            (Some(r), None) => Some(r),
+            (None, Some(b)) => Some(b),
+            (Some(r), Some(b)) => Some(self.model.arena.f2(Fn2::Or, r, b)),
+        }
+    }
+
+    /// After an assignment under exit guard `g`, keep each changed local's old value
+    /// where `g` holds.
+    fn keep_if_exited(
+        &mut self,
+        g: ExprId,
+        before: Vec<FxHashMap<String, Val>>,
+        ctx: &mut Ctx,
+    ) -> Result<()> {
+        for (fi, frame) in before.into_iter().enumerate() {
+            for (k, old) in frame {
+                let Some(new) = ctx.locals.get(fi).and_then(|f| f.get(&k)).cloned() else {
+                    continue;
+                };
+                if vals_identical(&old, &new) {
+                    continue;
+                }
+                let m = self.merge_value(g, old, new)?;
+                ctx.locals[fi].insert(k, m);
+            }
+        }
         Ok(())
     }
 
@@ -7734,6 +7822,26 @@ fn rebuild_scalars(v: &Val, it: &mut impl Iterator<Item = ExprId>) -> Val {
 }
 
 /// A `break` that leaves this statement list's loop (not one of a nested loop).
+/// Whether two values are the same expressions (the arena is hash-consed).
+fn vals_identical(a: &Val, b: &Val) -> bool {
+    match (a, b) {
+        (Val::S(x), Val::S(y)) => x == y,
+        (Val::A(d1, x), Val::A(d2, y)) => d1 == d2 && x == y,
+        (Val::Inst(x), Val::Inst(y)) => x == y,
+        (Val::IA(d1, x), Val::IA(d2, y)) => d1 == d2 && x == y,
+        (Val::Str(x), Val::Str(y)) => x == y,
+        (Val::SA(d1, x), Val::SA(d2, y)) => d1 == d2 && x == y,
+        (Val::Rec(x), Val::Rec(y)) => {
+            x.len() == y.len()
+                && x.iter().zip(y).all(|((n, u), (m, v))| n == m && vals_identical(u, v))
+        }
+        (Val::Tuple(x), Val::Tuple(y)) => {
+            x.len() == y.len() && x.iter().zip(y).all(|(u, v)| vals_identical(u, v))
+        }
+        _ => false,
+    }
+}
+
 fn stmts_break(stmts: &[ast::Statement]) -> bool {
     stmts.iter().any(|s| match s {
         ast::Statement::Break { .. } => true,
