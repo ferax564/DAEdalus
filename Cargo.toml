@@ -6,6 +6,8 @@ members = [
     "crates/daedalus-wasm",
     "crates/daedalus-fmi",
 ]
+# The Python extension is built with maturin (crates/daedalus-py/pyproject.toml).
+exclude = ["crates/daedalus-py"]
 
 [workspace.package]
 version = "0.1.0"

@@ -84,6 +84,32 @@ relation. FMU state get/set and directional derivatives are not provided.
 Other source directories, such as the Modelica Standard Library, are loaded by
 passing them as extra sources or with `-L DIR`.
 
+## Python
+
+The `daedalus` Python package (`crates/daedalus-py`, PyO3 + maturin, one abi3
+wheel for CPython 3.9+) runs the compiler in-process, in place of OMPython or
+Dymola's Python interface:
+
+```sh
+pip install maturin && cd crates/daedalus-py && maturin develop --release
+```
+
+```python
+import daedalus
+
+m = daedalus.Model("library/Daedalus", "Daedalus.Examples.TorqueConverter.StallTest")
+m.set_parameters({"engine.J": 0.3})
+r = m.simulate(stop=2.0, vars=["rpm_engine"])   # GIL released while simulating
+r.time, r["rpm_engine"], r.to_pandas(), r.stats
+
+lin = daedalus.Model("crates/daedalus-core/tests/models/linearize.mo", "Lin.MassSpringDamper").linearize()
+lin.A, lin.B, lin.C, lin.D
+
+m.export_fmu("StallTest.fmu", fmi_lib="target/release/libdaedalus_fmi.so")
+```
+
+See [crates/daedalus-py/README.md](crates/daedalus-py/README.md) for the full API.
+
 ## Workbench
 
 ```sh
@@ -166,6 +192,7 @@ of the EV model, which take 109k steps.
 | `crates/daedalus-core` | Frontend (Rumoca parser, instantiation, flattening, class inspection), backend, codegen, solvers, result files |
 | `crates/daedalus-cli` | `daedalus` command line tool |
 | `crates/daedalus-wasm` | WebAssembly bindings used by the workbench |
+| `crates/daedalus-py` | Python package `daedalus` (PyO3, built with maturin; not a cargo workspace member) |
 | `crates/daedalus-fmi` | FMI 2.0 runtime (`fmi2*` C functions) of exported FMUs |
 | `library/Daedalus` | Component library (Blocks, Mechanics, Hydraulics, Vehicle) and the examples |
 | `web` | Browser workbench (TypeScript, Vite, CodeMirror) |
