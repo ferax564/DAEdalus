@@ -133,8 +133,8 @@ flat-belt road moves under the wheel at 10 m/s and carries it over a 50 mm, 0.5 
 from the design motion ratio (<code>c*MR^2</code>, <code>d*MR^2</code>), the same tyre (which can
 also leave the road) and the same split of sprung and unsprung mass (half of each arm on each side).
 Compare <code>z_body</code> with <code>z_body1D</code>, <code>travel</code> with <code>travel1D</code>
-and <code>F_tyre</code> with <code>F_tyre1D</code>. Peak travel agrees to 0.1 mm and peak tyre load
-to about 2 %; what remains is the geometry the 1-D model leaves out, such as the lateral tyre scrub
+and <code>F_tyre</code> with <code>F_tyre1D</code>. Peak travel agrees to 0.4 mm and peak tyre load
+to about 1.5 %; what remains is the geometry the 1-D model leaves out, such as the lateral tyre scrub
 from track change and the moving arm inertias.</p>
 </html>"));
   end QuarterCarBump;

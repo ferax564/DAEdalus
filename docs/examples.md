@@ -221,8 +221,8 @@ Results:
   bump (−21°/m at design) with a near-constant 0.65 motion ratio. The
   MacPherson strut gains 0.7°, with a motion ratio from 0.94 to 1.0.
 - **Quarter car.** The 3-D corner and the 1-D model with wheel rate `c·MR²`
-  agree to 0.1 mm in peak suspension travel (47 mm) and to 2 % in peak tyre
-  load (11.4 vs 11.6 kN). Both tyres leave the road behind the crest.
+  agree to 0.4 mm in peak suspension travel (47 mm) and to 1.5 % in peak tyre
+  load (11.5 vs 11.6 kN). Both tyres leave the road behind the crest.
 - **Step steer.** The car settles at 14.6°/s yaw rate, 0.52 g and 2.3° roll.
   The linear bicycle model is neutral steer for this tyre, giving `v/L` =
   7.7 1/s; the multibody yaw gain is 7.5 1/s at 0.1° and 7.3 1/s at 2°.
@@ -235,8 +235,8 @@ Results:
 All five match OpenModelica 1.26.1 running the same models on MSL 4.1.0:
 the 98th-percentile difference is below 0.04 % of each signal's range. The
 only larger point errors are single samples at tyre lift-off and touchdown.
-In OpenModelica the full-car examples take 6 to 23 s of simulation time,
-against 1.5 to 2.2 s in DAEdalus.
+In OpenModelica the full-car examples take 7 to 16 s of simulation time,
+against 1.0 to 1.7 s in DAEdalus.
 
 ## Note on sources
 

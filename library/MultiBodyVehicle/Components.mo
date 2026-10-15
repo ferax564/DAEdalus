@@ -29,6 +29,21 @@ package Components "Suspension corners, tyre and vehicle"
          else h/2*(1 - cos(2*Modelica.Constants.pi*(x - x0)/L));
   end roadHeight;
 
+  function roadSlope "Longitudinal slope dz/dx of roadHeight"
+    extends Modelica.Icons.Function;
+    input SI.Position x;
+    input SI.Position y;
+    input SI.Height h;
+    input SI.Length L;
+    input SI.Position x0;
+    input SI.Position yMin;
+    input SI.Position yMax;
+    output Real dzdx;
+  algorithm
+    dzdx := if x < x0 or x > x0 + L or y < yMin or y > yMax then 0
+            else h*Modelica.Constants.pi/L*sin(2*Modelica.Constants.pi*(x - x0)/L);
+  end roadSlope;
+
   partial model PartialCorner "Chassis frame, wheel-centre frame and corner kinematics outputs"
     parameter Real side=1 "+1 left-hand corner, -1 right-hand (mirrored in y)";
     MB.Interfaces.Frame_a frame_a "Chassis reference (axle centre line, wheel-centre height)"
@@ -268,6 +283,8 @@ The coil spring and damper act along the strut.</p>
     SI.Velocity v[3] = der(frame_a.r_0) "Wheel centre velocity";
     SI.Height z_road = roadHeight(r[1] + v_belt*time, r[2], bump_h, bump_L, bump_x0, bump_yMin, bump_yMax);
     SI.Length deflection = R0 - (r[3] - z_road) "Radial tyre deflection";
+    SI.Velocity deflection_rate = roadSlope(r[1] + v_belt*time, r[2], bump_h, bump_L, bump_x0, bump_yMin, bump_yMax)*(v[1] + v_belt) - v[3]
+      "Rate of deflection, including the road surface rising under the wheel";
     SI.Velocity v_long "Contact speed along the wheel heading, relative to the road";
     SI.Velocity v_lat "Contact speed across the wheel, relative to the road";
     SI.Angle alpha "Slip angle";
@@ -284,9 +301,9 @@ The coil spring and damper act along the strut.</p>
     v_long = (v + {v_belt, 0, 0})*e_long;
     v_lat = v*e_lat;
     alpha = atan(v_lat/(abs(v_long) + v_eps));
-    Fz = if deflection > 0 then max(0, c_z*deflection - d_z*v[3]) else 0;
+    Fz = if deflection > 0 then max(0, c_z*deflection + d_z*deflection_rate) else 0;
     Fy = -mu*Fz*sin(C*atan(B*alpha));
-    Fx = F_drive - f_rr*Fz*tanh(v_long/v_eps);
+    Fx = if deflection > 0 then F_drive - f_rr*Fz*tanh(v_long/v_eps) else 0 "No drive force while airborne";
     F = Fx*e_long + Fy*e_lat + {0, 0, Fz};
     frame_a.f = -MB.Frames.resolve2(frame_a.R, F);
     frame_a.t = -MB.Frames.resolve2(frame_a.R, cross(r_contact, F));
@@ -300,10 +317,12 @@ The coil spring and damper act along the strut.</p>
 below the wheel centre on the road surface, and the force is applied there, so it also loads the
 suspension with the correct moment arm.</p>
 <ul>
-<li>Vertical: <code>Fz = max(0, c_z*deflection - d_z*dz/dt)</code>, zero when the tyre leaves the road.</li>
+<li>Vertical: <code>Fz = max(0, c_z*deflection + d_z*d(deflection)/dt)</code>, zero when the tyre leaves the road.
+    The deflection rate includes the road rising under the moving wheel.</li>
 <li>Lateral: <code>Fy = -mu*Fz*sin(C*atan(B*alpha))</code>, with slip angle
     <code>alpha = atan(v_lat/(|v_long| + v_eps))</code>.</li>
-<li>Longitudinal: the drive/brake input minus rolling resistance <code>f_rr*Fz</code>.</li>
+<li>Longitudinal: the drive/brake input minus rolling resistance <code>f_rr*Fz</code>, and nothing
+    while the tyre is off the road.</li>
 </ul>
 <p>The road is flat with an optional half-cosine bump between <code>bump_yMin</code> and
 <code>bump_yMax</code>. With <code>v_belt</code> &gt; 0 the road moves under a stationary wheel,
