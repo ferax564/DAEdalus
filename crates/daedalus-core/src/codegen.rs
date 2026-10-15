@@ -46,6 +46,8 @@ pub struct NewtonBlock {
     pub jac_slots: Vec<Slot>,
     pub linear: bool,
     pub names: Vec<String>,
+    /// Constant `min`/`max` bounds of the tears (Newton steps are clipped to them).
+    pub bounds: Vec<(f64, f64)>,
 }
 
 #[derive(Clone, Debug)]
@@ -356,7 +358,23 @@ fn compile_blocks(
                     .map(|&t| names[t as usize].name.clone())
                     .collect();
                 nm.extend(inner.iter().map(|(v, _)| names[*v as usize].name.clone()));
+                let bounds = tears
+                    .iter()
+                    .map(|&t| {
+                        let v = &names[t as usize];
+                        let lo = v
+                            .min
+                            .and_then(|e| em.arena.as_const(e))
+                            .unwrap_or(f64::NEG_INFINITY);
+                        let hi = v
+                            .max
+                            .and_then(|e| em.arena.as_const(e))
+                            .unwrap_or(f64::INFINITY);
+                        (lo, hi)
+                    })
+                    .collect();
                 newton.push(NewtonBlock {
+                    bounds,
                     tears: tears.clone(),
                     body,
                     residuals: res,
@@ -726,7 +744,10 @@ impl<'m> Runtime<'m> {
         self.newton_stats.solves += 1;
         work.resize(n * n + 3 * n, 0.0);
         let mut best = f64::INFINITY;
-        let max_iter = if b.linear { 3 } else { 50 };
+        let mut weights: Vec<f64> = Vec::with_capacity(n);
+        // A linear block normally converges in one step; if it does not (an ill-conditioned
+        // or switching system), it continues as a damped Newton iteration.
+        let max_iter = 50;
         for it in 0..max_iter {
             self.run(&b.body);
             let norm = b
@@ -739,7 +760,8 @@ impl<'m> Runtime<'m> {
                 .iter()
                 .map(|&s| self.r[s as usize].abs())
                 .fold(1.0, f64::max);
-            if norm <= 1e-12 * scale || (it > 0 && b.linear && norm <= 1e-9 * scale) {
+            let linear = b.linear && it < 3;
+            if norm <= 1e-12 * scale || (it > 0 && linear && norm <= 1e-9 * scale) {
                 return;
             }
             if !norm.is_finite() && it > 0 {
@@ -757,6 +779,26 @@ impl<'m> Runtime<'m> {
             for (i, &s) in b.residuals.iter().enumerate() {
                 rhs[i] = -self.r[s as usize];
             }
+            // Row weights for the damping test: residuals of very different scale
+            // (1/tau next to a fraction) are compared relative to their sensitivity.
+            weights.clear();
+            for i in 0..n {
+                let mut r = 0.0f64;
+                for (j, &t) in b.tears.iter().enumerate() {
+                    r = r.max((jm[i * n + j] * (self.r[t as usize].abs() + 1e-10)).abs());
+                }
+                weights.push(if r > 0.0 && r.is_finite() {
+                    1.0 / r
+                } else {
+                    1.0
+                });
+            }
+            let wnorm0 = b
+                .residuals
+                .iter()
+                .zip(weights.iter())
+                .map(|(&s, w)| (self.r[s as usize] * w).abs())
+                .fold(0.0, f64::max);
             piv.resize(n, 0);
             if !crate::linalg::lu_factor(jm, n, piv) {
                 // Singular Jacobian: perturb the tears slightly and retry.
@@ -774,18 +816,28 @@ impl<'m> Runtime<'m> {
             let mut lambda = 1.0;
             loop {
                 for (i, &t) in b.tears.iter().enumerate() {
-                    self.r[t as usize] = old[i] + lambda * rhs[i];
+                    let (lo, hi) = b.bounds[i];
+                    let x = old[i] + lambda * rhs[i];
+                    // Stay inside the declared range; a step that leaves it is cut short.
+                    self.r[t as usize] = if x < lo && old[i] >= lo {
+                        old[i] + (lo - old[i]) * 0.5_f64.max(0.0)
+                    } else if x > hi && old[i] <= hi {
+                        old[i] + (hi - old[i]) * 0.5
+                    } else {
+                        x
+                    };
                 }
-                if b.linear || lambda < 1e-3 {
+                if linear || lambda < 1e-3 {
                     break;
                 }
                 self.run(&b.body);
                 let nn = b
                     .residuals
                     .iter()
-                    .map(|&s| self.r[s as usize].abs())
+                    .zip(weights.iter())
+                    .map(|(&s, w)| (self.r[s as usize] * w).abs())
                     .fold(0.0, f64::max);
-                if nn.is_finite() && nn < norm * (1.0 - 1e-4 * lambda) + 1e-14 {
+                if nn.is_finite() && nn < wnorm0 * (1.0 - 1e-4 * lambda) + 1e-300 {
                     break;
                 }
                 lambda *= 0.5;

@@ -93,6 +93,18 @@ impl Work {
 /// zero, so index reduction does not differentiate the equations that define them.
 pub fn find_invariant(w: &mut Work) {
     let mut invariant: FxHashSet<VarId> = FxHashSet::default();
+    // A variable the model differentiates itself (an inductor current forced to zero by
+    // an open terminal) is left to index reduction.
+    let mut differentiated: FxHashSet<VarId> = FxHashSet::default();
+    for eq in &w.eqs {
+        for root in [eq.lhs, eq.rhs] {
+            w.arena.visit_all_leaves(root, &mut |n| {
+                if let Node::Der(v) = n {
+                    differentiated.insert(v);
+                }
+            });
+        }
+    }
     let mut done = vec![false; w.eqs.len()];
     let mut defining = Vec::new();
     loop {
@@ -116,6 +128,7 @@ pub fn find_invariant(w: &mut Work) {
                         if !w.unknown[v as usize]
                             || !matches!(var.kind, VarKind::Continuous | VarKind::Discrete)
                             || w.when_assigned.contains(&v)
+                            || differentiated.contains(&v)
                         {
                             varying = true;
                         } else if free != Some(v) {
