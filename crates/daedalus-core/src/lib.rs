@@ -6,6 +6,8 @@ pub mod codegen;
 pub mod expr;
 pub mod flat;
 pub mod fmi;
+#[cfg(all(feature = "fmu", not(target_arch = "wasm32")))]
+pub mod fmu;
 pub mod frontend;
 pub mod linalg;
 pub mod linearize;
@@ -13,6 +15,7 @@ pub mod results;
 pub mod sim;
 pub mod solver;
 pub mod sparse;
+pub mod steady;
 
 /// Flatten, analyse and compile `model` from `lib` into an executable model.
 pub fn translate(

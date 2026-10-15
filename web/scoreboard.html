@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="How DAEdalus simulation results compare with the Modelica Association reference results for every Modelica Standard Library example." />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3E%3Crect width=%2716%27 height=%2716%27 rx=%273%27 fill=%27%231f4e79%27/%3E%3Cpath d=%27M3 12 L6 5 L9 10 L13 3%27 stroke=%27white%27 stroke-width=%271.6%27 fill=%27none%27/%3E%3C/svg%3E" />
+    <title>DAEdalus MSL Scoreboard</title>
+  </head>
+  <body>
+    <header class="top">
+      <a class="brand" href="./"><span class="logo">Δ</span> DAEdalus</a>
+      <a class="back" href="./">Open the workbench →</a>
+    </header>
+    <main>
+      <section class="intro">
+        <h1>MSL accuracy scoreboard</h1>
+        <p class="lede">
+          Every example of the Modelica Standard Library that has a Modelica Association reference result is
+          simulated with DAEdalus and compared against that reference, signal by signal.
+        </p>
+        <p id="meta" class="meta">Loading results…</p>
+      </section>
+
+      <section class="hero card" aria-labelledby="hero-label">
+        <div class="hero-num">
+          <div id="rate" class="rate">–</div>
+          <div id="hero-label" class="rate-label">of examples match the reference</div>
+        </div>
+        <div class="hero-side">
+          <div id="overall-bar" class="bar big" role="img"></div>
+          <ul id="counts" class="counts"></ul>
+        </div>
+      </section>
+
+      <section class="card" aria-labelledby="pkg-h">
+        <div class="card-head">
+          <h2 id="pkg-h">By package</h2>
+          <span class="hint">Select a package to filter the table.</span>
+        </div>
+        <div id="packages" class="packages"></div>
+      </section>
+
+      <section class="card" aria-labelledby="tbl-h">
+        <div class="card-head">
+          <h2 id="tbl-h">All examples</h2>
+          <span id="shown" class="hint"></span>
+        </div>
+        <div class="filters">
+          <input id="q" type="search" placeholder="Search models, signals or errors" aria-label="Search" />
+          <div id="status-filter" class="chips" role="group" aria-label="Filter by status"></div>
+          <button id="pkg-chip" class="chip pkg hidden" title="Clear the package filter"></button>
+        </div>
+        <div class="table-wrap">
+          <table id="table">
+            <thead>
+              <tr>
+                <th data-sort="model" class="sortable">Model</th>
+                <th data-sort="status" class="sortable">Status</th>
+                <th data-sort="time" class="sortable num">Time (s)</th>
+                <th>Detail</th>
+              </tr>
+            </thead>
+            <tbody id="rows"></tbody>
+          </table>
+        </div>
+        <p id="empty" class="empty hidden">No example matches these filters.</p>
+      </section>
+
+      <section class="method">
+        <h2>How the comparison works</h2>
+        <p>
+          For each example the reference results list a set of comparison signals and give their values computed with
+          Dymola. DAEdalus simulates the example with its default settings over the same interval, writes those signals
+          on the reference time grid, and checks each one with a tube test in the style of
+          <a href="https://github.com/modelica-tools/csv-compare">csv-compare</a>, the tool used for MSL releases.
+          Each reference point gets a box with a half-width of <span id="tol-a">2e-3</span> × the time span in time and
+          <span id="tol-b">2e-3</span> × the signal range in value. The DAEdalus value must stay inside the union of
+          those boxes.
+        </p>
+        <ul>
+          <li><b>Pass</b>: every comparison signal stays inside its tube.</li>
+          <li><b>Differ</b>: the model simulates, but at least one signal leaves its tube or is missing from the output.</li>
+          <li><b>Error</b>: translation or simulation failed. The message shown is the last line DAEdalus printed.</li>
+          <li><b>Timeout</b>: no result within the time limit.</li>
+        </ul>
+        <p>
+          The comparison script is <code>tools/refcompare.py</code>. It runs nightly in CI, and the raw data is
+          <a id="raw" href="./conformance/msl-4.1.0.json">msl-4.1.0.json</a>.
+        </p>
+      </section>
+    </main>
+    <div id="tip" class="tip hidden" role="tooltip"></div>
+    <script type="module" src="/src/scoreboard.ts"></script>
+  </body>
+</html>

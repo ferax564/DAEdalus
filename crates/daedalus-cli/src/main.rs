@@ -4,6 +4,7 @@ use daedalus_core::backend::Options;
 use daedalus_core::frontend::Library;
 use daedalus_core::sim::{Method, SimOptions};
 mod fmu;
+mod mos;
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -25,6 +26,11 @@ COMMANDS:
   linearize   linearize around the initial point (or --at T): the state-space
               matrices A, B, C, D of der(x) = A x + B u, y = C x + D u for the
               states x, top-level inputs u and outputs y
+  steady      find a steady state (der(x) = 0) from the initial state, or from
+              the state reached at --at-time; with --free/--target, trim: also
+              solve for inputs or parameters so that variables hit targets
+  run         run a Dymola / OpenModelica script: daedalus run script.mos
+              [--msl DIR] (see docs/scripting.md)
   fmu         export an FMI 2.0 FMU (Model Exchange and Co-Simulation) to -o
               (default <Model>.fmu); needs the runtime libdaedalus_fmi.so
   test-library  translate and simulate every model with an experiment
@@ -55,14 +61,28 @@ OPTIONS:
   --at T                  linearize: simulate to time T first (default: start)
   --format F              linearize: text | json | mo (default text; mo writes
                           model linearized_model, to linearized_model.mo
-                          unless -o is given)
+                          unless -o is given); steady: text | json
   --jacobian J            linearize: exact | fd (central differences)
+  --at-time T             steady: simulate to time T first (default: start)
+  --free a,b              steady: inputs or parameters to solve for (trim)
+  --target y=v            steady: target value of a variable (repeatable or
+                          comma-separated; as many targets as free variables)
   --fmi-lib FILE          fmu: the FMI runtime library (default: next to this
                           executable, or $DAEDALUS_FMI_LIB)
   --timeout S             per-model time limit for test-library (default 60)
 ";
 
 fn main() -> ExitCode {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|a| a == "run") {
+        return match mos::run_cli(&args[1..]) {
+            Ok(code) => code,
+            Err(e) => {
+                eprintln!("error: {e:#}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
@@ -97,6 +117,8 @@ fn run() -> anyhow::Result<()> {
     let mut format = String::from("text");
     let mut fmi_lib: Option<std::path::PathBuf> = None;
     let mut jac_method = daedalus_core::linearize::JacobianMethod::Exact;
+    let mut free: Vec<String> = Vec::new();
+    let mut targets: Vec<(String, f64)> = Vec::new();
     let mut i = 1;
     let next = |i: &mut usize| -> anyhow::Result<String> {
         *i += 1;
@@ -159,7 +181,21 @@ fn run() -> anyhow::Result<()> {
             "--jobs" => jobs = next(&mut i)?.parse::<usize>()?.max(1),
             "--timeout" => timeout = next(&mut i)?.parse()?,
             "--fmi-lib" => fmi_lib = Some(next(&mut i)?.into()),
-            "--at" => lin_at = Some(next(&mut i)?.parse()?),
+            "--at" | "--at-time" => lin_at = Some(next(&mut i)?.parse()?),
+            "--free" => free.extend(
+                next(&mut i)?
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty()),
+            ),
+            "--target" => {
+                for kv in next(&mut i)?.split(',') {
+                    let (k, v) = kv
+                        .split_once('=')
+                        .ok_or_else(|| anyhow::anyhow!("expected --target NAME=VALUE"))?;
+                    targets.push((k.trim().to_string(), v.trim().parse()?));
+                }
+            }
             "--format" => format = next(&mut i)?,
             "--jacobian" => {
                 jac_method = match next(&mut i)?.as_str() {
@@ -434,6 +470,44 @@ fn run() -> anyhow::Result<()> {
             match out {
                 Some(path) => {
                     std::fs::write(&path, text)?;
+                    eprintln!("wrote {path}");
+                }
+                None => print!("{text}"),
+            }
+            Ok(())
+        }
+        "steady" => {
+            let m = with_all_files(&mut lib, |l| daedalus_core::translate(l, &model, &opts))?;
+            for w in &m.warnings {
+                eprintln!("warning: {w}");
+            }
+            let mut o = SimOptions::from_model(&m);
+            if set_start {
+                o.start_time = so.start_time;
+            }
+            if set_tol {
+                o.tolerance = so.tolerance;
+            }
+            if set_method {
+                o.method = so.method;
+            }
+            o.params = so.params.clone();
+            let sopts = daedalus_core::steady::SteadyOptions {
+                at_time: lin_at,
+                free: free.clone(),
+                targets: targets.clone(),
+                ..Default::default()
+            };
+            let st = daedalus_core::steady::steady_state(&m, o, &sopts)
+                .map_err(|e| anyhow::anyhow!(e))?;
+            let text = match format.as_str() {
+                "text" => st.report(),
+                "json" => serde_json::to_string_pretty(&st)? + "\n",
+                f => anyhow::bail!("unknown format '{f}' (text | json)"),
+            };
+            match &output {
+                Some(path) => {
+                    std::fs::write(path, text)?;
                     eprintln!("wrote {path}");
                 }
                 None => print!("{text}"),

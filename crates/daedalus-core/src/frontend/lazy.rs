@@ -748,10 +748,12 @@ impl Library {
         if !dir.join("package.mo").is_file() {
             return self.load_dir(dir);
         }
+        // A versioned directory ("Modelica 4.1.0") holds the package of its first word.
         let root = dir
             .file_name()
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_default();
+        let root = root.split(' ').next().unwrap_or_default().to_string();
         let mut stack = vec![(dir.to_path_buf(), root)];
         let mut count = 0;
         while let Some((d, class)) = stack.pop() {

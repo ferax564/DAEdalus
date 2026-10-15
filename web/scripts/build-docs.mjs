@@ -29,6 +29,8 @@ const NAV = [
     ["workbench.md", "Workbench"],
     ["animation.md", "3-D animation"],
     ["cli.md", "Command line"],
+    ["scripting.md", "Scripts (.mos) and steady states"],
+    ["python.md", "Python API"],
   ]],
   ["Models", [
     ["examples.md", "Example library"],

@@ -270,13 +270,11 @@ name = "daedalus-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "bincode",
  "daedalus-core",
  "rumoca-core",
  "rumoca-ir-ast",
  "serde",
  "serde_json",
- "zip",
 ]
 
 [[package]]
@@ -293,6 +291,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+ "zip",
 ]
 
 [[package]]

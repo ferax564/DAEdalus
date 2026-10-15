@@ -194,7 +194,7 @@ fn fmt_num(x: f64) -> String {
     }
 }
 
-fn write_header(
+pub(crate) fn write_header(
     out: &mut dyn Write,
     ty: i32,
     mrows: i32,
@@ -212,7 +212,12 @@ fn write_header(
 }
 
 /// Character matrix. `transposed`: one string per column (binTrans), else one per row.
-fn write_text(out: &mut dyn Write, name: &str, rows: &[&str], transposed: bool) -> io::Result<()> {
+pub(crate) fn write_text(
+    out: &mut dyn Write,
+    name: &str,
+    rows: &[&str],
+    transposed: bool,
+) -> io::Result<()> {
     let len = rows.iter().map(|s| s.len()).max().unwrap_or(0).max(1);
     let n = rows.len();
     if transposed {

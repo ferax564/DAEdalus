@@ -31,11 +31,15 @@ that passed in the committed baseline stops passing.
 
 | Result | Models |
 | --- | ---: |
-| Matches the reference results | 410 |
-| Simulates, but a signal differs | 39 |
-| Hits the time limit | 9 |
-| Does not translate or stops | 76 |
+| Matches the reference results | 424 |
+| Simulates, but a signal differs | 49 |
+| Hits the time limit | 5 |
+| Does not translate or stops | 56 |
 | **Total** | **534** |
+
+The [scoreboard](https://daedalus.apps.ezkeel.com/scoreboard.html) lists every example
+with its status, the signals that differ and the error text, with a link to open it in
+the workbench.
 
 The baseline is `docs/conformance/msl-4.1.0.json`, made by `tools/refcompare.py`.
 
