@@ -62,6 +62,49 @@ function log(msg: string, cls = "") {
 }
 $("msg-clear").onclick = () => ($("log").innerHTML = "");
 
+/** A message with a link that runs `action` (e.g. open the debugger). */
+function logLink(msg: string, cls: string, label: string, action: () => void) {
+  log(msg, cls);
+  const a = document.createElement("a");
+  a.className = "log-link";
+  a.textContent = label;
+  a.onclick = action;
+  $("log").lastElementChild?.appendChild(a);
+}
+
+/** Open the Structure view's debugger on `model` (after a failed check or simulation). */
+async function openDebugger(model: string, simulation: boolean) {
+  if (current?.path !== model) await openClass(model);
+  view = "structure";
+  setActive($("view-tabs"), "data-view", view);
+  for (const id of ["view-graphic", "view-text", "view-doc", "view-flat"]) $(id).classList.add("hidden");
+  $("view-structure").classList.remove("hidden");
+  await structureView.showInit(model, simulation);
+}
+
+/** Show a source position of the debugger: the Text view of the class that holds it. */
+async function openLocation(file: string, line: number) {
+  const holder = current?.source?.uri === file ? current : ([...classes.values()].find((c) => c.source?.uri === file) ?? null);
+  if (!holder) {
+    log(`${file}:${line}`);
+    return;
+  }
+  if (holder !== current) await openClass(holder.path);
+  view = "text";
+  await showView();
+  let t = docs.get(file);
+  if (t === undefined) {
+    t = (await api.documentText(file)) ?? "";
+    docs.set(file, t);
+  }
+  let off = 0;
+  for (let k = 1, i = 0; k < line && i >= 0; k++) {
+    i = t.indexOf("\n", i);
+    if (i >= 0) off = ++i;
+  }
+  text.setText(t, off);
+}
+
 // ---------------------------------------------------------------- views
 const diagram = new DiagramView($("view-graphic"), src, classes);
 const text = new TextView($("view-text"));
@@ -400,7 +443,7 @@ function settings(): SimSettings {
   return s;
 }
 
-const structureView = new StructureView($("view-structure"), { settings, log, simulate: () => simulate() });
+const structureView = new StructureView($("view-structure"), { settings, log, simulate: () => simulate(), openLocation: (f, l) => void openLocation(f, l) });
 
 let cache: { time: Float64Array; cols: Map<string, Float64Array> } | null = null;
 
@@ -431,7 +474,9 @@ async function simulate() {
     summaryPath = name;
     void updatePerformance(!!set.profile);
     if (!s.ok) {
-      log(s.error ?? "simulation failed", "err");
+      const err = s.error ?? "simulation failed";
+      const atInit = !s.vars?.length || /initiali[sz]ation|structurally singular|overdetermined|underdetermined/i.test(err);
+      logLink(err, "err", atInit ? "Debug initialization ▸" : "Debug the failing solve ▸", () => void openDebugger(name, !atInit));
       if (!s.vars?.length) return;
     }
     for (const w of s.warnings ?? []) log(`warning: ${w}`, "warn");
@@ -489,7 +534,10 @@ $("btn-check").onclick = async () => {
       "ok",
     );
     for (const w of r.warnings ?? []) log(`warning: ${w}`, "warn");
-  } else log(r.error ?? "check failed", "err");
+  } else {
+    const path = current.path;
+    logLink(r.error ?? "check failed", "err", "Diagnose ▸", () => void openDebugger(path, false));
+  }
 };
 
 // ---------------------------------------------------------------- variable browser

@@ -262,6 +262,20 @@ pub struct Simulation<'m> {
     delay_events: Vec<f64>,
     /// Performance profile being recorded (`SimOptions::profile`).
     prof: Option<Box<crate::profile::Profiler>>,
+    /// The nonlinear solve that stopped the run, for the debugger ([`crate::debug`]).
+    pub newton_failure: Option<NewtonFailure>,
+}
+
+/// A Newton block that did not converge: which one, where and how far off.
+#[derive(Clone, Debug, Serialize)]
+pub struct NewtonFailure {
+    /// Index into `Model::newton`.
+    pub block: usize,
+    /// `initialization` or `simulation`.
+    pub phase: String,
+    pub time: f64,
+    /// Largest absolute residual at the best iterate.
+    pub residual: f64,
 }
 
 #[derive(Debug)]
@@ -290,6 +304,7 @@ impl<'m> Simulation<'m> {
             stats: SimStats::default(),
             delay_events: Vec::new(),
             prof: None,
+            newton_failure: None,
         }
     }
 
@@ -580,6 +595,12 @@ impl<'m> Simulation<'m> {
     fn check_newton(&mut self, phase: &str) -> Result<(), String> {
         if let Some(e) = self.rt.error.take() {
             let b = &self.rt.m.newton[e.block];
+            self.newton_failure = Some(NewtonFailure {
+                block: e.block,
+                phase: phase.into(),
+                time: self.rt.time(),
+                residual: e.residual,
+            });
             return Err(format!(
                 "{phase}: nonlinear system for [{}] did not converge at t = {} (residual {:.3e})",
                 b.names.join(", "),
@@ -637,6 +658,17 @@ impl<'m> Simulation<'m> {
         self.rt.run(&m.init);
         self.rt.init_mode = false;
         self.check_newton("initialization")
+    }
+
+    /// Parameter values and start values at the start time, before the initial equations
+    /// are solved (all registers, indexed by variable).
+    pub fn start_values(&mut self) -> Result<Vec<f64>, String> {
+        let m = self.rt.m;
+        self.eval_params()?;
+        self.rt.set_time(self.opts.start_time);
+        self.rt.r[m.layout.initial] = 1.0;
+        self.rt.run(&m.starts);
+        Ok(self.rt.r[..m.layout.nv].to_vec())
     }
 
     pub fn initialize(&mut self) -> Result<(), String> {
@@ -1165,6 +1197,12 @@ impl<'m> Simulation<'m> {
             st.t = t;
             if let Some(e) = self.rt.error.take() {
                 let b = &m.newton[e.block];
+                self.newton_failure = Some(NewtonFailure {
+                    block: e.block,
+                    phase: "simulation".into(),
+                    time: t,
+                    residual: e.residual,
+                });
                 return Err(format!(
                     "nonlinear system for [{}] did not converge at t = {} (residual {:.3e})",
                     b.names.join(", "),

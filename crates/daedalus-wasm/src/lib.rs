@@ -370,6 +370,72 @@ impl Workspace {
             Err(e) => to_json(&serde_json::json!({"ok": false, "error": format!("{e:#}")})),
         }
     }
+
+    /// Equation and initialization debugger (see `daedalus_core::debug`), JSON.
+    /// `options`: `{"var": name}` (transformation chain of a variable), `{"equation": id}`
+    /// (of a simulation equation, ids as in the structure report), `{"init": true}` (the
+    /// initialization report, also for models that do not translate), plus
+    /// `stateOverrides`, `params`, `stop_time`, `tolerance` as for `structure`.
+    pub fn debug(&mut self, model: &str, options: &str) -> String {
+        self.ensure(model, Some(true));
+        let v: serde_json::Value = serde_json::from_str(options).unwrap_or_default();
+        let bopts = backend_options(options);
+        let t0 = now_ms();
+        if v["init"].as_bool().unwrap_or(false) {
+            let params: Vec<(String, f64)> =
+                serde_json::from_value(v["params"].clone()).unwrap_or_default();
+            let so = match daedalus_core::translate(&self.lib, model, &bopts) {
+                Ok(m) => {
+                    let mut o = SimOptions::from_model(&m);
+                    if let Some(t) = v["stop_time"].as_f64() {
+                        o.stop_time = t;
+                    }
+                    if let Some(t) = v["tolerance"].as_f64() {
+                        o.tolerance = t;
+                    }
+                    Some(o)
+                }
+                Err(_) => None,
+            };
+            // After a failed run: the nonlinear block that stopped the simulation.
+            let sim_failure = match (&so, v["simulation"].as_bool().unwrap_or(false)) {
+                (Some(o), true) => {
+                    let mut o = o.clone();
+                    o.params = params.clone();
+                    daedalus_core::debug::simulation_failure(&self.lib, model, &bopts, o)
+                }
+                _ => None,
+            };
+            let r = daedalus_core::debug::init_report(&self.lib, model, &bopts, so, &params);
+            let mut j = serde_json::to_value(&r).unwrap_or_default();
+            j["simulation_failure"] = serde_json::to_value(&sim_failure).unwrap_or_default();
+            j["text"] = r.to_text().into();
+            j["ms"] = (now_ms() - t0).into();
+            return to_json(&j);
+        }
+        let d = match daedalus_core::debug::Debugger::new(&self.lib, model, &bopts) {
+            Ok(d) => d,
+            Err(f) => {
+                return to_json(&serde_json::json!({
+                    "ok": false,
+                    "error": f.error,
+                    "structural": f.structural,
+                }));
+            }
+        };
+        let r = if let Some(name) = v["var"].as_str() {
+            d.trace_var(name)
+                .map(|t| serde_json::json!({"ok": true, "var": t, "text": t.to_text()}))
+        } else if let Some(id) = v["equation"].as_u64() {
+            d.trace_eq(id as usize)
+                .map(|t| serde_json::json!({"ok": true, "equation": t, "text": t.to_text()}))
+        } else {
+            Err("nothing to debug: give var, equation or init".to_string())
+        };
+        let mut j = r.unwrap_or_else(|e| serde_json::json!({"ok": false, "error": e}));
+        j["ms"] = (now_ms() - t0).into();
+        to_json(&j)
+    }
 }
 
 /// Backend options from a JSON options object: `"stateOverrides": [[name, tier], ...]`.

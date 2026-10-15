@@ -4,6 +4,7 @@ pub mod backend;
 pub mod calibrate;
 pub mod casadi;
 pub mod codegen;
+pub mod debug;
 pub mod expr;
 pub mod flat;
 pub mod fmi;
@@ -13,8 +14,8 @@ pub mod frontend;
 pub mod linalg;
 pub mod linearize;
 pub mod modal;
-pub mod profile;
 pub mod optimize;
+pub mod profile;
 pub mod results;
 pub mod sensitivity;
 pub mod sim;
@@ -24,10 +25,10 @@ pub mod solver_esdirk;
 pub mod solver_jac;
 pub mod solver_radau;
 pub mod sparse;
-pub mod sweep;
-pub mod structure;
-pub mod uq;
 pub mod steady;
+pub mod structure;
+pub mod sweep;
+pub mod uq;
 
 /// Flatten, analyse and compile `model` from `lib` into an executable model.
 pub fn translate(

@@ -113,7 +113,13 @@ pub struct Eq {
     pub parent: Option<usize>,
     /// Index of the derivative of this equation (Pantelides `B`).
     pub derived: Option<usize>,
+    /// The flat equation it descends from (index into [`trace::Trace::sources`]: the
+    /// simulation equations, then the initial ones), or [`NO_SRC`].
+    pub src: u32,
 }
+
+/// [`Eq::src`] of a generated equation (a start value of initialization).
+pub const NO_SRC: u32 = u32::MAX;
 
 /// Mutable working state of the backend.
 pub struct Work {
@@ -160,6 +166,94 @@ impl Work {
             .cloned()
             .unwrap_or_default();
         format!("{} = {}   ({})", self.show(e.lhs), self.show(e.rhs), o)
+    }
+
+    /// Keep the system whose matching failed in the trace (see [`trace::Singular`]).
+    pub fn record_singular(
+        &mut self,
+        problem: &str,
+        eqs: &[Eq],
+        is_unknown: &dyn Fn(VarId) -> bool,
+    ) {
+        if self.trace.is_none() {
+            return;
+        }
+        let mut idx: FxHashMap<VarId, u32> = FxHashMap::default();
+        let mut names = Vec::new();
+        let mut out = Vec::with_capacity(eqs.len());
+        for e in eqs {
+            let mut u = Vec::new();
+            for v in self.eq_unknowns(e) {
+                if !is_unknown(v) {
+                    continue;
+                }
+                let i = *idx.entry(v).or_insert_with(|| {
+                    names.push(self.vars[v as usize].name.clone());
+                    (names.len() - 1) as u32
+                });
+                u.push(i);
+            }
+            let text = format!("{} = {}", self.show(e.lhs), self.show(e.rhs));
+            let mut source_text = None;
+            let mut related = Vec::new();
+            if let Some(t) = &self.trace
+                && let Some(se) = t.sources.get(e.src as usize)
+            {
+                let st = format!("{} = {}", self.show(se.lhs), self.show(se.rhs));
+                if st != text {
+                    source_text = Some(st);
+                }
+                let mut vs: Vec<VarId> =
+                    self.arena.vars_in(&[se.lhs, se.rhs]).into_iter().collect();
+                vs.sort_unstable();
+                for v in vs {
+                    if !self.aliases.iter().any(|a| a.var == v) {
+                        continue;
+                    }
+                    for ae in t.alias_eqs.iter().filter(|a| a.a == v || a.b == Some(v)) {
+                        if related.len() < 6
+                            && ae.src != e.src
+                            && let Some(q) = t.sources.get(ae.src as usize)
+                        {
+                            let r = (
+                                format!("{} = {}", self.show(q.lhs), self.show(q.rhs)),
+                                q.origin,
+                            );
+                            if !related.contains(&r) {
+                                related.push(r);
+                            }
+                        }
+                    }
+                }
+            }
+            out.push(trace::SingularEq {
+                text,
+                origin: self
+                    .origins
+                    .get(e.origin as usize)
+                    .cloned()
+                    .unwrap_or_default(),
+                origin_id: e.origin,
+                src: e.src,
+                unknowns: u,
+                source_text,
+                related,
+            });
+        }
+        // Unknowns in no equation at all.
+        for v in 0..self.vars.len() as VarId {
+            if self.unknown[v as usize] && is_unknown(v) && !idx.contains_key(&v) {
+                idx.insert(v, names.len() as u32);
+                names.push(self.vars[v as usize].name.clone());
+            }
+        }
+        if let Some(t) = &mut self.trace {
+            t.singular = Some(trace::Singular {
+                problem: problem.to_string(),
+                eqs: out,
+                vars: names,
+            });
+        }
     }
 
     pub fn add_var(&mut self, v: Variable, unknown: bool) -> VarId {
@@ -235,6 +329,15 @@ impl Default for Options {
 }
 
 pub fn compile(flat: FlatModel, opts: &Options) -> Result<System> {
+    compile_traced(flat, opts).map_err(|(e, _)| e)
+}
+
+/// [`compile`], returning the trace (with [`trace::Trace::singular`] when a matching
+/// failed) together with the error when translation fails and `opts.trace` is set.
+pub fn compile_traced(
+    flat: FlatModel,
+    opts: &Options,
+) -> std::result::Result<System, (anyhow::Error, Option<trace::Trace>)> {
     let t0 = web_time_now();
     let mut stats = Stats {
         flat_variables: flat.vars.len(),
@@ -254,6 +357,7 @@ pub fn compile(flat: FlatModel, opts: &Options) -> Result<System> {
         origins,
         experiment,
         warnings,
+        ..
     } = flat;
     let mut vars = vars;
     let mut warnings = warnings;
@@ -338,22 +442,26 @@ pub fn compile(flat: FlatModel, opts: &Options) -> Result<System> {
         vars,
         eqs: equations
             .iter()
-            .map(|e| Eq {
+            .enumerate()
+            .map(|(i, e)| Eq {
                 lhs: e.lhs,
                 rhs: e.rhs,
                 origin: e.origin,
                 parent: None,
                 derived: None,
+                src: i as u32,
             })
             .collect(),
         init_eqs: initial_equations
             .iter()
-            .map(|e| Eq {
+            .enumerate()
+            .map(|(i, e)| Eq {
                 lhs: e.lhs,
                 rhs: e.rhs,
                 origin: e.origin,
                 parent: None,
                 derived: None,
+                src: (equations.len() + i) as u32,
             })
             .collect(),
         whens,
@@ -373,12 +481,32 @@ pub fn compile(flat: FlatModel, opts: &Options) -> Result<System> {
         pre_init: Vec::new(),
         trace: opts.trace.then(|| trace::Trace {
             overrides: applied,
+            sources: equations
+                .iter()
+                .map(|e| (e, false))
+                .chain(initial_equations.iter().map(|e| (e, true)))
+                .map(|(e, initial)| trace::SourceEq {
+                    lhs: e.lhs,
+                    rhs: e.rhs,
+                    origin: e.origin,
+                    initial,
+                })
+                .collect(),
             ..Default::default()
         }),
     };
+    // On an error, hand back the trace with it.
+    macro_rules! tr {
+        ($e:expr) => {
+            match $e {
+                Ok(x) => x,
+                Err(e) => return Err((e, w.trace.take())),
+            }
+        };
+    }
 
     // 1. Parameters
-    let params = order_parameters(&mut w)?;
+    let params = tr!(order_parameters(&mut w));
     let inputs: Vec<VarId> = (0..w.vars.len() as VarId)
         .filter(|&v| w.vars[v as usize].kind == VarKind::Input)
         .collect();
@@ -400,10 +528,10 @@ pub fn compile(flat: FlatModel, opts: &Options) -> Result<System> {
     index::create_derivative_vars(&mut w);
     let n_before = w.eqs.len();
     if opts.index_reduction {
-        index::pantelides(&mut w)?;
+        tr!(index::pantelides(&mut w));
     }
     stats.differentiated_equations = w.eqs.len() - n_before;
-    let states = index::select_states(&mut w)?;
+    let states = tr!(index::select_states(&mut w));
     stats.dummy_derivatives = w.dummy.len();
     let state_derivs: Vec<VarId> = states
         .iter()
@@ -414,16 +542,16 @@ pub fn compile(flat: FlatModel, opts: &Options) -> Result<System> {
     // 4./5. Runtime system: unknowns = all unknown vars except states.
     let state_set: FxHashSet<VarId> = states.iter().copied().collect();
     let eq_list: Vec<Eq> = w.eqs.clone();
-    let blocks = sort::causalize(
+    let blocks = tr!(sort::causalize(
         &mut w,
         &eq_list,
         &|v| !state_set.contains(&v),
         opts.tearing,
         "simulation",
-    )?;
+    ));
 
     // 6. Initialization
-    let init_blocks = sort::initialization(&mut w, &states, opts.tearing)?;
+    let init_blocks = tr!(sort::initialization(&mut w, &states, opts.tearing));
 
     for b in &blocks {
         stats.blocks += 1;
