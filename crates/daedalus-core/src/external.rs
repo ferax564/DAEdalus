@@ -18,7 +18,7 @@
 use std::fmt::Write as _;
 
 /// A natively implemented external function with numeric arguments and results.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum NativeFn {
     /// `ModelicaRandom_xorshift64star(stateIn[2]) -> (stateOut[2], y)`.
     Xorshift64star,
@@ -111,7 +111,7 @@ impl NativeFn {
 
 /// One use of a native function: the function, its constant string arguments and the
 /// number of numeric results.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct NativeCall {
     pub f: NativeFn,
     pub strs: Vec<String>,

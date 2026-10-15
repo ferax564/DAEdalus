@@ -717,8 +717,37 @@ impl<'m> Simulation<'m> {
     }
 
     fn integrate(&mut self, rec: &mut Recorder) -> Result<(), String> {
+        let mut st = self.make_stepper();
+        rec.record(&mut self.rt);
+        self.restart(&mut st);
+        st.event_budget = if self.opts.max_event_rows > 0 {
+            self.opts.max_event_rows
+        } else {
+            // About 10 million written values of event rows (every column, aliases
+            // included, as the result file holds them): every event of a small model, a
+            // bounded file for a large one, however fine the output grid.
+            let per_row = rec.res.vars.len().max(rec.stored.len()).max(1);
+            (10_000_000 / per_row).max(2_000)
+        };
+        let stop = self.opts.stop_time;
+        let r = self.advance(&mut st, stop, Some(&mut *rec));
+        self.stats.solver = st.solver.stats();
+        r?;
+        self.stop_time_event(&mut st, rec)?;
+        Ok(())
+    }
+
+    /// Integrator state for stepping the model forward from its current (initialized,
+    /// consistent) solution point.
+    pub fn stepper(&mut self) -> Stepper {
+        let mut st = self.make_stepper();
+        self.restart(&mut st);
+        st
+    }
+
+    fn make_stepper(&mut self) -> Stepper {
         let m = self.rt.m;
-        let o = self.opts.clone();
+        let o = &self.opts;
         let n = m.states.len();
         let span = o.stop_time - o.start_time;
         let dt = if o.interval > 0.0 {
@@ -745,7 +774,7 @@ impl<'m> Simulation<'m> {
         }
         let rtol = o.tolerance;
         let atol = o.tolerance;
-        let mut solver: Box<dyn Integrator> = match o.method {
+        let solver: Box<dyn Integrator> = match o.method {
             Method::Bdf => {
                 let b = Bdf::new(n, rtol, atol, max_step, &m.jac_pattern);
                 self.stats.jacobian_colors = b.n_colors();
@@ -763,36 +792,114 @@ impl<'m> Simulation<'m> {
                 if o.fixed_step > 0.0 { o.fixed_step } else { dt },
             )),
         };
-        let mut x = vec![0.0; n];
-        self.rt.get_states(&mut x);
-        let mut t = o.start_time;
-        rec.record(&mut self.rt);
-        let mut k_out: u64 = 1;
-        let next_out = |k: u64| o.start_time + k as f64 * dt;
-        let event_budget = if o.max_event_rows > 0 {
-            o.max_event_rows
+        Stepper {
+            solver,
+            x: vec![0.0; n],
+            xi: vec![0.0; n],
+            t: self.rt.time(),
+            k_out: 1,
+            dt,
+            max_step,
+            event_budget: usize::MAX,
+            event_rows: 0,
+            guard: 0,
+            last_event: f64::NEG_INFINITY,
+            same_instant: 0,
+            wall0: crate::backend::web_time_now(),
+        }
+    }
+
+    /// Restart the integrator from the runtime's current states and time (after inputs,
+    /// states or discrete values were changed from outside).
+    pub fn restart(&mut self, st: &mut Stepper) {
+        self.rt.get_states(&mut st.x);
+        st.t = self.rt.time();
+        st.solver.reset(&mut self.rt, st.t, &st.x);
+    }
+
+    /// Integrate (with event handling) from the stepper's time to `t_stop`, leaving the
+    /// runtime with the consistent solution at the time reached (`t_stop`, or where
+    /// `terminate()` stopped the run).
+    pub fn advance_to(&mut self, st: &mut Stepper, t_stop: f64) -> Result<(), String> {
+        self.advance(st, t_stop, None)?;
+        let m = self.rt.m;
+        let t = st.t;
+        // The registers hold whatever the solver evaluated last: recompute the solution.
+        if (st.solver.t() - t).abs() <= 1e-15 * t.abs().max(1.0) {
+            st.x.copy_from_slice(st.solver.x());
         } else {
-            // About 10 million written values of event rows (every column, aliases
-            // included, as the result file holds them): every event of a small model, a
-            // bounded file for a large one, however fine the output grid.
-            let per_row = rec.res.vars.len().max(rec.stored.len()).max(1);
-            (10_000_000 / per_row).max(2_000)
-        };
-        let mut event_rows = 0usize;
-        solver.reset(&mut self.rt, t, &x);
+            st.solver.interpolate(t, &mut st.x);
+        }
+        let xs = st.x.clone();
+        self.rt.rhs(t, &xs, &mut st.xi);
+        self.rt.error = None;
+        self.rt.run(&m.outputs);
+        self.stats.solver = st.solver.stats();
+        Ok(())
+    }
+
+    /// The message of `terminate()`, once the model has called it.
+    pub fn terminated(&self) -> Option<&str> {
+        self.terminated.as_deref()
+    }
+
+    /// Process an event at the current time (after discrete inputs or parameters were
+    /// changed from outside, or a crossing found by an external integrator): event
+    /// iteration until the discrete values settle.
+    pub fn handle_event(&mut self) -> Result<(), String> {
+        self.stats.events += 1;
+        self.rt.delay_right = true;
+        self.event_iteration()?;
+        self.check_newton("event")?;
+        self.record_delays();
+        Ok(())
+    }
+
+    /// Record delayed values after an accepted step of an external integrator; returns
+    /// the earliest pending time event (a delayed jump), if any.
+    pub fn completed_step(&mut self) -> Option<f64> {
+        self.record_delays();
+        let t = self.rt.time();
+        let k = self
+            .delay_events
+            .partition_point(|&x| x < t * (1.0 - 1e-14) - 1e-300);
+        self.delay_events.drain(..k);
+        self.delay_events.first().copied()
+    }
+
+    /// Drop pending time events up to the current time (they were just handled).
+    pub fn consume_time_events(&mut self) -> Option<f64> {
+        let t = self.rt.time();
+        let k = self
+            .delay_events
+            .partition_point(|&x| x <= t * (1.0 + 1e-14) + 1e-300);
+        self.delay_events.drain(..k);
+        self.delay_events.first().copied()
+    }
+
+    fn advance(
+        &mut self,
+        st: &mut Stepper,
+        t_stop: f64,
+        mut rec: Option<&mut Recorder>,
+    ) -> Result<(), String> {
+        let m = self.rt.m;
+        let o = self.opts.clone();
+        let n = m.states.len();
+        let dt = st.dt;
+        let max_step = st.max_step;
+        let next_out = |k: u64| o.start_time + k as f64 * dt;
+        let event_budget = st.event_budget;
         let n_rel = m.layout.n_rel;
-        let mut xi = vec![0.0; n];
-        let mut guard = 0u64;
-        // Events piling up at one instant (Zeno behaviour, chattering modes).
-        let (mut last_event, mut same_instant) = (f64::NEG_INFINITY, 0u32);
-        let wall0 = crate::backend::web_time_now();
-        while t < o.stop_time * (1.0 - 1e-15) - 1e-300 && self.terminated.is_none() {
-            guard += 1;
-            if guard > 50_000_000 {
+        let wall0 = st.wall0;
+        let mut t = st.t;
+        while t < t_stop * (1.0 - 1e-15) - 1e-300 && self.terminated.is_none() {
+            st.guard += 1;
+            if st.guard > 50_000_000 {
                 return Err("too many steps".into());
             }
             if o.max_wall_time > 0.0
-                && guard % 64 == 0
+                && st.guard % 64 == 0
                 && crate::backend::web_time_now() - wall0 > o.max_wall_time
             {
                 return Err(format!(
@@ -801,21 +908,21 @@ impl<'m> Simulation<'m> {
                 ));
             }
             let t_lim = match self.delay_events.first() {
-                Some(&te) if te < o.stop_time => te,
-                _ => o.stop_time,
+                Some(&te) if te < t_stop => te,
+                _ => t_stop,
             };
             let t_lim = if n == 0 {
                 t_lim.min(t + max_step)
             } else {
                 t_lim
             };
-            let tn = solver.step(&mut self.rt, t_lim)?;
-            let tp = solver.t_prev();
+            let tn = st.solver.step(&mut self.rt, t_lim)?;
+            let tp = st.solver.t_prev();
             self.rt.error = None;
             // Event detection at the end of the step.
             let mut event_t: Option<f64> = None;
             if n_rel > 0 {
-                self.rt.rhs(tn, solver.x(), &mut xi);
+                self.rt.rhs(tn, st.solver.x(), &mut st.xi);
                 self.rt.eval_zc();
                 let mut crossing = Vec::new();
                 for i in 0..n_rel {
@@ -834,9 +941,9 @@ impl<'m> Simulation<'m> {
                 }
                 if !crossing.is_empty() {
                     let mut best = tn;
-                    let after_event = tp - last_event <= 1e-10 * tp.abs().max(1.0);
+                    let after_event = tp - st.last_event <= 1e-10 * tp.abs().max(1.0);
                     for &i in &crossing {
-                        let te = self.locate(&*solver, i, tp, best, after_event, &mut xi);
+                        let te = self.locate(&*st.solver, i, tp, best, after_event, &mut st.xi);
                         if te < best {
                             best = te;
                         }
@@ -858,24 +965,26 @@ impl<'m> Simulation<'m> {
             }
             let t_end = event_t.unwrap_or(tn);
             // Output points inside the step (before the event).
-            while next_out(k_out) <= t_end * (1.0 + 1e-14) + 1e-300
-                && next_out(k_out) <= o.stop_time * (1.0 + 1e-14)
-            {
-                let to = next_out(k_out).min(o.stop_time);
-                if event_t.is_some() && to >= t_end {
-                    break;
+            if let Some(rec) = rec.as_deref_mut() {
+                while next_out(st.k_out) <= t_end * (1.0 + 1e-14) + 1e-300
+                    && next_out(st.k_out) <= o.stop_time * (1.0 + 1e-14)
+                {
+                    let to = next_out(st.k_out).min(o.stop_time);
+                    if event_t.is_some() && to >= t_end {
+                        break;
+                    }
+                    st.solver.interpolate(to, &mut st.xi);
+                    self.rt.rhs(to, &st.xi, &mut st.x);
+                    rec.record(&mut self.rt);
+                    self.record_delays();
+                    self.check_asserts()?;
+                    st.k_out += 1;
                 }
-                solver.interpolate(to, &mut xi);
-                self.rt.rhs(to, &xi, &mut x);
-                rec.record(&mut self.rt);
-                self.record_delays();
-                self.check_asserts()?;
-                k_out += 1;
             }
             if let Some(te) = event_t {
-                if te - last_event <= 1e-10 * te.abs().max(1.0) {
-                    same_instant += 1;
-                    if same_instant > 500 {
+                if te - st.last_event <= 1e-10 * te.abs().max(1.0) {
+                    st.same_instant += 1;
+                    if st.same_instant > 500 {
                         let names: Vec<String> = (0..n_rel)
                             .filter(|&i| {
                                 self.rt.r[m.zc_raw[i] as usize] != self.rt.r[m.layout.rel0 + i]
@@ -893,22 +1002,22 @@ impl<'m> Simulation<'m> {
                         ));
                     }
                 } else {
-                    same_instant = 0;
+                    st.same_instant = 0;
                 }
-                last_event = te;
+                st.last_event = te;
                 self.stats.events += 1;
                 if !time_event {
                     self.stats.state_events += 1;
                 }
                 // The row before the event sees the left values of delayed jumps.
                 self.rt.delay_right = false;
-                solver.interpolate(te, &mut xi);
-                self.rt.rhs(te, &xi, &mut x);
-                let store = o.store_events && event_rows < event_budget;
-                if store {
+                st.solver.interpolate(te, &mut st.xi);
+                self.rt.rhs(te, &st.xi, &mut st.x);
+                let store = o.store_events && st.event_rows < event_budget && rec.is_some();
+                if store && let Some(rec) = rec.as_deref_mut() {
                     rec.record(&mut self.rt);
-                    event_rows += 2;
-                    if event_rows >= event_budget {
+                    st.event_rows += 2;
+                    if st.event_rows >= event_budget {
                         self.log.push(format!(
                             "more than {} event points at t = {te}: later events are not stored \
                              (only output points)",
@@ -921,38 +1030,42 @@ impl<'m> Simulation<'m> {
                 self.event_iteration()?;
                 self.check_newton("event")?;
                 self.record_delays();
-                if store {
-                    rec.record(&mut self.rt);
-                }
-                // Output point coinciding with the event.
-                if (next_out(k_out) - te).abs() <= 1e-12 * te.abs().max(1.0) {
-                    if !store {
+                if let Some(rec) = rec.as_deref_mut() {
+                    if store {
                         rec.record(&mut self.rt);
                     }
-                    k_out += 1;
+                    // Output point coinciding with the event.
+                    if (next_out(st.k_out) - te).abs() <= 1e-12 * te.abs().max(1.0) {
+                        if !store {
+                            rec.record(&mut self.rt);
+                        }
+                        st.k_out += 1;
+                    }
                 }
-                self.rt.get_states(&mut xi);
+                self.rt.get_states(&mut st.xi);
                 t = te;
-                solver.reset(&mut self.rt, t, &xi);
+                st.solver.reset(&mut self.rt, t, &st.xi);
             } else {
                 t = tn;
                 if !m.delays.is_empty() {
-                    let xs = solver.x().to_vec();
-                    self.rt.rhs(tn, &xs, &mut xi);
+                    let xs = st.solver.x().to_vec();
+                    self.rt.rhs(tn, &xs, &mut st.xi);
                     self.record_delays();
                 }
-                if (tn - o.stop_time).abs() <= 1e-12 * o.stop_time.abs().max(1.0)
+                if let Some(rec) = rec.as_deref_mut()
+                    && (tn - o.stop_time).abs() <= 1e-12 * o.stop_time.abs().max(1.0)
                     && rec
                         .res
                         .time
                         .last()
                         .is_none_or(|&l| l < o.stop_time - 1e-12 * o.stop_time.abs().max(1.0))
                 {
-                    let xs = solver.x().to_vec();
-                    self.rt.rhs(o.stop_time, &xs, &mut x);
+                    let xs = st.solver.x().to_vec();
+                    self.rt.rhs(o.stop_time, &xs, &mut st.x);
                     rec.record(&mut self.rt);
                 }
             }
+            st.t = t;
             if let Some(e) = self.rt.error.take() {
                 let b = &m.newton[e.block];
                 return Err(format!(
@@ -963,16 +1076,23 @@ impl<'m> Simulation<'m> {
                 ));
             }
         }
-        // A time event exactly at the stop time (`sample(0, T)` with StopTime a multiple of
-        // T, as in the sampled mean of a harmonic analysis) sits on its switching point
-        // when the last step ends, inside the hysteresis band of the crossing test. It is
-        // still an event of the run: process it and store its right value.
-        if self.terminated.is_none()
-            && n_rel > 0
-            && (t - o.stop_time).abs() <= 1e-12 * o.stop_time.abs().max(1.0)
+        st.t = t;
+        Ok(())
+    }
+
+    /// A time event exactly at the stop time (`sample(0, T)` with StopTime a multiple of
+    /// T, as in the sampled mean of a harmonic analysis) sits on its switching point
+    /// when the last step ends, inside the hysteresis band of the crossing test. It is
+    /// still an event of the run: process it and store its right value.
+    fn stop_time_event(&mut self, st: &mut Stepper, rec: &mut Recorder) -> Result<(), String> {
+        let m = self.rt.m;
+        let n_rel = m.layout.n_rel;
+        let t = st.t;
+        let stop = self.opts.stop_time;
+        if self.terminated.is_none() && n_rel > 0 && (t - stop).abs() <= 1e-12 * stop.abs().max(1.0)
         {
-            let xs = solver.x().to_vec();
-            self.rt.rhs(o.stop_time, &xs, &mut xi);
+            let xs = st.solver.x().to_vec();
+            self.rt.rhs(stop, &xs, &mut st.xi);
             self.rt.eval_zc();
             let due = (0..n_rel).any(|i| {
                 (m.sample_rels.contains(&i) || mentions_time(&m.rel_text[i]))
@@ -986,7 +1106,6 @@ impl<'m> Simulation<'m> {
                 rec.record(&mut self.rt);
             }
         }
-        self.stats.solver = solver.stats();
         Ok(())
     }
 
@@ -1078,6 +1197,30 @@ impl<'m> Simulation<'m> {
             }
         }
         b
+    }
+}
+
+/// Integrator state of a [`Simulation`] being stepped (see [`Simulation::stepper`]).
+pub struct Stepper {
+    solver: Box<dyn Integrator>,
+    x: Vec<f64>,
+    xi: Vec<f64>,
+    /// Time reached.
+    pub t: f64,
+    k_out: u64,
+    dt: f64,
+    max_step: f64,
+    event_budget: usize,
+    event_rows: usize,
+    guard: u64,
+    last_event: f64,
+    same_instant: u32,
+    wall0: f64,
+}
+
+impl Stepper {
+    pub fn solver_stats(&self) -> SolverStats {
+        self.solver.stats()
     }
 }
 

@@ -36,7 +36,7 @@ pub enum Block {
     },
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
 pub enum AliasKind {
     /// `var = sign * of`
     Var { of: VarId, sign: f64 },
@@ -51,7 +51,7 @@ pub struct Alias {
     pub expr: ExprId,
 }
 
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, serde::Deserialize)]
 pub struct Stats {
     pub flat_variables: usize,
     pub flat_equations: usize,

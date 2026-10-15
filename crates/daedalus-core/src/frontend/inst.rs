@@ -157,6 +157,23 @@ pub enum Val {
     Rec(Vec<(String, Val)>),
     /// Several function outputs (tuple).
     Tuple(Vec<Val>),
+    /// A function value: `function f(a = 1)` passed to a functional input.
+    Func(Rc<FuncVal>),
+}
+
+/// A function with some inputs bound (MLS 12.4.2, partial application).
+pub struct FuncVal {
+    cls: ClassId,
+    overrides: Rc<FxHashMap<String, ClassId>>,
+    /// Scope of the package the function was reached through (`Medium.f`).
+    penv: Option<Rc<Env>>,
+    bound: Vec<(String, Val)>,
+}
+
+impl std::fmt::Debug for FuncVal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "function #{} bound {:?}", self.cls, self.bound)
+    }
 }
 
 impl Val {
@@ -179,6 +196,7 @@ impl Val {
             Val::SA(..) => "string array",
             Val::Rec(_) => "record",
             Val::Tuple(_) => "tuple",
+            Val::Func(_) => "function",
         }
     }
 
@@ -224,13 +242,16 @@ pub struct Ctx {
     end_value: Option<usize>,
     /// Inside a function body (no instance components visible).
     in_function: bool,
-    /// A `break` was executed: the statements up to the enclosing loop are skipped.
-    broke: bool,
-    /// The break flag ([`BREAK`]) whose statements following are already guarded.
-    guarded_break: Option<ExprId>,
     /// Condition under which the statements being executed run (inside the branches of
     /// a time-varying `if`); `None` means always.
     path: Option<ExprId>,
+    /// A `break` was executed unconditionally in the innermost loop.
+    broke: bool,
+    /// Run-time condition under which the function has already returned (a `return`
+    /// under a time-varying `if`): later assignments only take effect when it is false.
+    sret: Option<ExprId>,
+    /// The same for a `break` in the innermost loop.
+    sbrk: Option<ExprId>,
 }
 
 pub struct Flattener<'a, 't> {
@@ -3155,6 +3176,11 @@ impl<'a, 't> Flattener<'a, 't> {
                 };
             }
             if let Some(subs) = &p.subs {
+                // An element of a conditional array that is not present (`derv[1].y`
+                // with `Der derv[3] if false`): the connection is dropped.
+                if matches!(cur, Comp::Removed) {
+                    return Ok((None, !outside));
+                }
                 cur = self.subscript_comp(cur, subs, scope, ctx)?;
             }
         }
@@ -3508,6 +3534,12 @@ impl<'a, 't> Flattener<'a, 't> {
                 self.binary(op, l, r, ctx)
             }
             E::ComponentReference(cr) => self.resolve_ref(cr, scope, ctx),
+            E::FunctionCall {
+                comp,
+                args,
+                is_partial_application: true,
+                ..
+            } => self.function_value(comp, args, scope, ctx),
             E::FunctionCall { comp, args, .. } => self.call(comp, args, scope, ctx),
             E::Array { elements, kind, .. } => {
                 let mut vals = Vec::new();
@@ -3625,7 +3657,12 @@ impl<'a, 't> Flattener<'a, 't> {
             }
             E::NamedArgument { value, .. } => self.translate(value, scope, ctx),
             E::Modification { value, .. } => self.translate(value, scope, ctx),
-            E::ClassModification { .. } => bail!("unexpected class modification in expression"),
+            // `T(100)` parsed in a declaration context: a constructor or function call.
+            E::ClassModification {
+                target,
+                modifications,
+                ..
+            } => self.call(target, modifications, scope, ctx),
         }
     }
 
@@ -4021,6 +4058,12 @@ impl<'a, 't> Flattener<'a, 't> {
     }
 
     fn binary(&mut self, op: &OpBinary, l: Val, r: Val, ctx: &Ctx) -> Result<Val> {
+        // String concatenation (messages of assert, error and print).
+        if let (Val::Str(x), Val::Str(y)) = (&l, &r)
+            && matches!(op, OpBinary::Add | OpBinary::AddElem)
+        {
+            return Ok(Val::Str(format!("{x}{y}")));
+        }
         if Self::is_record_like(&l) || Self::is_record_like(&r) {
             return self.record_binary(op, l, r, ctx);
         }
@@ -4243,6 +4286,44 @@ impl<'a, 't> Flattener<'a, 't> {
                 }
                 let mut dims = vec![vals.len()];
                 dims.extend(inner.unwrap_or_default());
+                Ok(Val::A(dims, out))
+            }
+            ArrayConstructor::Horizontal | ArrayConstructor::Vertical
+                if vals
+                    .iter()
+                    .any(|v| matches!(v, Val::A(d, _) if d.len() > 2)) =>
+            {
+                // [A] / [A, B] / [A; B] with arrays of three or more dimensions:
+                // cat along dimension 2 (`,`) or 1 (`;`); the others must agree.
+                let axis = usize::from(matches!(kind, ArrayConstructor::Horizontal));
+                let parts: Vec<(Vec<usize>, Vec<ExprId>)> =
+                    vals.iter().map(|v| v.elems()).collect::<Result<_>>()?;
+                let nd = parts.iter().map(|(d, _)| d.len()).max().unwrap_or(0);
+                let mut dims0: Option<Vec<usize>> = None;
+                let mut total = 0;
+                for (d, _) in &parts {
+                    if d.len() != nd {
+                        bail!("concatenation of arrays with different numbers of dimensions");
+                    }
+                    let mut other = d.clone();
+                    total += other[axis];
+                    other[axis] = 0;
+                    match &dims0 {
+                        Some(o) if *o != other => bail!("concatenation size mismatch"),
+                        Some(_) => {}
+                        None => dims0 = Some(other),
+                    }
+                }
+                let mut dims = dims0.unwrap_or_default();
+                dims[axis] = total;
+                let outer: usize = dims[..axis].iter().product();
+                let mut out = Vec::new();
+                for o in 0..outer {
+                    for (d, e) in &parts {
+                        let chunk: usize = d[axis..].iter().product();
+                        out.extend_from_slice(&e[o * chunk..(o + 1) * chunk]);
+                    }
+                }
                 Ok(Val::A(dims, out))
             }
             ArrayConstructor::Horizontal => {
@@ -5604,12 +5685,17 @@ impl<'a, 't> Flattener<'a, 't> {
             }
             "Integer" | "Real" | "Boolean" => return Ok(arg!(0)),
             "String" => {
-                // Values known at translation time are formatted; others give "".
-                let v = arg!(0);
-                if let Val::Str(_) = v {
-                    return Ok(v);
-                }
-                let e = v.scalar()?;
+                // Values known at translation time are formatted; others (run-time
+                // values, which only reach diagnostic messages) give "".
+                let v = match pos.first() {
+                    Some(e) => self.translate(e, scope, ctx).ok(),
+                    None => None,
+                };
+                let e = match v {
+                    Some(Val::Str(x)) => return Ok(Val::Str(x)),
+                    Some(Val::S(e)) => e,
+                    _ => return Ok(Val::Str(String::new())),
+                };
                 let Some(x) = self.eval_param_expr(e) else {
                     return Ok(Val::Str(String::new()));
                 };
@@ -5618,7 +5704,9 @@ impl<'a, 't> Flattener<'a, 't> {
                 let mut left = true;
                 let mut format = None;
                 for (n, ex) in &named {
-                    let val = self.translate(ex, scope, ctx)?;
+                    let Ok(val) = self.translate(ex, scope, ctx) else {
+                        continue;
+                    };
                     match *n {
                         "format" => {
                             if let Val::Str(f) = val {
@@ -5739,6 +5827,42 @@ impl<'a, 't> Flattener<'a, 't> {
             }
             _ => {}
         }
+        // Call of a functional input (`f(u)` where `f` was passed as `function g(a = 1)`).
+        if comp.parts.len() == 1
+            && ctx.in_function
+            && let Some(Val::Func(fv)) = ctx
+                .locals
+                .iter()
+                .rev()
+                .find_map(|f| f.get(&*comp.parts[0].ident.text))
+                .cloned()
+        {
+            let mut argv = Vec::new();
+            for p in &pos {
+                argv.push(self.translate(p, scope, ctx)?);
+            }
+            let mut nargv = Vec::new();
+            for (n, e) in &named {
+                nargv.push((n.to_string(), self.translate(e, scope, ctx)?));
+            }
+            for (n, v) in &fv.bound {
+                if !nargv.iter().any(|(m, _)| m == n) {
+                    nargv.push((n.clone(), v.clone()));
+                }
+            }
+            let outs = self.inline_function_in(
+                fv.cls,
+                argv,
+                nargv,
+                fv.overrides.clone(),
+                fv.penv.clone(),
+            )?;
+            return Ok(if outs.len() == 1 {
+                outs.into_iter().next().unwrap()
+            } else {
+                Val::Tuple(outs)
+            });
+        }
         // User-defined function or record constructor.
         let parts: Vec<&str> = comp.parts.iter().map(|p| &*p.ident.text).collect();
         let env = if comp.local {
@@ -5810,6 +5934,9 @@ impl<'a, 't> Flattener<'a, 't> {
         if let Some(def) = self.tree.def(cls) {
             for ext in &def.extends {
                 for em in &ext.modifications {
+                    if em.redeclare {
+                        continue;
+                    }
                     if let E::Modification { target, value, .. } = &em.expr
                         && target.parts.len() == 1
                     {
@@ -5859,6 +5986,65 @@ impl<'a, 't> Flattener<'a, 't> {
         }
     }
 
+    /// `function f(a = 1)`: a function value with some inputs bound. A functional input
+    /// passed on (`function f()` where `f` is itself a function value) keeps its bindings.
+    fn function_value(
+        &mut self,
+        comp: &'a ast::ComponentReference,
+        args: &'a [E],
+        scope: &Scope,
+        ctx: &mut Ctx,
+    ) -> Result<Val> {
+        let (_, named) = split_args(args);
+        let mut bound = Vec::new();
+        for (n, e) in &named {
+            bound.push((n.to_string(), self.translate(e, scope, ctx)?));
+        }
+        if comp.parts.len() == 1
+            && let Some(Val::Func(fv)) = ctx
+                .locals
+                .iter()
+                .rev()
+                .find_map(|f| f.get(&*comp.parts[0].ident.text))
+                .cloned()
+        {
+            for (n, v) in &fv.bound {
+                if !bound.iter().any(|(m, _)| m == n) {
+                    bound.push((n.clone(), v.clone()));
+                }
+            }
+            return Ok(Val::Func(Rc::new(FuncVal {
+                cls: fv.cls,
+                overrides: fv.overrides.clone(),
+                penv: fv.penv.clone(),
+                bound,
+            })));
+        }
+        let parts: Vec<&str> = comp.parts.iter().map(|p| &*p.ident.text).collect();
+        let env = if comp.local {
+            self.env_of(ROOT)
+        } else {
+            scope.env.clone()
+        };
+        let name = cref_name(comp);
+        let cls = self
+            .lookup_class(&env, &parts)
+            .filter(|&c| matches!(self.tree.class_type(c), ClassType::Function))
+            .ok_or_else(|| anyhow!("function '{name}' not found"))?;
+        let via = self.class_via(&env, &parts, cls);
+        let lexical = self.tree.node(cls).parent;
+        let penv = via.map(|v| {
+            let owner = lexical.unwrap_or(ROOT);
+            self.inherited_env(v, owner, env.overrides.clone())
+        });
+        Ok(Val::Func(Rc::new(FuncVal {
+            cls,
+            overrides: env.overrides.clone(),
+            penv,
+            bound,
+        })))
+    }
+
     /// Whether a type class carries array dimensions (`type Orientation = Real[3, 3]`).
     fn type_has_dims(&self, t: ClassId, depth: usize) -> bool {
         if depth > 16 {
@@ -5888,7 +6074,11 @@ impl<'a, 't> Flattener<'a, 't> {
         overrides: &Rc<FxHashMap<String, ClassId>>,
     ) -> Result<Option<Val>> {
         let is_arr = |v: &Val| matches!(v, Val::A(d, _) if !d.is_empty());
-        if !argv.iter().chain(nargv.iter().map(|x| &x.1)).any(is_arr) {
+        if !argv
+            .iter()
+            .chain(nargv.iter().map(|x| &x.1))
+            .any(|v| is_arr(v) || matches!(v, Val::Rec(_) | Val::IA(..)))
+        {
             return Ok(None);
         }
         let mut elems = Vec::new();
@@ -5914,38 +6104,108 @@ impl<'a, 't> Flattener<'a, 't> {
                 None => false,
             }
         };
+        // A scalar record formal given an array of records (stored field by field,
+        // `Medium.density(states)`): the array dimensions are the extra leading
+        // dimensions of a field declared scalar.
+        let record_array_dims = |this: &mut Self, name: &str, v: &Val| -> Option<Vec<usize>> {
+            let fields = match v {
+                Val::Rec(f) => Some(f),
+                Val::IA(..) => None,
+                _ => return None,
+            };
+            let (_, c, owner) = inputs.iter().find(|(n, _, _)| n == name)?;
+            if !c.shape_expr.is_empty() {
+                return None;
+            }
+            let tparts: Vec<&str> = c.type_name.name.iter().map(|t| &*t.text).collect();
+            // Through the package the function was reached by (`Medium.density`), the
+            // record is the medium's own `ThermodynamicState`.
+            let t = match penv.clone().and_then(|pe| this.lookup_class(&pe, &tparts)) {
+                Some(t) => t,
+                None => {
+                    let env = this.env_of(*owner);
+                    this.lookup_class(&env, &tparts)?
+                }
+            };
+            if !matches!(
+                this.tree.class_type(t),
+                ClassType::Record | ClassType::Operator
+            ) {
+                return None;
+            }
+            // An array of record components: one call per element.
+            let Some(fields) = fields else {
+                let Val::IA(d, _) = v else { return None };
+                return Some(d.clone());
+            };
+            let mut felems = Vec::new();
+            this.function_elements(t, &mut felems, 0);
+            for (fname, fc, _) in felems {
+                if !fc.shape_expr.is_empty() {
+                    continue;
+                }
+                if let Some((_, Val::A(d, _))) = fields.iter().find(|(n, _)| *n == fname)
+                    && !d.is_empty()
+                {
+                    return Some(d.clone());
+                }
+            }
+            None
+        };
         let mut pos_vec = Vec::with_capacity(argv.len());
         let mut dims: Option<Vec<usize>> = None;
         for (i, v) in argv.iter().enumerate() {
             let name = inputs.get(i).map(|x| x.0.clone()).unwrap_or_default();
-            let vec = is_arr(v) && scalar_formal(self, &name);
-            if vec {
+            let d = if is_arr(v) && scalar_formal(self, &name) {
                 let Val::A(d, _) = v else { unreachable!() };
+                Some(d.clone())
+            } else {
+                record_array_dims(self, &name, v)
+            };
+            if let Some(d) = &d {
                 if dims.as_ref().is_some_and(|x| x != d) {
                     return Ok(None);
                 }
                 dims = Some(d.clone());
             }
-            pos_vec.push(vec);
+            pos_vec.push(d.is_some());
         }
         let mut named_vec = Vec::with_capacity(nargv.len());
         for (n, v) in nargv {
-            let vec = is_arr(v) && scalar_formal(self, n);
-            if vec {
+            let d = if is_arr(v) && scalar_formal(self, n) {
                 let Val::A(d, _) = v else { unreachable!() };
+                Some(d.clone())
+            } else {
+                record_array_dims(self, n, v)
+            };
+            if let Some(d) = &d {
                 if dims.as_ref().is_some_and(|x| x != d) {
                     return Ok(None);
                 }
                 dims = Some(d.clone());
             }
-            named_vec.push(vec);
+            named_vec.push(d.is_some());
         }
         let Some(dims) = dims else { return Ok(None) };
         let n: usize = dims.iter().product();
-        let pick = |v: &Val, k: usize| match v {
-            Val::A(_, e) => Val::S(e[k]),
-            _ => v.clone(),
-        };
+        fn pick_elem(v: &Val, dims: &[usize], k: usize) -> Val {
+            match v {
+                Val::A(d, e) if d.len() == dims.len() => Val::S(e[k]),
+                Val::A(d, e) if d.len() > dims.len() && d[..dims.len()] == *dims => {
+                    let sub = d[dims.len()..].to_vec();
+                    let chunk: usize = sub.iter().product();
+                    Val::A(sub, e[k * chunk..(k + 1) * chunk].to_vec())
+                }
+                Val::Rec(fs) => Val::Rec(
+                    fs.iter()
+                        .map(|(f, x)| (f.clone(), pick_elem(x, dims, k)))
+                        .collect(),
+                ),
+                Val::IA(d, e) if *d == *dims => Val::Inst(e[k]),
+                _ => v.clone(),
+            }
+        }
+        let pick = |v: &Val, k: usize| pick_elem(v, &dims, k);
         let mut out = Vec::with_capacity(n);
         // Record results (Complex): an array of records is stored field by field.
         let mut rec_fields: Vec<(String, Vec<ExprId>)> = Vec::new();
@@ -7124,27 +7384,20 @@ impl<'a, 't> Flattener<'a, 't> {
         ctx: &mut Ctx,
         returned: &mut bool,
     ) -> Result<()> {
-        for (si, s) in stmts.iter().enumerate() {
+        for s in stmts {
             if *returned || ctx.broke {
                 return Ok(());
-            }
-            // A `break` under a time-varying condition: the rest runs unless it was taken.
-            if si > 0
-                && let Some(b) = self.break_flag(ctx)
-                && ctx.guarded_break != Some(b)
-            {
-                if self.eval_param_expr(b).is_some_and(|v| v != 0.0) {
-                    ctx.broke = true;
-                    return Ok(());
-                }
-                let nb = self.model.arena.not(b);
-                return self.exec_guarded(nb, b, &stmts[si..], scope, ctx);
             }
             match s {
                 ast::Statement::Empty => {}
                 ast::Statement::Assignment { comp, value } => {
                     let v = self.translate(value, scope, ctx)?;
+                    let guard = self.exit_guard(ctx);
+                    let before = guard.map(|_| ctx.locals.clone());
                     self.assign_local(comp, v, scope, ctx)?;
+                    if let (Some(g), Some(b)) = (guard, before) {
+                        self.keep_if_exited(g, b, ctx)?;
+                    }
                 }
                 ast::Statement::FunctionCall {
                     comp,
@@ -7156,10 +7409,15 @@ impl<'a, 't> Flattener<'a, 't> {
                         Val::Tuple(t) => t,
                         other => vec![other],
                     };
+                    let guard = self.exit_guard(ctx);
+                    let before = guard.map(|_| ctx.locals.clone());
                     for (o, val) in outputs.iter().zip(vals) {
                         if let E::ComponentReference(cr) = o {
                             self.assign_local(cr, val, scope, ctx)?;
                         }
+                    }
+                    if let (Some(g), Some(b)) = (guard, before) {
+                        self.keep_if_exited(g, b, ctx)?;
                     }
                 }
                 ast::Statement::If {
@@ -7175,43 +7433,24 @@ impl<'a, 't> Flattener<'a, 't> {
                     let range = self.translate(&idx.range, scope, ctx)?;
                     let (_, vals) = range.elems()?;
                     let name = idx.ident.text.to_string();
-                    // A `break` taken under a time-varying condition sets the flag
-                    // [`BREAK`]: the following iterations run only while it is false.
-                    let outer = ctx
-                        .locals
-                        .last_mut()
-                        .unwrap()
-                        .insert(BREAK.to_string(), Val::S(Arena::ZERO));
-                    let saved_guard = ctx.guarded_break.take();
+                    let outer_brk = ctx.sbrk.take();
                     for v in vals {
                         ctx.locals
                             .last_mut()
                             .unwrap()
                             .insert(name.clone(), Val::S(v));
-                        match self.break_flag(ctx) {
-                            None => self.exec(equations, scope, ctx, returned)?,
-                            Some(b) if self.eval_param_expr(b).is_some_and(|v| v != 0.0) => {
-                                break;
-                            }
-                            Some(b) => {
-                                let nb = self.model.arena.not(b);
-                                self.exec_guarded(nb, b, equations, scope, ctx)?
-                            }
-                        }
-                        if std::mem::take(&mut ctx.broke) || *returned {
+                        self.exec(equations, scope, ctx, returned)?;
+                        if *returned || ctx.broke {
                             break;
                         }
                     }
-                    ctx.guarded_break = saved_guard;
-                    let frame = ctx.locals.last_mut().unwrap();
-                    frame.remove(&name);
-                    match outer {
-                        Some(o) => frame.insert(BREAK.to_string(), o),
-                        None => frame.remove(BREAK),
-                    };
+                    ctx.broke = false;
+                    ctx.sbrk = outer_brk;
+                    ctx.locals.last_mut().unwrap().remove(&name);
                 }
                 ast::Statement::While(block) => {
                     let mut n = 0;
+                    let outer_brk = ctx.sbrk.take();
                     loop {
                         let c = self.translate(&block.cond, scope, ctx)?.scalar()?;
                         let Some(cv) = self.eval_param_expr(c) else {
@@ -7224,13 +7463,15 @@ impl<'a, 't> Flattener<'a, 't> {
                         }
                         self.exec(&block.stmts, scope, ctx, returned)?;
                         n += 1;
-                        if std::mem::take(&mut ctx.broke) || *returned {
+                        if n > 100_000 || *returned || ctx.broke {
                             break;
                         }
-                        if n > 1_000_000 {
-                            bail!("while loop does not terminate");
-                        }
+                        // A `break` under a run-time condition: once it holds for good the
+                        // remaining iterations change nothing, but the loop still has to
+                        // run to its translation-time end.
                     }
+                    ctx.broke = false;
+                    ctx.sbrk = outer_brk;
                 }
                 ast::Statement::Return { .. } => *returned = true,
                 ast::Statement::Break { .. } => {
@@ -7615,6 +7856,7 @@ impl<'a, 't> Flattener<'a, 't> {
             None => c,
         };
         let saved_effect_path = self.effect_path;
+        let (outer_ret, outer_brk) = (ctx.sret, ctx.sbrk);
         ctx.path = Some(and(&mut self.model.arena, saved_path, c));
         self.effect_path = Some(and(&mut self.model.arena, saved_effect_path, c));
         let mut r1 = false;
@@ -7622,7 +7864,19 @@ impl<'a, 't> Flattener<'a, 't> {
         ctx.path = saved_path;
         self.effect_path = saved_effect_path;
         res?;
-        self.symbolic_break(ctx)?;
+        // How each branch leaves: unconditionally (static flag) or under a run-time
+        // condition (symbolic flag); `None` if it falls through.
+        let exit_of = |stat: bool, sym: Option<ExprId>| -> ExprId {
+            if stat {
+                Arena::ONE
+            } else {
+                sym.unwrap_or(Arena::ZERO)
+            }
+        };
+        let t_ret = exit_of(r1, ctx.sret);
+        let t_brk = exit_of(ctx.broke, ctx.sbrk);
+        let then_broke = ctx.broke;
+        (ctx.sret, ctx.sbrk, ctx.broke) = (outer_ret, outer_brk, false);
         let then_locals = std::mem::replace(&mut ctx.locals, base);
         let nc = self.model.arena.not(c);
         ctx.path = Some(and(&mut self.model.arena, saved_path, nc));
@@ -7632,10 +7886,24 @@ impl<'a, 't> Flattener<'a, 't> {
         ctx.path = saved_path;
         self.effect_path = saved_effect_path;
         res?;
-        self.symbolic_break(ctx)?;
-        if r1 || r2 {
-            bail!("return inside a branch with a time-varying condition is not supported");
-        }
+        let e_ret = exit_of(r2, ctx.sret);
+        let e_brk = exit_of(ctx.broke, ctx.sbrk);
+        let else_broke = ctx.broke;
+        // Both branches leave: so does the `if`. Otherwise later statements are guarded
+        // by the run-time condition under which one of them left.
+        *returned = r1 && r2;
+        ctx.broke = !*returned && then_broke && else_broke;
+        let merge_flag = |a: &mut Arena, t: ExprId, e: ExprId| -> Option<ExprId> {
+            if t == Arena::ZERO && e == Arena::ZERO {
+                None
+            } else if t == e {
+                Some(t)
+            } else {
+                Some(a.if_(c, t, e))
+            }
+        };
+        ctx.sret = merge_flag(&mut self.model.arena, t_ret, e_ret);
+        ctx.sbrk = merge_flag(&mut self.model.arena, t_brk, e_brk);
         let else_locals = std::mem::take(&mut ctx.locals);
         self.merge_locals(c, then_locals, else_locals, ctx)
     }
@@ -7663,61 +7931,38 @@ impl<'a, 't> Flattener<'a, 't> {
         Ok(())
     }
 
-    /// The flag of a `break` taken under a time-varying condition in the innermost
-    /// `for` loop, unless it is known to be false.
-    fn break_flag(&self, ctx: &Ctx) -> Option<ExprId> {
-        match ctx.locals.last()?.get(BREAK)? {
-            Val::S(b) if *b != Arena::ZERO => Some(*b),
-            _ => None,
+    /// Run-time condition under which a statement no longer takes effect: the function
+    /// has returned, or the innermost loop has broken, under a time-varying condition.
+    fn exit_guard(&mut self, ctx: &Ctx) -> Option<ExprId> {
+        match (ctx.sret, ctx.sbrk) {
+            (None, None) => None,
+            (Some(r), None) => Some(r),
+            (None, Some(b)) => Some(b),
+            (Some(r), Some(b)) => Some(self.model.arena.f2(Fn2::Or, r, b)),
         }
     }
 
-    /// After one branch of a time-varying `if`: a `break` executed in it becomes the
-    /// flag [`BREAK`] (merged with the other branch like any local).
-    fn symbolic_break(&mut self, ctx: &mut Ctx) -> Result<()> {
-        if !ctx.broke {
-            return Ok(());
-        }
-        let Some(frame) = ctx.locals.last_mut().filter(|f| f.contains_key(BREAK)) else {
-            bail!("break inside a branch with a time-varying condition is not supported");
-        };
-        frame.insert(BREAK.to_string(), Val::S(Arena::ONE));
-        ctx.broke = false;
-        Ok(())
-    }
-
-    /// Execute `stmts` only when `cond` holds (time-varying): the locals become
-    /// if-expressions. `flag` is the break flag the condition guards against.
-    fn exec_guarded(
+    /// After an assignment under exit guard `g`, keep each changed local's old value
+    /// where `g` holds.
+    fn keep_if_exited(
         &mut self,
-        cond: ExprId,
-        flag: ExprId,
-        stmts: &'a [ast::Statement],
-        scope: &Scope,
+        g: ExprId,
+        before: Vec<FxHashMap<String, Val>>,
         ctx: &mut Ctx,
     ) -> Result<()> {
-        let base = ctx.locals.clone();
-        let and = |a: &mut Arena, p: Option<ExprId>, c: ExprId| match p {
-            Some(p) => a.f2(Fn2::And, p, c),
-            None => c,
-        };
-        let (saved_path, saved_effect_path) = (ctx.path, self.effect_path);
-        let saved_guard = ctx.guarded_break.replace(flag);
-        ctx.path = Some(and(&mut self.model.arena, saved_path, cond));
-        self.effect_path = Some(and(&mut self.model.arena, saved_effect_path, cond));
-        let mut r = false;
-        let res = self.exec(stmts, scope, ctx, &mut r);
-        ctx.path = saved_path;
-        self.effect_path = saved_effect_path;
-        ctx.guarded_break = saved_guard;
-        res?;
-        self.symbolic_break(ctx)?;
-        if r {
-            bail!("return inside a branch with a time-varying condition is not supported");
+        for (fi, frame) in before.into_iter().enumerate() {
+            for (k, old) in frame {
+                let Some(new) = ctx.locals.get(fi).and_then(|f| f.get(&k)).cloned() else {
+                    continue;
+                };
+                if vals_identical(&old, &new) {
+                    continue;
+                }
+                let m = self.merge_value(g, old, new)?;
+                ctx.locals[fi].insert(k, m);
+            }
         }
-        let then_locals = std::mem::replace(&mut ctx.locals, base);
-        let else_locals = std::mem::take(&mut ctx.locals);
-        self.merge_locals(cond, then_locals, else_locals, ctx)
+        Ok(())
     }
 
     /// `if c then t else e` on values of any shape (records field by field).
@@ -7750,7 +7995,7 @@ impl<'a, 't> Flattener<'a, 't> {
                 Ok(Val::Rec(out))
             }
             (Val::Str(t), _) => Ok(Val::Str(t)),
-            (t @ (Val::Inst(_) | Val::IA(..)), _) => Ok(t),
+            (t @ (Val::Inst(_) | Val::IA(..) | Val::Func(_)), _) => Ok(t),
             (t, e) => self.zip2(t, e, &mut |a, x, y| if x == y { x } else { a.if_(c, x, y) }),
         }
     }
@@ -8299,6 +8544,9 @@ fn split_args(args: &[E]) -> (Vec<&E>, Vec<(&str, &E)>) {
     for a in args {
         match a {
             E::NamedArgument { name, value, .. } => named.push((&*name.text, &**value)),
+            E::Modification { target, value, .. } if target.parts.len() == 1 => {
+                named.push((&*target.parts[0].ident.text, &**value))
+            }
             other => pos.push(other),
         }
     }
@@ -8414,7 +8662,7 @@ fn flatten_scalars(v: &Val, out: &mut Vec<ExprId>) {
                 flatten_scalars(x, out);
             }
         }
-        Val::Inst(_) | Val::IA(..) | Val::Str(_) | Val::SA(..) => {}
+        Val::Inst(_) | Val::IA(..) | Val::Str(_) | Val::SA(..) | Val::Func(_) => {}
     }
 }
 
@@ -8439,6 +8687,29 @@ fn rebuild_scalars(v: &Val, it: &mut impl Iterator<Item = ExprId>) -> Val {
 }
 
 /// A `break` that leaves this statement list's loop (not one of a nested loop).
+/// Whether two values are the same expressions (the arena is hash-consed).
+fn vals_identical(a: &Val, b: &Val) -> bool {
+    match (a, b) {
+        (Val::S(x), Val::S(y)) => x == y,
+        (Val::A(d1, x), Val::A(d2, y)) => d1 == d2 && x == y,
+        (Val::Inst(x), Val::Inst(y)) => x == y,
+        (Val::IA(d1, x), Val::IA(d2, y)) => d1 == d2 && x == y,
+        (Val::Str(x), Val::Str(y)) => x == y,
+        (Val::SA(d1, x), Val::SA(d2, y)) => d1 == d2 && x == y,
+        (Val::Rec(x), Val::Rec(y)) => {
+            x.len() == y.len()
+                && x.iter()
+                    .zip(y)
+                    .all(|((n, u), (m, v))| n == m && vals_identical(u, v))
+        }
+        (Val::Tuple(x), Val::Tuple(y)) => {
+            x.len() == y.len() && x.iter().zip(y).all(|(u, v)| vals_identical(u, v))
+        }
+        (Val::Func(x), Val::Func(y)) => Rc::ptr_eq(x, y),
+        _ => false,
+    }
+}
+
 fn stmts_break(stmts: &[ast::Statement]) -> bool {
     stmts.iter().any(|s| match s {
         ast::Statement::Break { .. } => true,
@@ -8506,9 +8777,6 @@ fn val_shape(v: &Val) -> String {
         other => other.kind().to_string(),
     }
 }
-
-/// The local flag of a `break` taken under a time-varying condition (see `exec`).
-const BREAK: &str = "$break";
 
 /// External C functions implemented by [`Flattener::native_external`].
 fn is_native_external(cname: &str) -> bool {

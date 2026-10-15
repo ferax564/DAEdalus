@@ -29,6 +29,9 @@ pub struct Library {
     /// Library files registered for on-demand parsing, by path and by class.
     pub lazy: Vec<lazy::LazyFile>,
     lazy_index: rustc_hash::FxHashMap<String, usize>,
+    lazy_cache: lazy::ScanCache,
+    /// `package.order` of registered packages: member names in browsing order.
+    pub package_orders: rustc_hash::FxHashMap<String, Vec<String>>,
 }
 
 impl Library {
@@ -41,6 +44,7 @@ impl Library {
     pub fn set_document(&mut self, uri: &str, text: &str) -> Vec<String> {
         let doc = parse_document(uri, text);
         let errors = doc.errors.clone();
+        self.lazy_edited(uri, text);
         self.insert(doc);
         errors
     }
@@ -56,6 +60,9 @@ impl Library {
 
     pub fn remove_document(&mut self, uri: &str) {
         self.docs.retain(|d| d.uri != uri);
+        if let Some(i) = self.lazy_file_of(uri) {
+            self.lazy[i].loaded = false;
+        }
     }
 
     /// Load a directory tree (package.mo / package.order layout or loose .mo files).

@@ -83,6 +83,8 @@ export interface SimSummary {
   log: string[];
   warnings: string[];
   translate_ms: number;
+  /** Time spent parsing the library files the model needs (on first use). */
+  load_ms?: number;
   stats: {
     solver: { steps: number; rejected: number; newton_failures: number; rhs_evals: number; jac_evals: number };
     events: number;
@@ -102,4 +104,22 @@ export interface SimSettings {
   tolerance?: number;
   method?: string;
   params?: [string, number][];
+}
+
+/** Progress of loading a library bundle in the worker. */
+export interface BundleProgress {
+  phase: "download" | "unpack" | "register";
+  done: number;
+  total: number;
+}
+
+/** A library bundle registered in the worker (see scripts/fetch-msl.mjs). */
+export interface BundleInfo {
+  name: string;
+  version: string;
+  files: number;
+  bytes: number;
+  download_ms: number;
+  unpack_ms: number;
+  register_ms: number;
 }
