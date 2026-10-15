@@ -5907,7 +5907,11 @@ impl<'a, 't> Flattener<'a, 't> {
         overrides: &Rc<FxHashMap<String, ClassId>>,
     ) -> Result<Option<Val>> {
         let is_arr = |v: &Val| matches!(v, Val::A(d, _) if !d.is_empty());
-        if !argv.iter().chain(nargv.iter().map(|x| &x.1)).any(is_arr) {
+        if !argv
+            .iter()
+            .chain(nargv.iter().map(|x| &x.1))
+            .any(|v| is_arr(v) || matches!(v, Val::Rec(_) | Val::IA(..)))
+        {
             return Ok(None);
         }
         let mut elems = Vec::new();
@@ -5933,38 +5937,108 @@ impl<'a, 't> Flattener<'a, 't> {
                 None => false,
             }
         };
+        // A scalar record formal given an array of records (stored field by field,
+        // `Medium.density(states)`): the array dimensions are the extra leading
+        // dimensions of a field declared scalar.
+        let record_array_dims = |this: &mut Self, name: &str, v: &Val| -> Option<Vec<usize>> {
+            let fields = match v {
+                Val::Rec(f) => Some(f),
+                Val::IA(..) => None,
+                _ => return None,
+            };
+            let (_, c, owner) = inputs.iter().find(|(n, _, _)| n == name)?;
+            if !c.shape_expr.is_empty() {
+                return None;
+            }
+            let tparts: Vec<&str> = c.type_name.name.iter().map(|t| &*t.text).collect();
+            // Through the package the function was reached by (`Medium.density`), the
+            // record is the medium's own `ThermodynamicState`.
+            let t = match penv
+                .clone()
+                .and_then(|pe| this.lookup_class(&pe, &tparts))
+            {
+                Some(t) => t,
+                None => {
+                    let env = this.env_of(*owner);
+                    this.lookup_class(&env, &tparts)?
+                }
+            };
+            if !matches!(this.tree.class_type(t), ClassType::Record | ClassType::Operator) {
+                return None;
+            }
+            // An array of record components: one call per element.
+            let Some(fields) = fields else {
+                let Val::IA(d, _) = v else { return None };
+                return Some(d.clone());
+            };
+            let mut felems = Vec::new();
+            this.function_elements(t, &mut felems, 0);
+            for (fname, fc, _) in felems {
+                if !fc.shape_expr.is_empty() {
+                    continue;
+                }
+                if let Some((_, Val::A(d, _))) = fields.iter().find(|(n, _)| *n == fname)
+                    && !d.is_empty()
+                {
+                    return Some(d.clone());
+                }
+            }
+            None
+        };
         let mut pos_vec = Vec::with_capacity(argv.len());
         let mut dims: Option<Vec<usize>> = None;
         for (i, v) in argv.iter().enumerate() {
             let name = inputs.get(i).map(|x| x.0.clone()).unwrap_or_default();
-            let vec = is_arr(v) && scalar_formal(self, &name);
-            if vec {
+            let d = if is_arr(v) && scalar_formal(self, &name) {
                 let Val::A(d, _) = v else { unreachable!() };
+                Some(d.clone())
+            } else {
+                record_array_dims(self, &name, v)
+            };
+            if let Some(d) = &d {
                 if dims.as_ref().is_some_and(|x| x != d) {
                     return Ok(None);
                 }
                 dims = Some(d.clone());
             }
-            pos_vec.push(vec);
+            pos_vec.push(d.is_some());
         }
         let mut named_vec = Vec::with_capacity(nargv.len());
         for (n, v) in nargv {
-            let vec = is_arr(v) && scalar_formal(self, n);
-            if vec {
+            let d = if is_arr(v) && scalar_formal(self, n) {
                 let Val::A(d, _) = v else { unreachable!() };
+                Some(d.clone())
+            } else {
+                record_array_dims(self, n, v)
+            };
+            if let Some(d) = &d {
                 if dims.as_ref().is_some_and(|x| x != d) {
                     return Ok(None);
                 }
                 dims = Some(d.clone());
             }
-            named_vec.push(vec);
+            named_vec.push(d.is_some());
         }
         let Some(dims) = dims else { return Ok(None) };
         let n: usize = dims.iter().product();
-        let pick = |v: &Val, k: usize| match v {
-            Val::A(_, e) => Val::S(e[k]),
-            _ => v.clone(),
-        };
+        fn pick_elem(v: &Val, dims: &[usize], k: usize) -> Val {
+            match v {
+                Val::A(d, e) if d.len() == dims.len() => Val::S(e[k]),
+                Val::A(d, e) if d.len() > dims.len() && d[..dims.len()] == *dims => {
+                    let sub = d[dims.len()..].to_vec();
+                    let chunk: usize = sub.iter().product();
+                    Val::A(sub, e[k * chunk..(k + 1) * chunk].to_vec())
+                }
+                Val::Rec(fs) => Val::Rec(
+                    fs.iter()
+                        .map(|(f, x)| (f.clone(), pick_elem(x, dims, k)))
+                        .collect(),
+                ),
+                Val::IA(d, e) if *d == *dims => Val::Inst(e[k]),
+                _ => v.clone(),
+            }
+        }
+        let pick = |v: &Val, k: usize| pick_elem(v, &dims, k);
         let mut out = Vec::with_capacity(n);
         // Record results (Complex): an array of records is stored field by field.
         let mut rec_fields: Vec<(String, Vec<ExprId>)> = Vec::new();
