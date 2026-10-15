@@ -8,12 +8,15 @@ package Examples "Suspension rig and full-vehicle manoeuvres"
     extends Modelica.Icons.Example;
     parameter SI.Angle phi_sweep=0.17 "Lower-arm sweep amplitude";
     parameter SI.Time T_sweep=4 "Sweep duration (quasi-static)";
-    inner MB.World world(n={0,0,-1}, enableAnimation=false)
+    inner MB.World world(n={0,0,-1}, animateGravity=false)
       annotation (Placement(transformation(extent={{-90,-10},{-70,10}})));
     Components.DoubleWishbone doubleWishbone(steerable=false, lowerPivot(phi(start=-phi_sweep, fixed=true), w(start=2*phi_sweep/T_sweep, fixed=true)))
       annotation (Placement(transformation(extent={{-20,20},{0,40}})));
     Components.MacPherson macPherson(lowerPivot(phi(start=-phi_sweep, fixed=true), w(start=2*phi_sweep/T_sweep, fixed=true)))
       annotation (Placement(transformation(extent={{-20,-40},{0,-20}})));
+    MB.Parts.FixedTranslation rigOffset(r={-1.2, 0, 0}, animation=false)
+      "Places the MacPherson rig behind the double wishbone, so the two do not overlap in the animation"
+      annotation (Placement(transformation(extent={{-60,-40},{-40,-20}})));
     Modelica.Mechanics.Rotational.Sources.ConstantSpeed sweepDW(w_fixed=2*phi_sweep/T_sweep, phi(start=-phi_sweep, fixed=true))
       "Rig actuator: turns the lower arm from rebound to bump"
       annotation (Placement(transformation(extent={{-10,-10},{10,10}}, rotation=90, origin={-10,-10})));
@@ -31,7 +34,8 @@ package Examples "Suspension rig and full-vehicle manoeuvres"
     Real cg_macPherson(unit="deg/m") = der(macPherson.camber)/der(macPherson.travel) "Camber gain";
   equation
     connect(world.frame_b, doubleWishbone.frame_a);
-    connect(world.frame_b, macPherson.frame_a);
+    connect(world.frame_b, rigOffset.frame_a);
+    connect(rigOffset.frame_b, macPherson.frame_a);
     connect(sweepDW.flange, rigDW.flange_a);
     connect(rigDW.flange_b, doubleWishbone.flange_arm);
     connect(sweepMP.flange, rigMP.flange_a);
@@ -60,7 +64,7 @@ enough to be quasi-static. Plot against <code>*.travel</code>:</p>
       "Wheel, upright and half of each arm";
     final parameter SI.Mass m_sprung=m_quarter + (corner.m_lowerArm + corner.m_upperArm)/2 "Body and the other half of the arms";
     final parameter SI.Height z0=tyre.R0 - (m_sprung + m_unsprung)*Modelica.Constants.g_n/tyre.c_z "Static ride height";
-    inner MB.World world(n={0,0,-1}, enableAnimation=false)
+    inner MB.World world(n={0,0,-1}, animateGravity=false)
       annotation (Placement(transformation(extent={{-90,30},{-70,50}})));
     MB.Joints.Prismatic heave(n={0,0,1}, s(start=z0, fixed=true), v(start=0, fixed=true), stateSelect=StateSelect.always)
       "Body guided vertically"
@@ -142,7 +146,7 @@ from track change and the moving arm inertias.</p>
   model StepSteer "Full car: 2 deg front-wheel step steer at 72 km/h"
     extends Modelica.Icons.Example;
     parameter SI.Angle delta_step=Modelica.Units.Conversions.from_deg(2) "Road-wheel steer angle";
-    inner MB.World world(n={0,0,-1}, enableAnimation=false)
+    inner MB.World world(n={0,0,-1}, animateGravity=false)
       annotation (Placement(transformation(extent={{-90,30},{-70,50}})));
     Components.Vehicle car(v_start=20)
       annotation (Placement(transformation(extent={{0,-20},{40,20}})));
@@ -168,7 +172,7 @@ and 7.3 1/s for the 2 deg step: mild understeer that grows with lateral accelera
     extends Modelica.Icons.Example;
     parameter SI.Angle delta_max=Modelica.Units.Conversions.from_deg(2) "Peak road-wheel angle";
     parameter SI.Time T=2 "Steering period";
-    inner MB.World world(n={0,0,-1}, enableAnimation=false)
+    inner MB.World world(n={0,0,-1}, animateGravity=false)
       annotation (Placement(transformation(extent={{-90,30},{-70,50}})));
     Components.Vehicle car(v_start=20)
       annotation (Placement(transformation(extent={{0,-20},{40,20}})));
@@ -187,14 +191,19 @@ on a new heading.</p>
 
   model BumpLeft "Full car: left wheels cross a 50 mm bump at 36 km/h"
     extends Modelica.Icons.Example;
-    inner MB.World world(n={0,0,-1}, enableAnimation=false)
+    inner MB.World world(n={0,0,-1}, animateGravity=false)
       annotation (Placement(transformation(extent={{-90,30},{-70,50}})));
     Components.Vehicle car(v_start=10, bump_h=0.05, bump_L=0.8, bump_x0=10, bump_yMin=0, bump_yMax=5)
       annotation (Placement(transformation(extent={{0,-20},{40,20}})));
     Modelica.Blocks.Sources.Constant straight(k=0)
       annotation (Placement(transformation(extent={{-60,-10},{-40,10}})));
+    MB.Visualizers.FixedShape bump(shapeType="cylinder", r_shape={car.bump_x0 + car.bump_L/2, car.bump_yMin, 0},
+      lengthDirection={0,1,0}, widthDirection={1,0,0}, length=car.bump_yMax - car.bump_yMin, width=car.bump_L,
+      height=2*car.bump_h, color={235,185,0}) "The bump, drawn as a half-ellipse above the road (animation only)"
+      annotation (Placement(transformation(extent={{-60,30},{-40,50}})));
   equation
     connect(straight.y, car.delta);
+    connect(world.frame_b, bump.frame_a);
     annotation (experiment(StopTime=3, Interval=0.002), Documentation(info="<html>
 <p>Driving straight at 10 m/s, the left-hand wheels cross a 50 mm half-cosine bump 0.8 m long.
 The front-left wheel reaches it at 1 s and the rear-left 0.26 s later (wheelbase / speed).

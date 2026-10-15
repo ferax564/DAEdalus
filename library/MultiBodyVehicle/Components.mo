@@ -46,6 +46,20 @@ package Components "Suspension corners, tyre and vehicle"
 
   partial model PartialCorner "Chassis frame, wheel-centre frame and corner kinematics outputs"
     parameter Real side=1 "+1 left-hand corner, -1 right-hand (mirrored in y)";
+    parameter MB.Types.Color armColor={160,165,175} "Control arms" annotation (Dialog(tab="Animation"));
+    parameter MB.Types.Color uprightColor={95,100,110} "Upright and spindle" annotation (Dialog(tab="Animation"));
+    parameter MB.Types.Color chassisColor={60,60,66} "Chassis brackets and towers" annotation (Dialog(tab="Animation"));
+    parameter SI.Radius tyreRadius=0.31 "Tyre radius drawn (animation only)" annotation (Dialog(tab="Animation"));
+    parameter SI.Length tyreWidth=0.225 "Tyre section width drawn (animation only)" annotation (Dialog(tab="Animation"));
+    parameter Real rimRatio=0.62 "Rim diameter over tyre diameter (animation only)" annotation (Dialog(tab="Animation"));
+    MB.Visualizers.FixedShape tyreShape(shapeType="pipe", length=tyreWidth, width=2*tyreRadius, height=2*tyreRadius, extra=rimRatio,
+      lengthDirection={0,1,0}, widthDirection={1,0,0}, r_shape={0,-tyreWidth/2,0}, color={38,38,42}, specularCoefficient=0.2)
+      "Tyre carcass"
+      annotation (Placement(transformation(extent={{60,-100},{80,-80}})));
+    MB.Visualizers.FixedShape rimShape(shapeType="cylinder", length=0.9*tyreWidth, width=2*tyreRadius*rimRatio, height=2*tyreRadius*rimRatio,
+      lengthDirection={0,1,0}, widthDirection={1,0,0}, r_shape={0,-0.45*tyreWidth,0}, color={185,190,200}, specularCoefficient=0.9)
+      "Rim"
+      annotation (Placement(transformation(extent={{86,-100},{106,-80}})));
     MB.Interfaces.Frame_a frame_a "Chassis reference (axle centre line, wheel-centre height)"
       annotation (Placement(transformation(extent={{-116,-16},{-84,16}})));
     MB.Interfaces.Frame_b frame_wheel "Wheel centre (steers and moves with the upright, does not spin)"
@@ -66,6 +80,8 @@ package Components "Suspension corners, tyre and vehicle"
     Real e_head[3] = MB.Frames.resolve2(frame_a.R, MB.Frames.resolve1(frame_wheel.R, {1, 0, 0}))
       "Wheel heading in chassis axes";
   equation
+    connect(frame_wheel, tyreShape.frame_a);
+    connect(frame_wheel, rimShape.frame_a);
     travel = r_wheel[3] - r_wheel_design[3];
     track_change = side*r_wheel[2] - r_wheel_design[2];
     camber = -to_deg(asin(n_spin[3]));
@@ -99,18 +115,20 @@ package Components "Suspension corners, tyre and vehicle"
 
     MB.Parts.FixedTranslation toLI(r=mirror(r_LI, side), animation=false)
       annotation (Placement(transformation(extent={{-80,-50},{-60,-30}})));
-    MB.Parts.FixedTranslation toUI(r=mirror(r_UI, side), animation=false)
+    MB.Parts.FixedTranslation toUI(r=mirror(r_UI, side), width=0.04, color=chassisColor) "Upper-arm bracket on the chassis"
       annotation (Placement(transformation(extent={{-80,30},{-60,50}})));
-    MB.Parts.FixedTranslation toSC(r=mirror(r_SC, side), animation=false)
+    MB.Parts.FixedTranslation toSC(r=mirror(r_SC, side), width=0.04, color=chassisColor) "Spring tower on the chassis"
       annotation (Placement(transformation(extent={{-80,70},{-60,90}})));
     MB.Joints.Revolute lowerPivot(n={1,0,0}, useAxisFlange=true, stateSelect=StateSelect.always,
       phi(start=0), w(start=0)) "Lower arm inner pivot (chassis)"
       annotation (Placement(transformation(extent={{-50,-50},{-30,-30}})));
-    MB.Parts.BodyShape lowerArm(r=mirror(r_LB - r_LI, side), r_CM=mirror(r_LB - r_LI, side)/2, m=m_lowerArm, animation=false)
+    MB.Parts.BodyShape lowerArm(r=mirror(r_LB - r_LI, side), r_CM=mirror(r_LB - r_LI, side)/2, m=m_lowerArm,
+      width=0.035, color=armColor, animateSphere=false)
       annotation (Placement(transformation(extent={{-20,-50},{0,-30}})));
     MB.Parts.FixedTranslation toSL(r=mirror(r_SL - r_LI, side), animation=false)
       annotation (Placement(transformation(extent={{-20,-80},{0,-60}})));
-    MB.Joints.Assemblies.JointRRR links(n_a={1,0,0}, rRod1_ia=mirror(r_UB - r_LB, side), rRod2_ib=mirror(r_UB - r_UI, side), animation=false)
+    MB.Joints.Assemblies.JointRRR links(n_a={1,0,0}, rRod1_ia=mirror(r_UB - r_LB, side), rRod2_ib=mirror(r_UB - r_UI, side),
+      cylinderLength=0.07, cylinderDiameter=0.045, rodDiameter=0.032, rodColor=armColor)
       "Upright (rod 1) and upper arm (rod 2): closes the planar loop analytically, no constraint equations"
       annotation (Placement(transformation(extent={{-20,-20},{20,20}}, rotation=90, origin={20,0})));
     MB.Parts.Body upright(m=m_upright, r_CM=mirror(r_WC - r_LB, side)*0.6, animation=false) "Upright, hub and brake"
@@ -124,12 +142,13 @@ package Components "Suspension corners, tyre and vehicle"
       annotation (Placement(transformation(extent={{30,70},{50,90}})));
     Modelica.Mechanics.Rotational.Components.Fixed steeringLock if not steerable
       annotation (Placement(transformation(extent={{70,-80},{90,-60}})));
-    MB.Parts.FixedTranslation spindle(r=mirror(r_WC - r_LB, side), animation=false)
+    MB.Parts.FixedTranslation spindle(r=mirror(r_WC - r_LB, side), width=0.05, color=uprightColor) "Upright to wheel centre"
       annotation (Placement(transformation(extent={{76,-50},{96,-30}})));
     MB.Parts.Body wheel(m=m_wheel, r_CM={0,0,0}, I_11=I_wheel[1], I_22=I_wheel[2], I_33=I_wheel[3], animation=false)
       annotation (Placement(transformation(extent={{-10,-10},{10,10}}, rotation=270, origin={86,-70})));
     MB.Forces.SpringDamperParallel coilOver(c=c_spring, d=d_damper,
-      s_unstretched=L_spring_design + F_spring_design/c_spring, animation=false)
+      s_unstretched=L_spring_design + F_spring_design/c_spring,
+      width=0.08, coilWidth=0.009, numberOfWindings=7, diameter_a=0.045, length_a=0.18, color={230,180,0})
       "Coil spring and damper between lower arm and body"
       annotation (Placement(transformation(extent={{-10,-10},{10,10}}, rotation=90, origin={20,-80})));
   equation
@@ -195,7 +214,7 @@ the spindle about the kingpin axis through the two ball joints (no tie rod: stee
     SI.Length L_strut = strut.s "Strut length, top mount to clamp";
     SI.Force F_spring = coilOver.f "Coil-over force (compression negative)";
 
-    MB.Parts.FixedTranslation toTM(r=mirror(r_TM, side), animation=false)
+    MB.Parts.FixedTranslation toTM(r=mirror(r_TM, side), width=0.04, color=chassisColor) "Strut tower on the chassis"
       annotation (Placement(transformation(extent={{-80,50},{-60,70}})));
     MB.Parts.FixedTranslation toLI(r=mirror(r_LI, side), animation=false)
       annotation (Placement(transformation(extent={{-80,-50},{-60,-30}})));
@@ -204,22 +223,24 @@ the spindle about the kingpin axis through the two ball joints (no tie rod: stee
     MB.Parts.Body strutBody(m=m_strut, r_CM={0,0,0}, animation=false)
       annotation (Placement(transformation(extent={{-30,80},{-10,100}})));
     MB.Joints.Prismatic strut(n=Modelica.Math.Vectors.normalize(mirror(r_SB - r_TM, side)), useAxisFlange=true,
-      s(start=L_strut_design)) "Telescopic damper"
+      s(start=L_strut_design), boxWidth=0.06, boxColor={230,180,0}) "Telescopic damper"
       annotation (Placement(transformation(extent={{-10,-10},{10,10}}, rotation=270, origin={0,40})));
     Modelica.Mechanics.Translational.Components.SpringDamper coilOver(c=c_spring, d=d_damper,
       s_rel0=L_strut_design + F_spring_design/c_spring) "Coil spring and damper along the strut"
       annotation (Placement(transformation(extent={{-10,-10},{10,10}}, rotation=270, origin={30,40})));
-    MB.Parts.BodyShape upright(r=mirror(r_LB - r_SB, side), r_CM=mirror(r_WC - r_SB, side)*0.7, m=m_upright, animation=false)
+    MB.Parts.BodyShape upright(r=mirror(r_LB - r_SB, side), r_CM=mirror(r_WC - r_SB, side)*0.7, m=m_upright,
+      width=0.05, color=uprightColor, animateSphere=false)
       "From the strut clamp down to the lower ball joint"
       annotation (Placement(transformation(extent={{-10,-10},{10,10}}, rotation=270, origin={0,0})));
     MB.Joints.RevolutePlanarLoopConstraint lowerBall(n={1,0,0}) "Lower ball joint; closes the planar loop"
       annotation (Placement(transformation(extent={{10,-50},{-10,-30}})));
-    MB.Parts.BodyShape lowerArm(r=mirror(r_LB - r_LI, side), r_CM=mirror(r_LB - r_LI, side)/2, m=m_lowerArm, animation=false)
+    MB.Parts.BodyShape lowerArm(r=mirror(r_LB - r_LI, side), r_CM=mirror(r_LB - r_LI, side)/2, m=m_lowerArm,
+      width=0.035, color=armColor, animateSphere=false)
       annotation (Placement(transformation(extent={{-30,-50},{-10,-30}})));
     MB.Joints.Revolute lowerPivot(n={1,0,0}, useAxisFlange=true, stateSelect=StateSelect.always,
       phi(start=0), w(start=0)) "Lower arm inner pivot (chassis)"
       annotation (Placement(transformation(extent={{-56,-50},{-36,-30}})));
-    MB.Parts.FixedTranslation spindle(r=mirror(r_WC - r_SB, side), animation=false)
+    MB.Parts.FixedTranslation spindle(r=mirror(r_WC - r_SB, side), width=0.05, color=uprightColor) "Upright to wheel centre"
       annotation (Placement(transformation(extent={{40,-10},{60,10}})));
     MB.Parts.Body wheel(m=m_wheel, r_CM={0,0,0}, I_11=I_wheel[1], I_22=I_wheel[2], I_33=I_wheel[3], animation=false)
       annotation (Placement(transformation(extent={{-10,-10},{10,10}}, rotation=270, origin={70,-30})));
@@ -375,6 +396,7 @@ the joint torque <code>c*(phi_left + phi_right)</code>, reacted by the body.</p>
     parameter SI.Position bump_x0=20 annotation (Dialog(group="Road"));
     parameter SI.Position bump_yMin=0 "Bump only under the left wheels by default" annotation (Dialog(group="Road"));
     parameter SI.Position bump_yMax=5 annotation (Dialog(group="Road"));
+    parameter MB.Types.Color bodyColor={200,25,35} "Body shell" annotation (Dialog(tab="Animation"));
     final parameter SI.Force W_front=m_body*Modelica.Constants.g_n*(wheelbase - a_CG)/wheelbase/2 "Sprung load per front wheel";
     final parameter SI.Force W_rear=m_body*Modelica.Constants.g_n*a_CG/wheelbase/2 "Sprung load per rear wheel";
     final parameter SI.Mass m_corner=FL.m_wheel + FL.m_upright + FL.m_lowerArm + FL.m_upperArm "Moving mass of one corner";
@@ -394,6 +416,33 @@ the joint torque <code>c*(phi_left + phi_right)</code>, reacted by the body.</p>
       angles_fixed=true, angles_start={0, pitch_start, 0}, w_0_fixed=true, animation=false)
       "Sprung body; frame_a on the front axle centre line at wheel-centre height"
       annotation (Placement(transformation(extent={{-10,-10},{10,10}}, rotation=90, origin={0,50})));
+    MB.Visualizers.FixedShape tub(shapeType="box", r_shape={0.95,0,-0.03}, lengthDirection={-1,0,0}, widthDirection={0,1,0},
+      length=2.85, width=0.52, height=0.42, extra=0, color=bodyColor) "Monocoque (animation only)"
+      annotation (Placement(transformation(extent={{-98,100},{-88,110}})));
+    MB.Visualizers.FixedShape nose(shapeType="cone", r_shape={0.95,0,-0.06}, lengthDirection={1,0,0}, widthDirection={0,1,0},
+      length=0.8, width=0.5, height=0.3, extra=0.35, color=bodyColor) "Nose cone (animation only)"
+      annotation (Placement(transformation(extent={{-84,100},{-74,110}})));
+    MB.Visualizers.FixedShape frontWing(shapeType="box", r_shape={1.45,0,-0.2}, lengthDirection={1,0,0}, widthDirection={0,1,0},
+      length=0.4, width=1.6, height=0.025, extra=0, color={30,30,35}) "Front wing (animation only)"
+      annotation (Placement(transformation(extent={{-70,100},{-60,110}})));
+    MB.Visualizers.FixedShape podLeft(shapeType="box", r_shape={-0.45,0.42,-0.06}, lengthDirection={-1,0,0}, widthDirection={0,1,0},
+      length=1.4, width=0.34, height=0.32, extra=0, color=bodyColor) "Left sidepod (animation only)"
+      annotation (Placement(transformation(extent={{-56,100},{-46,110}})));
+    MB.Visualizers.FixedShape podRight(shapeType="box", r_shape={-0.45,-0.42,-0.06}, lengthDirection={-1,0,0}, widthDirection={0,1,0},
+      length=1.4, width=0.34, height=0.32, extra=0, color=bodyColor) "Right sidepod (animation only)"
+      annotation (Placement(transformation(extent={{-42,100},{-32,110}})));
+    MB.Visualizers.FixedShape engineCover(shapeType="box", r_shape={-1.9,0,0.05}, lengthDirection={-1,0,0}, widthDirection={0,1,0},
+      length=1.05, width=0.44, height=0.5, extra=0, color=bodyColor) "Engine cover (animation only)"
+      annotation (Placement(transformation(extent={{-28,100},{-18,110}})));
+    MB.Visualizers.FixedShape helmet(shapeType="sphere", r_shape={-0.88,0,0.25}, lengthDirection={1,0,0}, widthDirection={0,1,0},
+      length=0.26, width=0.26, height=0.26, extra=0, color={250,200,0}) "Driver (animation only)"
+      annotation (Placement(transformation(extent={{-14,100},{-4,110}})));
+    MB.Visualizers.FixedShape wingPylon(shapeType="box", r_shape={-3.1,0,0.2}, lengthDirection={0,0,1}, widthDirection={1,0,0},
+      length=0.36, width=0.12, height=0.03, extra=0, color={30,30,35}) "Rear wing pylon (animation only)"
+      annotation (Placement(transformation(extent={{0,100},{10,110}})));
+    MB.Visualizers.FixedShape rearWing(shapeType="box", r_shape={-2.95,0,0.56}, lengthDirection={-1,0,0}, widthDirection={0,1,0},
+      length=0.38, width=1.0, height=0.035, extra=0, color={30,30,35}) "Rear wing (animation only)"
+      annotation (Placement(transformation(extent={{14,100},{24,110}})));
     MB.Parts.FixedTranslation toRear(r={-wheelbase, 0, 0}, animation=false)
       annotation (Placement(transformation(extent={{-10,-10},{10,10}}, rotation=270, origin={0,-10})));
     DoubleWishbone FL(side=1, c_spring=c_front, d_damper=d_front, F_spring_design=(W_front + F_armShare)/motionRatio,
@@ -437,6 +486,15 @@ the joint torque <code>c*(phi_left + phi_right)</code>, reacted by the body.</p>
     Real e_left[3] = MB.Frames.resolve1(body.frame_a.R, {0, 1, 0});
     SI.AngularVelocity w_body[3] = MB.Frames.angularVelocity2(body.frame_a.R);
   equation
+    connect(body.frame_a, tub.frame_a);
+    connect(body.frame_a, nose.frame_a);
+    connect(body.frame_a, frontWing.frame_a);
+    connect(body.frame_a, podLeft.frame_a);
+    connect(body.frame_a, podRight.frame_a);
+    connect(body.frame_a, engineCover.frame_a);
+    connect(body.frame_a, helmet.frame_a);
+    connect(body.frame_a, wingPylon.frame_a);
+    connect(body.frame_a, rearWing.frame_a);
     v_x = body.v_0*e_fwd;
     v_y = body.v_0*e_left;
     a_y = body.a_0*e_left;

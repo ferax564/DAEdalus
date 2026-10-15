@@ -7,6 +7,7 @@ import { TextView } from "./editor";
 import { PlotWindow, displayUnit, interp } from "./plot";
 import { bundledLibrary, readPicked } from "./library";
 import { drawIcon, newCtx, SVG_NS, systemExtent, IDENTITY, el } from "./graphics";
+import type { Animation3D, AnimData } from "./anim3d";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -365,6 +366,7 @@ async function simulate() {
     setMode("simulation");
     renderVariables();
     refreshXSelect();
+    await loadAnimation(s, name);
   } catch (e) {
     log(String(e), "err");
   } finally {
@@ -571,6 +573,64 @@ $("export-csv").onclick = async () => {
 };
 $("export-mat").onclick = async () => download("dsres.mat", await api.resultMat(), "application/octet-stream");
 
+// ---------------------------------------------------------------- 3-D animation
+let anim: Animation3D | null = null;
+let simView: "plot" | "anim" = "plot";
+/** Model whose results the animation shows, so a new model with shapes opens it once. */
+let animShown = "";
+let animData: AnimData | null = null;
+
+function setSimView(v: typeof simView) {
+  simView = v;
+  setActive($("sim-views"), "data-sim", v);
+  $("plot").classList.toggle("hidden", v !== "plot");
+  $("anim").classList.toggle("hidden", v !== "anim");
+  for (const id of ["plot-new", "plot-clear", "export-csv", "export-mat"]) $(id).classList.toggle("hidden", v !== "plot");
+  $("plot-x").parentElement!.classList.toggle("hidden", v !== "plot");
+  if (v === "plot") {
+    anim?.stop();
+    requestAnimationFrame(() => plot.draw());
+  } else requestAnimationFrame(() => anim?.resize());
+}
+$("sim-views").addEventListener("click", (e) => {
+  const v = (e.target as HTMLElement).getAttribute("data-sim");
+  if (v) setSimView(v as typeof simView);
+});
+
+/** Build the animation from the Visualizers.Advanced.Shape instances in the result, if any. */
+async function loadAnimation(s: SimSummary, model: string) {
+  const mod = await import("./anim3d");
+  const shapes = mod.findShapes(s.vars.map((v) => v.name));
+  $("anim-tab").classList.toggle("hidden", shapes.length === 0);
+  if (!shapes.length) {
+    animData = null;
+    if (simView === "anim") setSimView("plot");
+    return;
+  }
+  const t0 = performance.now();
+  const types = await mod.resolveShapeTypes(model, shapes, src);
+  const params = new Map(s.vars.filter((v) => v.kind === "param").map((v) => [v.name, v.value ?? 0]));
+  const lists = shapes.map((p) => mod.shapeVarNames(p));
+  const need = [...new Set(lists.flat().filter((n) => !params.has(n)))];
+  const r = need.length ? await api.values(need) : { time: await api.values([]).then((x) => x.time), cols: [] };
+  const cols = new Map(need.map((n, i) => [n, r.cols[i]]));
+  const track = (n: string) => (params.has(n) ? params.get(n)! : mod.compact(cols.get(n) ?? new Float64Array()));
+  const g = [1, 2, 3].map((i) => params.get(`world.n[${i}]`) ?? (i === 2 ? -1 : 0));
+  animData = {
+    model,
+    time: r.time,
+    gravity: g,
+    shapes: shapes.map((p, k) => mod.assembleShape(p, types.get(p) ?? "cylinder", lists[k].map(track))),
+  };
+  if (!anim) anim = new mod.Animation3D($("anim"));
+  if (animShown !== model) {
+    animShown = model;
+    setSimView("anim");
+  }
+  anim.setData(animData);
+  log(`Animation: ${shapes.length} shapes in ${(performance.now() - t0).toFixed(0)} ms`);
+}
+
 // ---------------------------------------------------------------- modes
 function setMode(m: typeof mode) {
   mode = m;
@@ -579,7 +639,7 @@ function setMode(m: typeof mode) {
   $("vars-pane").classList.toggle("hidden", m !== "simulation");
   $("model-pane").classList.toggle("hidden", m !== "modeling");
   $("plot-pane").classList.toggle("hidden", m !== "simulation");
-  if (m === "simulation") requestAnimationFrame(() => plot.draw());
+  if (m === "simulation") requestAnimationFrame(() => (simView === "plot" ? plot.draw() : anim?.resize()));
   else showView();
 }
 $("topbar").querySelectorAll<HTMLButtonElement>("button[data-mode]").forEach((b) => (b.onclick = () => setMode(b.dataset.mode as typeof mode)));
@@ -609,7 +669,7 @@ async function start() {
   const hash = decodeURIComponent(location.hash.slice(1));
   await openClass(hash || "Daedalus.Examples.TorqueConverter.Launch");
   // for automated checks
-  (window as unknown as { daedalus: unknown }).daedalus = { api, simulate, openClass, plot, togglePlot: (n: string) => togglePlot(n, summary!.vars.find((v) => v.name === n)!) };
+  (window as unknown as { daedalus: unknown }).daedalus = { api, simulate, openClass, plot, anim: () => anim, animData: () => animData, setSimView, togglePlot: (n: string) => togglePlot(n, summary!.vars.find((v) => v.name === n)!) };
 }
 start();
 void interp;

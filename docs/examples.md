@@ -193,7 +193,11 @@ MSL=path/to/ModelicaStandardLibrary   # git clone -b v4.1.0 https://github.com/m
 ```
 
 In the workbench, load the MSL folders and `library/MultiBodyVehicle` with
-**Library**.
+**Library**. After **Simulate**, the **Animation** view replays the model in
+3-D, like Dymola's animation window. It draws every MultiBody shape found in
+the result: the default joint, body and spring shapes, plus the tyres, rims,
+body shell and bump that the library adds with `Visualizers.FixedShape`.
+These visuals do not change the dynamics.
 
 Components:
 - `DoubleWishbone`: a short-long-arm corner from hardpoints, with a coil-over on
@@ -211,10 +215,10 @@ Components:
 | Example | What it shows | States | CPU |
 | --- | --- | ---: | ---: |
 | SuspensionKinematics | Camber, track change and motion ratio over ±75 mm travel, double wishbone vs MacPherson | 6 | 0.4 s |
-| QuarterCarBump | 3-D corner vs a 1-D quarter car with the equivalent wheel rate over a 50 mm bump | 10 | 0.3 s |
-| StepSteer | 2° front-wheel step at 72 km/h | 24 | 1.7 s |
-| LaneChange | One-period sine steer, 2° peak, at 72 km/h | 24 | 2.2 s |
-| BumpLeft | Left wheels cross a 50 mm bump at 36 km/h | 24 | 2.0 s |
+| QuarterCarBump | 3-D corner vs a 1-D quarter car with the equivalent wheel rate over a 50 mm bump | 10 | 0.4 s |
+| StepSteer | 2° front-wheel step at 72 km/h | 24 | 2.1 s |
+| LaneChange | One-period sine steer, 2° peak, at 72 km/h | 24 | 2.6 s |
+| BumpLeft | Left wheels cross a 50 mm bump at 36 km/h | 24 | 2.6 s |
 
 Results:
 - **Kinematics.** The double wishbone gains 2.2° negative camber at +73 mm
@@ -236,7 +240,7 @@ All five match OpenModelica 1.26.1 running the same models on MSL 4.1.0:
 the 98th-percentile difference is below 0.04 % of each signal's range. The
 only larger point errors are single samples at tyre lift-off and touchdown.
 In OpenModelica the full-car examples take 7 to 16 s of simulation time,
-against 1.0 to 1.7 s in DAEdalus.
+against 1.1 to 2.0 s in DAEdalus (including the animation shapes).
 
 ## Note on sources
 
