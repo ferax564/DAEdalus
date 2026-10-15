@@ -13,6 +13,9 @@
 //! run turns stiff again within 100 Dopri5 steps, the number of calm steps needed
 //! doubles (up to 960), which stops a ping-pong between the methods.
 //!
+//! When Dopri5 fails (step size too small), the run falls back to BDF from the last
+//! accepted point, with the registers restored to what they were before the step.
+//!
 //! Switches happen between steps: the new method restarts from the current point,
 //! and dense output of the last step still comes from the method that took it.
 
@@ -51,6 +54,7 @@ pub struct AutoSwitch {
     rho_jac: u64,
     switches: u64,
     log: Vec<String>,
+    saved: Vec<f64>,
 }
 
 impl AutoSwitch {
@@ -69,6 +73,7 @@ impl AutoSwitch {
             rho_jac: u64::MAX,
             switches: 0,
             log: Vec::new(),
+            saved: Vec::new(),
         }
     }
 
@@ -150,7 +155,20 @@ impl Integrator for AutoSwitch {
             self.switch(rt, to, why);
         }
         if !self.stiff {
-            let t = self.dopri.step(rt, t_max)?;
+            // Registers (algebraic-loop guesses) to restore if Dopri5 fails.
+            self.saved.clone_from(&rt.r);
+            let t = match self.dopri.step(rt, t_max) {
+                Ok(t) => t,
+                Err(e) => {
+                    // Dopri5 keeps its last accepted point on failure, but its trial
+                    // stages may have left diverged loop guesses: restore them and carry
+                    // on with BDF.
+                    rt.r.clone_from(&self.saved);
+                    rt.error = None;
+                    self.switch(rt, true, format!("Dopri5 failed: {e}"));
+                    return self.step_bdf(rt, t_max);
+                }
+            };
             self.steps_in_mode += 1;
             if self.dopri.hlamb > 3.25 {
                 self.nonsti = 0;
@@ -166,23 +184,7 @@ impl Integrator for AutoSwitch {
             }
             return Ok(t);
         }
-        let t = self.bdf.step(rt, t_max)?;
-        self.steps_in_mode += 1;
-        let jac_evals = self.bdf.stats().jac_evals;
-        if jac_evals != self.rho_jac {
-            self.rho = self.bdf.jacobian().spectral_radius();
-            self.rho_jac = jac_evals;
-        }
-        let h = t - self.bdf.t_prev();
-        if h * self.rho < BACK_LIMIT && t < t_max {
-            self.calm += 1;
-            if self.calm >= self.calm_needed && self.steps_in_mode >= MIN_STIFF_STEPS {
-                self.pending = Some(false);
-            }
-        } else {
-            self.calm = 0;
-        }
-        Ok(t)
+        self.step_bdf(rt, t_max)
     }
 
     fn t(&self) -> f64 {
@@ -204,5 +206,27 @@ impl Integrator for AutoSwitch {
     }
     fn take_log(&mut self) -> Vec<String> {
         std::mem::take(&mut self.log)
+    }
+}
+
+impl AutoSwitch {
+    fn step_bdf(&mut self, rt: &mut Runtime, t_max: f64) -> Result<f64, String> {
+        let t = self.bdf.step(rt, t_max)?;
+        self.steps_in_mode += 1;
+        let jac_evals = self.bdf.stats().jac_evals;
+        if jac_evals != self.rho_jac {
+            self.rho = self.bdf.jacobian().spectral_radius();
+            self.rho_jac = jac_evals;
+        }
+        let h = t - self.bdf.t_prev();
+        if h * self.rho < BACK_LIMIT && t < t_max {
+            self.calm += 1;
+            if self.calm >= self.calm_needed && self.steps_in_mode >= MIN_STIFF_STEPS {
+                self.pending = Some(false);
+            }
+        } else {
+            self.calm = 0;
+        }
+        Ok(t)
     }
 }

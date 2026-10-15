@@ -11,8 +11,10 @@ environment for the Modelica language. It is built for speed and scale:
   - BLT sorting and tearing
   - exact symbolic Jacobians
   - a compiled register tape for evaluation
-- **Solvers.** It has variable-order BDF with dense or sparse LU, and Dopri5,
-  RK4 and Euler, with zero-crossing events and `when`/`reinit`.
+- **Solvers.** It has variable-order BDF, Radau IIA and ESDIRK with exact
+  colored Jacobians and dense or sparse LU, Dopri5 with automatic switching to
+  BDF when the model turns stiff, and RK4 and Euler, with zero-crossing events
+  and `when`/`reinit`. See [Solvers](#solvers).
 - **Results.** They are written as Dymola-format `.mat` files, readable by
   Dymola, OMEdit, DyMat and similar tools, or as CSV.
 - **Dymola-style workbench.** It runs in the browser and has:
@@ -139,6 +141,23 @@ The page is laid out like Dymola:
 - the class you open shows in Icon, Diagram or Text view;
 - **Simulate** compiles the class in the worker and fills the variable browser;
 - ticking a variable plots it.
+
+## Solvers
+
+`--method` (or the workbench's Method select, or the experiment's
+`__Dymola_Algorithm`) picks the integrator:
+
+- stiff: `bdf` (default), `radau` (Radau IIA, order 5) and `esdirk`
+  (ESDIRK4(3)6L, order 4);
+- switching: `auto` starts with Dopri5 and moves to BDF when the step size is
+  limited by stability, and back;
+- non-stiff: `dopri5`; fixed step: `rk4`, `euler`.
+
+The implicit methods get the state Jacobian exactly from forward-mode passes of
+the tape, one per color group (`--jacobian fd` uses finite differences
+instead). After a run the workbench recommends a stiff method when the
+statistics show a stiff signature. Details, the `__Dymola_Algorithm` mapping
+and a comparison on the examples are in [docs/solvers.md](docs/solvers.md).
 
 ## Examples
 
