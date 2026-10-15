@@ -143,6 +143,9 @@ self.onmessage = async (ev: MessageEvent<Req>) => {
       case "resultCsv":
         result = w.resultCsv(args[0] as string);
         break;
+      case "structure":
+        result = JSON.parse(w.structure(args[0] as string, JSON.stringify(args[1] ?? {})));
+        break;
       default:
         throw new Error(`unknown op ${op}`);
     }

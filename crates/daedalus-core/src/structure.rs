@@ -227,6 +227,8 @@ pub struct StructureOptions {
     pub sim: Option<SimOptions>,
     /// Applied to the experiment's options (when `sim` is `None`).
     pub params: Vec<(String, f64)>,
+    pub stop_time: Option<f64>,
+    pub tolerance: Option<f64>,
 }
 
 /// Largest state Jacobian for eigenvalues and condition numbers.
@@ -266,8 +268,16 @@ pub fn structure(
         .sim
         .clone()
         .unwrap_or_else(|| SimOptions::from_model(&m));
-    if opts.sim.is_none() && !opts.params.is_empty() {
-        so.params = opts.params.clone();
+    if opts.sim.is_none() {
+        if !opts.params.is_empty() {
+            so.params = opts.params.clone();
+        }
+        if let Some(t) = opts.stop_time {
+            so.stop_time = t;
+        }
+        if let Some(t) = opts.tolerance {
+            so.tolerance = t;
+        }
     }
     match analyze(&m, &arena, &blocks, &sets, so, opts.at, &mut report) {
         Ok(j) => report.jacobian = Some(j),
@@ -630,10 +640,12 @@ fn set_reason(s: &backend::trace::StateSet, cands: &[Candidate], dependent: bool
     r
 }
 
+/// Per set: `jac[row][candidate]`, the candidates, their tiers and the chosen columns.
+type SetJacobian = (Vec<Vec<ExprId>>, Vec<VarId>, Vec<i64>, Vec<usize>);
+
 /// Symbolic constraint Jacobians of the state sets, for the numeric checks.
 pub struct SetJacobians {
-    /// Per set: `jac[row][candidate]`, the candidates' tiers and the chosen columns.
-    sets: Vec<(Vec<Vec<ExprId>>, Vec<VarId>, Vec<i64>, Vec<usize>)>,
+    sets: Vec<SetJacobian>,
 }
 
 impl SetJacobians {
@@ -749,7 +761,7 @@ fn pivot_choice(h: &[Vec<f64>], tiers: &[i64], need: usize) -> Vec<usize> {
             let mut best = None;
             let mut best_n = 0.0;
             for c in start..end {
-                if taken[c] || !(norm0[c] > 0.0) {
+                if taken[c] || norm0[c] <= 0.0 || norm0[c].is_nan() {
                     continue;
                 }
                 let n = cols[c].iter().map(|x| x * x).sum::<f64>().sqrt();
@@ -806,19 +818,19 @@ pub fn analyze(
     let mut check_all = |sim: &Simulation, report: &mut StructureReport, first: bool| {
         let r = &sim.rt.r[..nv];
         let t = sim.rt.time();
-        for i in 0..sets.sets.len() {
+        for (i, sign) in signs.iter_mut().enumerate() {
             let Some(mut c) = sets.check(arena, m, i, r, t) else {
                 continue;
             };
             let s = &mut report.state_sets[i];
             if first {
                 s.at_start = Some(c.clone());
-            } else if signs[i] * c.det_sign < 0.0 {
+            } else if *sign * c.det_sign < 0.0 {
                 // The determinant changed sign since the last check: singular in between.
                 c.cond = f64::INFINITY;
                 c.fails = true;
             }
-            signs[i] = c.det_sign;
+            *sign = c.det_sign;
             if s.worst
                 .as_ref()
                 .is_none_or(|w| c.cond > w.cond || c.cond.is_nan())

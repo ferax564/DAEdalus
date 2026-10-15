@@ -49,9 +49,7 @@ pub fn inv_norm1(a: &[Vec<f64>]) -> f64 {
         for i in k + 1..n {
             let f = lu[i][k] / lu[k][k];
             lu[i][k] = f;
-            for j in k + 1..n {
-                lu[i][j] -= f * lu[k][j];
-            }
+            eliminate(&mut lu, k, i, f);
         }
     }
     // Columns of the inverse: solve A x = e_j.
@@ -78,6 +76,14 @@ pub fn inv_norm1(a: &[Vec<f64>]) -> f64 {
     }
 }
 
+/// Row `i` -= `f` * row `k`, right of column `k` (`k < i`).
+fn eliminate(lu: &mut [Vec<f64>], k: usize, i: usize, f: f64) {
+    let (top, bottom) = lu.split_at_mut(i);
+    for (x, y) in bottom[0][k + 1..].iter_mut().zip(&top[k][k + 1..]) {
+        *x -= f * y;
+    }
+}
+
 /// Sign of the determinant of a square matrix (0 when singular to working precision).
 pub fn det_sign(a: &[Vec<f64>]) -> f64 {
     let n = a.len();
@@ -99,9 +105,7 @@ pub fn det_sign(a: &[Vec<f64>]) -> f64 {
         }
         for i in k + 1..n {
             let f = lu[i][k] / lu[k][k];
-            for j in k + 1..n {
-                lu[i][j] -= f * lu[k][j];
-            }
+            eliminate(&mut lu, k, i, f);
         }
     }
     sign
@@ -175,9 +179,9 @@ impl ComplexLu {
             for i in k + 1..n {
                 let f = lu[i][k].div(lu[k][k]);
                 lu[i][k] = f;
-                for j in k + 1..n {
-                    let t = f.mul(lu[k][j]);
-                    lu[i][j] = lu[i][j].sub(t);
+                let (top, bottom) = lu.split_at_mut(i);
+                for (x, y) in bottom[0][k + 1..].iter_mut().zip(&top[k][k + 1..]) {
+                    *x = x.sub(f.mul(*y));
                 }
             }
         }

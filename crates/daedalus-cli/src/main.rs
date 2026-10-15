@@ -459,8 +459,8 @@ fn run() -> anyhow::Result<()> {
             let mut so2 = daedalus_core::structure::StructureOptions {
                 jacobian: !no_jacobian,
                 at: lin_at,
-                sim: None,
                 params: so.params.clone(),
+                ..Default::default()
             };
             if set_start || set_tol || set_method || set_stop {
                 // Experiment defaults with the command-line changes on top.

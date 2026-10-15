@@ -31,8 +31,7 @@ fn report(model: &str, overrides: &[&str], at: Option<f64>) -> StructureReport {
     let opts = StructureOptions {
         jacobian: true,
         at,
-        sim: None,
-        params: Vec::new(),
+        ..Default::default()
     };
     let r = structure(&lib, model, &options(overrides), &opts).unwrap();
     assert!(r.jacobian_error.is_none(), "{:?}", r.jacobian_error);
