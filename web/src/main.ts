@@ -15,6 +15,9 @@ import { StructureView, stateOverridesFor } from "./structure";
 import { DiagramEditor, DRAG_TYPE, editableUri } from "./diagram-edit";
 import { AnalysisPanel } from "./analysis";
 import { decorateMethodSelect, showRecommendation } from "./solver-hint";
+import { PlotTools } from "./plottools";
+import { Dashboard, layoutFromHash } from "./dashboard";
+import type { LiveChunk } from "./rpc";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -67,6 +70,22 @@ const diagram = new DiagramView($("view-graphic"), src, classes);
 const text = new TextView($("view-text"));
 const plot = new PlotWindow($("plot"));
 initPerformance(plot);
+
+/** Read and write a per-viewer setting (local storage may be unavailable). */
+function pref(key: string, def: string): string {
+  try {
+    return localStorage.getItem(`daedalus.${key}`) ?? def;
+  } catch {
+    return def;
+  }
+}
+function setPref(key: string, v: string) {
+  try {
+    localStorage.setItem(`daedalus.${key}`, v);
+  } catch {
+    /* storage unavailable: the setting lasts for this page */
+  }
+}
 
 diagram.onSelect = (c) => showInspector(c);
 diagram.onOpen = (p) => openClass(p);
@@ -375,6 +394,10 @@ async function openClass(path: string, push = true) {
   renderTree();
   renderVariables();
   showInspector(null);
+  dashboard.setModel(info.path, pendingDash?.model === info.path ? pendingDash.layout : null);
+  pendingDash = null;
+  tools.closeMenu();
+  if (mode === "modeling") placePlot();
   if (mode === "analysis") analysis.refresh();
   await showView();
 }
@@ -414,19 +437,124 @@ async function fetchSeries(names: string[]) {
   }
 }
 
-async function simulate() {
+// ---------------------------------------------------------------- live runs
+/** Rows of a run streaming in from the worker (grown in place). */
+class LiveData {
+  private tbuf = new Float64Array(1024);
+  n = 0;
+  start = NaN;
+  stop = NaN;
+  t = NaN;
+  private cols = new Map<string, { a: Float64Array; n: number }>();
+  private static grow(a: Float64Array, need: number) {
+    if (need <= a.length) return a;
+    const b = new Float64Array(Math.max(need, 2 * a.length));
+    b.set(a);
+    return b;
+  }
+  add(c: LiveChunk) {
+    this.tbuf = LiveData.grow(this.tbuf, c.from + c.time.length);
+    this.tbuf.set(c.time, c.from);
+    this.n = c.from + c.time.length;
+    if (this.n && isNaN(this.start)) this.start = this.tbuf[0];
+    this.stop = c.stop;
+    this.t = c.t;
+    for (const [name, { from, v }] of Object.entries(c.cols)) {
+      const e = this.cols.get(name) ?? { a: new Float64Array(1024), n: 0 };
+      e.a = LiveData.grow(e.a, from + v.length);
+      e.a.set(v, from);
+      e.n = from + v.length;
+      this.cols.set(name, e);
+    }
+  }
+  time() {
+    return this.tbuf.subarray(0, this.n);
+  }
+  col(name: string): Float64Array | undefined {
+    const e = this.cols.get(name);
+    return e ? e.a.subarray(0, Math.min(e.n, this.n)) : undefined;
+  }
+}
+let liveData: LiveData | null = null;
+const liveBox = $("plot-live") as HTMLInputElement;
+liveBox.checked = pref("livePlot", "1") === "1";
+liveBox.onchange = () => setPref("livePlot", liveBox.checked ? "1" : "0");
+
+/** Data of a plotted series from a result (`time`, `col`), expressions evaluated. */
+function seriesData(name: string, s: { expr?: string } | undefined, time: Float64Array, col: (n: string) => Float64Array | undefined) {
+  if (s?.expr) return tools.evalSeries(s as Parameters<typeof tools.evalSeries>[0]);
+  const y = col(name);
+  if (!y) return null;
+  const sp = plot.subplots.find((p) => p.series.some((q) => q.name === name));
+  const x = sp?.xName ? col(sp.xName) : time;
+  return x ? { x, y } : null;
+}
+
+/** The time axis and trajectories shown: a live run's rows so far, or the last result's. */
+const shownTime = () => liveData?.time() ?? cache?.time ?? null;
+const shownCol = (n: string) => (liveData ? liveData.col(n) : cache?.cols.get(n));
+
+let liveDraw = false;
+/** Counts of live slices received and drawn (for automated checks). */
+const liveStats = { chunks: 0, draws: 0, runs: 0, lastPoints: 0 };
+function onLiveChunk(c: LiveChunk) {
+  if (!liveData) return;
+  liveData.add(c);
+  liveStats.chunks++;
+  liveStats.lastPoints = liveData.n;
+  if (liveDraw) return;
+  liveDraw = true;
+  requestAnimationFrame(() => {
+    liveDraw = false;
+    const d = liveData;
+    if (!d) return;
+    plot.liveRange = isFinite(d.start) && d.stop > d.start ? [d.start, d.stop] : null;
+    plot.setLive((n, s) => seriesData(n, s, d.time(), (k) => d.col(k)));
+    liveStats.draws++;
+    dashboard.data(d.time(), (k) => d.col(k));
+    const st = `t = ${+d.t.toPrecision(4)} / ${+d.stop.toPrecision(4)} s${c.paused ? " (paused)" : ""}`;
+    $("live-status").textContent = st;
+    dashboard.setStatus(st);
+  });
+}
+
+/** Simulate the open model. A live run (the Live box, or `opts.pace` from the dashboard)
+ * streams its rows into the plot while it runs; `opts.pace` paces it against wall time. */
+async function simulate(opts: { pace?: number; names?: string[] } = {}) {
   if (!current) {
     log("Open a model first.", "warn");
     return;
   }
+  if (liveData) {
+    log("A live run is going on: stop it first.", "warn");
+    return;
+  }
   const name = current.path;
-  log(`Simulating ${name}…`);
+  log(`Simulating ${name}${opts.pace ? ` live at ${opts.pace}× real time` : ""}…`);
   const btn = $("btn-sim") as HTMLButtonElement;
   btn.disabled = true;
   const t0 = performance.now();
   try {
     const set = settings();
-    const s = await api.simulate(name, set);
+    const live = !!opts.pace || (liveBox.checked && !set.profile);
+    let s: SimSummary & { stopped?: boolean };
+    if (live) {
+      const plotted = plot.subplots.flatMap((sp) => [...sp.series.filter((x) => !x.run && !x.expr).map((x) => x.name), ...(sp.xName && sp.xName !== "frequency" ? [sp.xName] : [])]);
+      const names = [...new Set([...plotted, ...tools.exprNames(), ...dashboard.outputNames(), ...(opts.names ?? [])])];
+      liveData = new LiveData();
+      liveStats.runs++;
+      $("live-stop").classList.remove("hidden");
+      $("live-status").textContent = "starting…";
+      if (!(mode === "modeling" && stripShown())) setMode("simulation");
+      try {
+        s = await api.simulateLive(name, set, { names, pace: opts.pace }, onLiveChunk);
+      } finally {
+        liveData = null;
+        plot.liveRange = null;
+        $("live-stop").classList.add("hidden");
+        $("live-status").textContent = "";
+      }
+    } else s = await api.simulate(name, set);
     summary = s;
     summaryPath = name;
     void updatePerformance(!!set.profile);
@@ -446,18 +574,15 @@ async function simulate() {
     }
     showRecommendation($("solver-hint"), $("set-method") as HTMLSelectElement, s.stats, log);
     cache = { time: new Float64Array(), cols: new Map() };
-    const plotted = plot.subplots.flatMap((sp) => sp.series.map((x) => x.name));
+    const plotted = plot.subplots.flatMap((sp) => sp.series.filter((x) => !x.expr).map((x) => x.name));
     const xNames = plot.subplots.map((sp) => sp.xName).filter((x): x is string => !!x);
-    const names = [...new Set([...plotted, ...xNames])].filter((n) => s.vars.some((v) => v.name === n));
+    const names = [...new Set([...plotted, ...xNames, ...tools.exprNames(), ...dashboard.outputNames()])].filter((n) => s.vars.some((v) => v.name === n));
     await fetchSeries(names.length ? names : ["time"]);
-    plot.update((n) => {
-      const y = cache!.cols.get(n);
-      if (!y) return null;
-      const sp = plot.subplots.find((p) => p.series.some((q) => q.name === n));
-      const x = sp?.xName ? cache!.cols.get(sp.xName) : cache!.time;
-      return x ? { x, y } : null;
-    });
-    setMode("simulation");
+    plot.update((n, ser) => seriesData(n, ser, cache!.time, (k) => cache!.cols.get(k)));
+    dashboard.data(cache.time, (k) => cache!.cols.get(k));
+    if (s.stopped) log(`${name}: stopped by the user`, "warn");
+    if (!(mode === "modeling" && stripShown())) setMode("simulation");
+    else placePlot();
     renderVariables();
     refreshXSelect();
     experiments.recordSimulation(name, settings(), s, cache.time, cache.cols);
@@ -470,6 +595,7 @@ async function simulate() {
 }
 
 $("btn-sim").onclick = () => simulate();
+$("live-stop").onclick = () => void api.liveControl({ stop: true });
 decorateMethodSelect($("set-method") as HTMLSelectElement);
 window.addEventListener("keydown", (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
@@ -626,6 +752,15 @@ function renderVariables() {
 $("var-filter").addEventListener("input", () => renderVariables());
 
 async function togglePlot(name: string, v: VarSummary) {
+  if (liveData) {
+    // A run is streaming in: plot its rows so far and stream this variable too.
+    const d = liveData;
+    await api.liveVars([name]);
+    plot.toggle({ name, unit: v.unit, x: d.time(), y: d.col(name) ?? new Float64Array() });
+    renderVariables();
+    return;
+  }
+  if (!cache) return;
   await fetchSeries([name]);
   const sp = plot.subplots[plot.active];
   if (sp.xName) await fetchSeries([sp.xName]);
@@ -694,7 +829,8 @@ let animData: AnimData | null = null;
 function setSimView(v: typeof simView) {
   simView = v;
   setActive($("sim-views"), "data-sim", v);
-  $("plot").classList.toggle("hidden", v !== "plot");
+  $("plot-body").classList.toggle("hidden", v !== "plot");
+  $("plot-tools").classList.toggle("hidden", v !== "plot");
   $("anim").classList.toggle("hidden", v !== "anim");
   for (const id of ["plot-new", "plot-clear", "export-csv", "export-mat"]) $(id).classList.toggle("hidden", v !== "plot");
   $("plot-x").parentElement!.classList.toggle("hidden", v !== "plot");
@@ -762,10 +898,161 @@ function setMode(m: typeof mode) {
   $("model-pane").classList.toggle("hidden", m !== "modeling");
   $("plot-pane").classList.toggle("hidden", m !== "simulation");
   analysis.setVisible(m === "analysis");
-  if (m === "simulation") requestAnimationFrame(() => (simView === "plot" ? plot.draw() : anim?.resize()));
-  else if (m === "modeling") showView();
+  tools.closeMenu();
+  placePlot();
+  if (m === "simulation") {
+    requestAnimationFrame(() => (simView === "plot" ? plot.draw() : anim?.resize()));
+    void refreshSimDiagram();
+  } else if (m === "modeling") showView();
 }
 $("topbar").querySelectorAll<HTMLButtonElement>("button[data-mode]").forEach((b) => (b.onclick = () => setMode(b.dataset.mode as typeof mode)));
+
+// ---------------------------------------------------------------- plot tools
+/** Variables of the result the plot shows. */
+const shownVars = () => summary?.vars ?? null;
+const tools = new PlotTools(
+  {
+    plot,
+    vars: shownVars,
+    time: shownTime,
+    col: shownCol,
+    fetch: async (names) => {
+      if (liveData) await api.liveVars(names);
+      else await fetchSeries(names);
+    },
+    toggle: async (name) => {
+      const v = summary?.vars.find((x) => x.name === name);
+      if (!v) return;
+      if (mode === "modeling" && !stripOpen) setStrip(true);
+      await togglePlot(name, v);
+    },
+    log,
+    classInfo: (p) => src.get(p),
+  },
+  $("plot-tools"),
+  $("plot-stats"),
+);
+
+/** Whether the diagram's clicks plot variables: results of the class shown, not editing. */
+function plottable(cls: ClassInfo | null | undefined) {
+  return !!summary && !!cls && summaryPath === cls.path && !diagram.svg.classList.contains("editing");
+}
+diagram.onComponentClick = (c, ev) => {
+  if (plottable(current) && view === "diagram") tools.componentMenu(c, ev.clientX, ev.clientY);
+};
+diagram.onConnection = (from, to, ev) => {
+  if (plottable(current) && view === "diagram" && current) void tools.connectionMenu(current, from, to, ev.clientX, ev.clientY);
+};
+
+// The plot strip of the Modeling page shows the same plot window as the Simulation page.
+let stripOpen = pref("plotStrip", "open") !== "closed";
+let stripH = Math.max(80, +pref("plotStripH", "260") || 260);
+/** Whether the strip shows the plot right now (Modeling page, results, open). */
+const stripShown = () => mode === "modeling" && !!summary && stripOpen;
+function placePlot() {
+  const strip = $("plot-strip");
+  strip.classList.toggle("hidden", !(mode === "modeling" && summary));
+  strip.classList.toggle("collapsed", !stripOpen);
+  strip.style.height = `${stripH}px`;
+  $("strip-toggle").textContent = stripOpen ? "▾ Plot" : "▸ Plot";
+  $("strip-note").textContent =
+    summary && current && summaryPath !== current.path
+      ? `Results of ${summaryPath}`
+      : "Click a component or connection in the diagram to plot its variables";
+  plot.moveTo(stripShown() ? $("strip-host") : $("plot"));
+}
+function setStrip(open: boolean) {
+  stripOpen = open;
+  setPref("plotStrip", open ? "open" : "closed");
+  placePlot();
+}
+$("strip-toggle").onclick = () => setStrip(!stripOpen);
+$("strip-new").onclick = () => plot.addSubplot();
+$("strip-clear").onclick = () => plot.clear();
+$("strip-open").onclick = () => setMode("simulation");
+$("strip-resize").addEventListener("pointerdown", (e) => {
+  const el = $("strip-resize");
+  el.setPointerCapture(e.pointerId);
+  const y0 = e.clientY;
+  const h0 = stripH;
+  const max = $("model-pane").clientHeight - 80;
+  const move = (ev: PointerEvent) => {
+    stripH = Math.max(80, Math.min(max, h0 - (ev.clientY - y0)));
+    $("plot-strip").style.height = `${stripH}px`;
+  };
+  const up = () => {
+    el.removeEventListener("pointermove", move);
+    el.removeEventListener("pointerup", up);
+    setPref("plotStripH", String(Math.round(stripH)));
+  };
+  el.addEventListener("pointermove", move);
+  el.addEventListener("pointerup", up);
+});
+
+// The diagram of the results' model next to the plot (Simulation page).
+const simDiagram = new DiagramView($("sim-diagram"), src, classes);
+let simDiagramOn = pref("simDiagram", "1") === "1";
+let simDiagramShown = "";
+simDiagram.onSelect = (c) => showInspector(c);
+simDiagram.onComponentClick = (c, ev) => tools.componentMenu(c, ev.clientX, ev.clientY);
+simDiagram.onConnection = (from, to, ev) => {
+  const info = classes.get(summaryPath);
+  if (info) void tools.connectionMenu(info, from, to, ev.clientX, ev.clientY);
+};
+async function refreshSimDiagram() {
+  $("sim-diagram").classList.toggle("hidden", !simDiagramOn);
+  $("sim-diagram-btn").classList.toggle("active", simDiagramOn);
+  if (!simDiagramOn || mode !== "simulation" || !summaryPath) return;
+  const info = await src.get(summaryPath);
+  if (!info || (simDiagramShown === summaryPath && simDiagram.rendered?.cls === info)) return;
+  simDiagramShown = summaryPath;
+  await simDiagram.show(info, info.components.some((c) => c.type_kind !== "type" && !c.protected) ? "diagram" : "icon");
+}
+$("sim-diagram-btn").onclick = () => {
+  simDiagramOn = !simDiagramOn;
+  setPref("simDiagram", simDiagramOn ? "1" : "0");
+  simDiagramShown = "";
+  void refreshSimDiagram();
+};
+
+// ---------------------------------------------------------------- dashboard
+const dashboard = new Dashboard($("dashboard"), {
+  model: () => current?.path ?? null,
+  vars: () => (summary && current && summaryPath === current.path ? summary.vars : null),
+  overrides,
+  runLive: (pace, names) => simulate({ pace, names }),
+  running: () => !!liveData,
+  setParams: (ps) => api.liveParams(ps),
+  fetch: async (names) => {
+    if (liveData) {
+      await api.liveVars(names);
+      return;
+    }
+    if (!cache || !summary || summaryPath !== current?.path) return;
+    await fetchSeries(names.filter((n) => summary!.vars.some((v) => v.name === n)));
+    dashboard.data(cache.time, (k) => cache!.cols.get(k));
+  },
+  control: (c) => api.liveControl(c),
+  log,
+});
+dashboard.shareBase = () => {
+  const plotted = [...new Set(plot.subplots.flatMap((sp) => sp.series.filter((x) => !x.run && !x.expr).map((x) => x.name)))];
+  const st = settings();
+  const options: SimSettings = { ...st };
+  delete options.params;
+  return experiments.shareUrl(current?.path ?? "", [...overrides.entries()], options, plotted);
+};
+let dashOn = pref("dashboardOpen", "0") === "1";
+function showDashboard(on: boolean) {
+  dashOn = on;
+  setPref("dashboardOpen", on ? "1" : "0");
+  $("dashboard").classList.toggle("hidden", !on);
+  $("dash-btn").classList.toggle("active", on);
+  if (on && mode !== "simulation") setMode("simulation");
+}
+$("dash-btn").onclick = () => showDashboard(!dashOn);
+$("dashboard").classList.toggle("hidden", !dashOn);
+$("dash-btn").classList.toggle("active", dashOn);
 
 // ---------------------------------------------------------------- loading sources
 async function load(files: [string, string][], label: string, res: [string, ArrayBuffer][] = []) {
@@ -841,13 +1128,26 @@ async function loadMsl(): Promise<boolean> {
 /** Milestones since navigation start, for automated checks. */
 const timings: { interactive?: number; mslBrowsable?: number } = {};
 
+/** Dashboard layout from a share link, applied when its model opens. */
+let pendingDash: { model: string; layout: ReturnType<typeof layoutFromHash> } | null = null;
+
 async function start() {
-  // `#Model.Name`, or a shared run `#Model.Name?p.k=2&stop=3&plot=y` (experiments.ts)
+  // `#Model.Name`, or a shared run `#Model.Name?p.k=2&stop=3&plot=y` (experiments.ts),
+  // with `&dash=` a dashboard layout (dashboard.ts)
   const share = experiments.parseShare(location.hash);
   const hash = share.model;
+  {
+    const l = layoutFromHash(location.hash);
+    if (l && hash) {
+      pendingDash = { model: hash, layout: l };
+      $("dashboard").classList.remove("hidden");
+      $("dash-btn").classList.add("active");
+      dashOn = true;
+    }
+  }
   // for automated checks
   const w = window as unknown as { daedalus: Record<string, unknown> };
-  w.daedalus = { api, simulate, openClass, plot, timings, analysis, setMode, togglePlot: (n: string) => togglePlot(n, summary!.vars.find((v) => v.name === n)!), editor, anim: () => anim, animData: () => animData, setSimView };
+  w.daedalus = { api, simulate, openClass, plot, timings, analysis, setMode, togglePlot: (n: string) => togglePlot(n, summary!.vars.find((v) => v.name === n)!), editor, anim: () => anim, animData: () => animData, setSimView, tools, dashboard, diagram, simDiagram, overrides, live: () => liveData, liveStats, mode: () => mode };
   await load(bundledLibrary(), "Daedalus library", await bundledResources());
   initAssistant({
     currentClass: () => current?.path ?? null,

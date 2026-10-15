@@ -11,7 +11,24 @@ let onProgress: ((p: BundleProgress) => void) | null = null;
 /** Called with the progress of a running analysis. */
 let onAnalysis: ((p: { done: number; total: number }) => void) | null = null;
 
+/** Rows of a live run (see worker.ts): the new time rows from row `from`, and per variable
+ * its new values from its own `from`. */
+export interface LiveChunk {
+  id: number;
+  t: number;
+  stop: number;
+  from: number;
+  time: Float64Array;
+  cols: Record<string, { from: number; v: Float64Array }>;
+  paused: boolean;
+}
+const liveHandlers = new Map<number, (c: LiveChunk) => void>();
+
 worker.onmessage = (ev) => {
+  if (ev.data.live) {
+    liveHandlers.get(ev.data.live.id)?.(ev.data.live as LiveChunk);
+    return;
+  }
   if (ev.data.analysis) {
     onAnalysis?.(ev.data.analysis);
     return;
@@ -22,6 +39,7 @@ worker.onmessage = (ev) => {
   }
   const { id, ok, result, error } = ev.data;
   const p = pending.get(id);
+  liveHandlers.delete(id);
   if (!p) return;
   pending.delete(id);
   if (ok) p.resolve(result);
@@ -70,6 +88,18 @@ export const api = {
   check: (model: string) => call<{ ok: boolean; error?: string; stats?: Record<string, number>; warnings?: string[]; states?: number }>("check", model),
   flatten: (model: string) => call<string>("flatten", model),
   simulate: (model: string, settings: SimSettings) => call<SimSummary>("simulate", model, settings),
+  /** Simulate in slices, posting the rows of `opts.names` as they come (`onChunk`); with
+   * `opts.pace` > 0 paced at that many simulated seconds per second. Resolves to the same
+   * summary as `simulate` (with `stopped` when ended by `liveControl({stop})`). */
+  simulateLive: (model: string, settings: SimSettings, opts: { names: string[]; pace?: number }, onChunk: (c: LiveChunk) => void) => {
+    liveHandlers.set(nextId, onChunk);
+    return call<SimSummary & { stopped?: boolean }>("simulateLive", model, settings, opts);
+  },
+  /** Stream these variables too from the running live run. */
+  liveVars: (names: string[]) => call<boolean>("liveVars", names),
+  /** Change free Real parameters of the running live run, at the time it reached. */
+  liveParams: (params: [string, number][]) => call<{ ok: boolean; error?: string; t?: number }>("liveParams", params),
+  liveControl: (c: { pause?: boolean; stop?: boolean; pace?: number }) => call<boolean>("liveControl", c),
   values: (names: string[]) => call<{ time: Float64Array; cols: Float64Array[] }>("values", names),
   resultMat: () => call<Uint8Array>("resultMat"),
   resultCsv: (names: string) => call<string>("resultCsv", names),

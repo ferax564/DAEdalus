@@ -12,6 +12,106 @@ type Req = { id: number; op: string; args: unknown[] };
 /** Set by an "analysisCancel" request; the running analysis checks it between steps. */
 let analysisCancelled = false;
 
+/**
+ * The run being advanced in slices (live plotting, dashboards). Requests that arrive while
+ * it runs are served between its slices: "liveVars" changes the variables streamed,
+ * "liveParams" changes parameters at the time reached, "liveControl" pauses or stops it.
+ */
+interface Live {
+  id: number;
+  /** Variables whose new rows are posted after each slice. */
+  names: string[];
+  /** Rows posted so far, per variable (a variable added later starts from row 0). */
+  sent: Map<string, number>;
+  /** Rows of the time axis posted so far. */
+  sentTime: number;
+  /** Simulated seconds per wall-clock second; 0: as fast as possible. */
+  pace: number;
+  paused: boolean;
+  stop: boolean;
+  /** Pacing anchor: simulated time at wall-clock time. */
+  anchor: { t: number; wall: number };
+  /** Simulated time reached. */
+  t: number;
+}
+let live: Live | null = null;
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Post the rows recorded since the last post. */
+function postLive(w: Workspace, run: Live, t: number, stopTime: number) {
+  const transfer: Transferable[] = [];
+  const cols: Record<string, { from: number; v: Float64Array }> = {};
+  for (const n of run.names) {
+    const from = run.sent.get(n) ?? 0;
+    const v = w.liveValues(n, from);
+    if (from === 0 && v.length === 0) continue; // not a variable of this model
+    run.sent.set(n, from + v.length);
+    cols[n] = { from, v };
+    transfer.push(v.buffer);
+  }
+  const fromT = run.sentTime;
+  const newTime = w.liveTime(fromT);
+  run.sentTime = fromT + newTime.length;
+  transfer.push(newTime.buffer);
+  (self as unknown as Worker).postMessage({ live: { id: run.id, t, stop: stopTime, from: fromT, time: newTime, cols, paused: run.paused } }, transfer);
+}
+
+/** Run a live simulation to its end (or until stopped); resolves to its summary. */
+async function runLive(w: Workspace, id: number, model: string, settings: unknown, o: { names?: string[]; pace?: number }) {
+  const st = JSON.parse(w.liveStart(model, JSON.stringify(settings ?? {})));
+  if (!st.ok) return { ok: false, error: st.error, model, vars: [], points: 0, log: [], warnings: [], translate_ms: 0, stats: null, model_stats: null, experiment: null };
+  const run: Live = {
+    id,
+    names: o.names ?? [],
+    sent: new Map(),
+    sentTime: 0,
+    pace: o.pace ?? 0,
+    paused: false,
+    stop: false,
+    anchor: { t: st.start_time, wall: performance.now() },
+    t: st.start_time,
+  };
+  live = run;
+  let t = st.start_time as number;
+  postLive(w, run, t, st.stop_time);
+  for (;;) {
+    if (live !== run) return { ok: false, error: "superseded by another run", model, vars: [], points: 0, log: [], warnings: [], translate_ms: 0, stats: null, model_stats: null, experiment: null };
+    if (run.stop) {
+      live = null;
+      const s = JSON.parse(w.liveFinish());
+      s.log = [...(s.log ?? []), `stopped at t = ${+t.toPrecision(6)}`];
+      s.stopped = true;
+      return s;
+    }
+    const slice0 = performance.now();
+    if (run.paused) {
+      await sleep(40);
+      run.anchor = { t, wall: performance.now() };
+      continue;
+    }
+    let target = Infinity;
+    if (run.pace > 0) {
+      target = run.anchor.t + (run.pace * (slice0 - run.anchor.wall)) / 1000;
+      // A model slower than the pace runs as fast as it can, without building up a debt.
+      if (target - t > run.pace * 0.25) {
+        run.anchor = { t, wall: slice0 };
+        target = t + run.pace * 0.05;
+      }
+    }
+    const r = JSON.parse(w.liveAdvance(target, run.pace > 0 ? 25 : 120));
+    if (r.done) {
+      live = null;
+      return r.summary;
+    }
+    t = r.t;
+    run.t = t;
+    postLive(w, run, t, st.stop_time);
+    if (run.pace > 0) await sleep(Math.max(1, 33 - (performance.now() - slice0)));
+    else await sleep(0);
+  }
+}
+
 function progress(p: BundleProgress) {
   (self as unknown as Worker).postMessage({ progress: p });
 }
@@ -127,8 +227,34 @@ self.onmessage = async (ev: MessageEvent<Req>) => {
         result = w.flatten(args[0] as string);
         break;
       case "simulate":
+        live = null;
         result = JSON.parse(w.simulate(args[0] as string, JSON.stringify(args[1] ?? {})));
         break;
+      case "simulateLive":
+        result = await runLive(w, id, args[0] as string, args[1], (args[2] ?? {}) as { names?: string[]; pace?: number });
+        break;
+      case "liveVars":
+        if (live) for (const n of args[0] as string[]) if (!live.names.includes(n)) live.names.push(n);
+        result = !!live;
+        break;
+      case "liveParams": {
+        // Served between two slices of the run: applied at the time reached.
+        result = live ? JSON.parse(w.liveSetParams(JSON.stringify(args[0]))) : { ok: false, error: "no live run" };
+        break;
+      }
+      case "liveControl": {
+        const c = args[0] as { pause?: boolean; stop?: boolean; pace?: number };
+        if (live) {
+          if (c.pause !== undefined) live.paused = c.pause;
+          if (c.stop) live.stop = true;
+          if (c.pace !== undefined) {
+            live.pace = c.pace;
+            live.anchor = { t: live.t, wall: performance.now() };
+          }
+        }
+        result = !!live;
+        break;
+      }
       case "values": {
         const names = args[0] as string[];
         const time = w.time();
