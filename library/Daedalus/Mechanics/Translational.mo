@@ -130,7 +130,7 @@ package Translational "1D translational mechanics: masses, springs, dampers, con
       contact = s_rel < s_rel0;
       penetration = if contact then s_rel0 - s_rel else 0;
       // the damper may not pull the contact surfaces together
-      f = if contact then min(0, -c*penetration^n + d*v_rel) else 0;
+      f = if contact then min(0, -c*max(penetration, 0)^n + d*v_rel) else 0;
       annotation (Icon(graphics={Line(points={{-100,0},{-50,0}}, color={0,127,0}),
           Line(points={{-50,-40},{-50,40}}, thickness=1), Line(points={{-10,-40},{-10,40}}, thickness=1),
           Line(points={{-10,0},{100,0}}, color={0,127,0})}));

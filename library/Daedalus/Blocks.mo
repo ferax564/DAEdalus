@@ -302,15 +302,45 @@ package Blocks "Signal blocks: sources, math, continuous and nonlinear blocks"
       input Real x "Abscissa";
       input Integer column=2 "Column of the ordinate";
       output Real y;
-    external "builtin";
+    protected
+      Integer n = size(table, 1);
+      Integer i;
+    algorithm
+      if n == 1 or x <= table[1, 1] then
+        y := table[1, column];
+      elseif x >= table[n, 1] then
+        y := table[n, column];
+      else
+        i := 1;
+        while i < n - 1 and x > table[i + 1, 1] loop
+          i := i + 1;
+        end while;
+        y := if table[i + 1, 1] > table[i, 1] then table[i, column] + (table[i + 1, column] - table[i, column])
+          *(x - table[i, 1])/(table[i + 1, 1] - table[i, 1]) else table[i + 1, column];
+      end if;
+      annotation (__Daedalus_builtin="interpolate");
     end interpolate;
 
     function interpolateExtrapolate "Linear interpolation in a table with linear extrapolation"
-      input Real table[:, :];
-      input Real x;
-      input Integer column=2;
+      input Real table[:, :] "Table with increasing first column";
+      input Real x "Abscissa";
+      input Integer column=2 "Column of the ordinate";
       output Real y;
-    external "builtin";
+    protected
+      Integer n = size(table, 1);
+      Integer i;
+    algorithm
+      if n == 1 then
+        y := table[1, column];
+      else
+        i := 1;
+        while i < n - 1 and x > table[i + 1, 1] loop
+          i := i + 1;
+        end while;
+        y := if table[i + 1, 1] > table[i, 1] then table[i, column] + (table[i + 1, column] - table[i, column])
+          *(x - table[i, 1])/(table[i + 1, 1] - table[i, 1]) else table[i + 1, column];
+      end if;
+      annotation (__Daedalus_builtin="interpolateExtrapolate");
     end interpolateExtrapolate;
   end Functions;
 end Blocks;

@@ -4327,8 +4327,29 @@ impl<'a, 't> Flattener<'a, 't> {
                     );
                 }
                 let n: usize = dims.iter().product();
-                let x = v.scalar()?;
-                return Ok(Val::A(dims, vec![x; n]));
+                match v {
+                    Val::Str(x) => return Ok(Val::SA(dims, vec![x; n])),
+                    Val::SA(d, e) => {
+                        let mut all = Vec::with_capacity(n * e.len());
+                        for _ in 0..n {
+                            all.extend(e.iter().cloned());
+                        }
+                        dims.extend(d);
+                        return Ok(Val::SA(dims, all));
+                    }
+                    Val::A(d, e) => {
+                        let mut all = Vec::with_capacity(n * e.len());
+                        for _ in 0..n {
+                            all.extend(e.iter().copied());
+                        }
+                        dims.extend(d);
+                        return Ok(Val::A(dims, all));
+                    }
+                    v => {
+                        let x = v.scalar()?;
+                        return Ok(Val::A(dims, vec![x; n]));
+                    }
+                }
             }
             "zeros" | "ones" | "fill" => {
                 let (val, start) = match name.as_str() {
@@ -4980,6 +5001,19 @@ impl<'a, 't> Flattener<'a, 't> {
                 };
                 ctx.locals.last_mut().unwrap().insert(n.clone(), v);
             }
+        }
+        // A Modelica function this compiler implements natively:
+        // annotation(__Daedalus_builtin = "interpolate").
+        if let Some(op) = self
+            .tree
+            .def(cls)
+            .and_then(|d| builtin_annotation(&d.annotation))
+        {
+            let ins: Vec<Val> = inputs.iter().map(|n| ctx.locals[0][n].clone()).collect();
+            self.depth -= 1;
+            return self
+                .intrinsic(&op, ins)
+                .with_context(|| format!("in builtin function '{fname}'"));
         }
         // External builtin intrinsics.
         if let Some((ext, short)) = self.function_external(cls, 0) {
@@ -6000,4 +6034,19 @@ fn comp_elements(c: &Comp) -> Vec<Comp> {
         Comp::Arr(_, el) => el.iter().flat_map(comp_elements).collect(),
         other => vec![other.clone()],
     }
+}
+
+/// The `__Daedalus_builtin = "name"` entry of a function's annotation.
+fn builtin_annotation(ann: &[E]) -> Option<String> {
+    ann.iter().find_map(|a| match a {
+        E::Modification { target, value, .. }
+            if target.parts.len() == 1 && &*target.parts[0].ident.text == "__Daedalus_builtin" =>
+        {
+            match &**value {
+                E::Terminal { token, .. } => Some(token.text.trim_matches('"').to_string()),
+                _ => None,
+            }
+        }
+        _ => None,
+    })
 }

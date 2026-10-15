@@ -68,6 +68,7 @@ fn run() -> anyhow::Result<()> {
     let mut set_start = false;
     let mut set_stop = false;
     let mut set_tol = false;
+    let mut set_intervals = false;
     let mut set_method = false;
     let mut output = None;
     let mut vars: Option<Vec<String>> = None;
@@ -95,7 +96,10 @@ fn run() -> anyhow::Result<()> {
                 set_stop = true
             }
             "--interval" => so.interval = next(&mut i)?.parse()?,
-            "-n" | "--intervals" => so.intervals = next(&mut i)?.parse()?,
+            "-n" | "--intervals" => {
+                so.intervals = next(&mut i)?.parse()?;
+                set_intervals = true
+            }
             "--tol" => {
                 so.tolerance = next(&mut i)?.parse()?;
                 set_tol = true
@@ -239,6 +243,9 @@ fn run() -> anyhow::Result<()> {
             }
             if so.interval > 0.0 {
                 o.interval = so.interval;
+            } else if set_intervals {
+                // An explicit interval count replaces the experiment's Interval.
+                o.interval = 0.0;
             }
             o.intervals = so.intervals;
             o.fixed_step = so.fixed_step;
