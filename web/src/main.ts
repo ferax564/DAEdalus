@@ -37,6 +37,8 @@ let mode: "modeling" | "simulation" = "modeling";
 let summary: SimSummary | null = null;
 /** Model the variables in `summary` belong to. */
 let summaryPath = "";
+/** Whether the variable browser lists a previous model's results after another class is opened. */
+let showPrev = false;
 const overrides = new Map<string, number>();
 const docs = new Map<string, string>();
 
@@ -264,7 +266,10 @@ async function openClass(path: string) {
     return;
   }
   // Parameter overrides belong to the model they were made on.
-  if (current?.path !== info.path) overrides.clear();
+  if (current?.path !== info.path) {
+    overrides.clear();
+    showPrev = false;
+  }
   current = info;
   // expand the browser down to the class
   const parts = path.split(".");
@@ -406,8 +411,18 @@ function renderVariables() {
     // Like a result file kept loaded: say which model these variables come from.
     const note = document.createElement("div");
     note.className = "var-note";
-    note.textContent = `Results of ${summaryPath}. Simulate to list ${current.path.split(".").pop()}.`;
+    note.textContent = `Simulate ${current.path.split(".").pop()} to list its variables.`;
     host.appendChild(note);
+    // The previous model's results stay reachable, folded away, instead of passing as this model's.
+    const prev = document.createElement("button");
+    prev.className = "var-prev";
+    prev.textContent = showPrev ? `Hide results of ${summaryPath}` : `Show results of ${summaryPath}`;
+    prev.onclick = () => {
+      showPrev = !showPrev;
+      renderVariables();
+    };
+    host.appendChild(prev);
+    if (!showPrev) return;
   }
   const filter = ($("var-filter") as HTMLInputElement).value.trim().toLowerCase();
   const root: VarNode = { name: "", full: "", kids: new Map() };
@@ -467,9 +482,14 @@ function renderVariables() {
             inp.readOnly = true;
             inp.classList.add("ro");
             inp.title = `${inp.value}\nComputed from other parameters`;
+          } else if (current && summaryPath !== current.path) {
+            // A previous model's result: Enter would re-simulate the open model instead.
+            inp.readOnly = true;
+            inp.classList.add("ro");
+            inp.title = `${inp.value}\nParameter of ${summaryPath}`;
           }
           inp.onkeydown = (e) => {
-            if (e.key === "Enter") {
+            if (e.key === "Enter" && !inp.readOnly) {
               const x = parseFloat(inp.value);
               if (isFinite(x)) {
                 overrides.set(k.full, x);
