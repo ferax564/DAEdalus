@@ -9,6 +9,7 @@ import { bundledLibrary, readPicked } from "./library";
 import { initAssistant } from "./assistant";
 import { drawIcon, newCtx, SVG_NS, systemExtent, IDENTITY, el } from "./graphics";
 import * as experiments from "./experiments";
+import { StructureView, stateOverridesFor } from "./structure";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -34,7 +35,7 @@ const src = {
 let tree: ClassEntry[] = [];
 const expanded = new Set<string>(["Daedalus", "Daedalus.Examples"]);
 let current: ClassInfo | null = null;
-let view: ViewKind | "text" | "doc" | "flat" = "diagram";
+let view: ViewKind | "text" | "doc" | "flat" | "structure" = "diagram";
 let mode: "modeling" | "simulation" = "modeling";
 let summary: SimSummary | null = null;
 /** Model the variables in `summary` belong to. */
@@ -88,7 +89,7 @@ function setActive(container: HTMLElement, attr: string, value: string) {
 
 async function showView() {
   setActive($("view-tabs"), "data-view", view);
-  for (const id of ["view-graphic", "view-text", "view-doc", "view-flat"]) $(id).classList.add("hidden");
+  for (const id of ["view-graphic", "view-text", "view-doc", "view-flat", "view-structure"]) $(id).classList.add("hidden");
   if (!current) return;
   if (view === "icon" || view === "diagram") {
     $("view-graphic").classList.remove("hidden");
@@ -115,6 +116,9 @@ async function showView() {
     $("view-flat").classList.remove("hidden");
     $("view-flat").textContent = "Flattening…";
     $("view-flat").textContent = await api.flatten(current.path);
+  } else if (view === "structure") {
+    $("view-structure").classList.remove("hidden");
+    await structureView.show(current.path);
   }
 }
 
@@ -287,7 +291,7 @@ async function openClass(path: string) {
       typeof st === "number" && typeof dt === "number" && dt > 0 ? String(Math.round((st - t0) / dt)) : "auto";
   }
   history.replaceState(null, "", `#${encodeURIComponent(path)}`);
-  if (view !== "text" && view !== "doc" && view !== "flat") view = info.kind !== "connector" && info.kind !== "package" && info.components.some((c) => c.type_kind !== "type" && !c.protected) ? "diagram" : "icon";
+  if (view !== "text" && view !== "doc" && view !== "flat" && view !== "structure") view = info.kind !== "connector" && info.kind !== "package" && info.components.some((c) => c.type_kind !== "type" && !c.protected) ? "diagram" : "icon";
   renderTree();
   renderVariables();
   showInspector(null);
@@ -309,8 +313,12 @@ function settings(): SimSettings {
   const m = ($("set-method") as HTMLSelectElement).value;
   if (m) s.method = m;
   if (overrides.size) s.params = [...overrides.entries()];
+  const so = stateOverridesFor(current?.path);
+  if (so.length) s.stateOverrides = so;
   return s;
 }
+
+const structureView = new StructureView($("view-structure"), { settings, log, simulate: () => simulate() });
 
 let cache: { time: Float64Array; cols: Map<string, Float64Array> } | null = null;
 

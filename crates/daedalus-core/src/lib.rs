@@ -9,11 +9,13 @@ pub mod fmi;
 pub mod frontend;
 pub mod linalg;
 pub mod linearize;
+pub mod modal;
 pub mod results;
 pub mod sim;
 pub mod solver;
 pub mod sparse;
 pub mod sweep;
+pub mod structure;
 
 /// Flatten, analyse and compile `model` from `lib` into an executable model.
 pub fn translate(

@@ -199,7 +199,8 @@ impl Workspace {
     pub fn simulate(&mut self, model: &str, options: &str) -> String {
         let load_ms = self.ensure(model, Some(true));
         let t0 = now_ms();
-        let m = match daedalus_core::translate(&self.lib, model, &Default::default()) {
+        let bopts = backend_options(options);
+        let m = match daedalus_core::translate(&self.lib, model, &bopts) {
             Ok(m) => m,
             Err(e) => {
                 self.results = None;
@@ -316,6 +317,58 @@ impl Workspace {
         }
         String::from_utf8(out).unwrap_or_default()
     }
+
+    /// JSON structure report (see `daedalus_core::structure`), or `{"error": ...}`.
+    /// `options`: `{"jacobian": bool, "at": T, "stop_time", "tolerance", "params",
+    /// "stateOverrides": [[name, tier], ...]}`.
+    pub fn structure(&mut self, model: &str, options: &str) -> String {
+        self.ensure(model, Some(true));
+        let v: serde_json::Value = serde_json::from_str(options).unwrap_or_default();
+        let opts = daedalus_core::structure::StructureOptions {
+            jacobian: v["jacobian"].as_bool().unwrap_or(true),
+            at: v["at"].as_f64(),
+            stop_time: v["stop_time"].as_f64(),
+            tolerance: v["tolerance"].as_f64(),
+            params: serde_json::from_value(v["params"].clone()).unwrap_or_default(),
+            ..Default::default()
+        };
+        let t0 = now_ms();
+        match daedalus_core::structure::structure(
+            &self.lib,
+            model,
+            &backend_options(options),
+            &opts,
+        ) {
+            Ok(r) => {
+                let mut j = serde_json::to_value(&r).unwrap_or_default();
+                j["ok"] = true.into();
+                j["ms"] = (now_ms() - t0).into();
+                to_json(&j)
+            }
+            Err(e) => to_json(&serde_json::json!({"ok": false, "error": format!("{e:#}")})),
+        }
+    }
+}
+
+/// Backend options from a JSON options object: `"stateOverrides": [[name, tier], ...]`.
+fn backend_options(options: &str) -> daedalus_core::backend::Options {
+    use daedalus_core::backend::state_select::{StateOverride, parse_tier};
+    let mut o = daedalus_core::backend::Options::default();
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(options)
+        && let Some(list) = v["stateOverrides"].as_array()
+    {
+        for item in list {
+            if let (Some(name), Some(tier)) =
+                (item[0].as_str(), item[1].as_str().and_then(parse_tier))
+            {
+                o.state_overrides.push(StateOverride {
+                    pattern: name.to_string(),
+                    tier,
+                });
+            }
+        }
+    }
+    o
 }
 
 /// Sweeps and experiments: runs that reuse one translation.

@@ -87,6 +87,48 @@ relation. FMU state get/set and directional derivatives are not provided.
 Other source directories, such as the Modelica Standard Library, are loaded by
 passing them as extra sources or with `-L DIR`.
 
+## Model structure, Jacobian and state selection
+
+```sh
+# Variable roles, BLT blocks, incidence, state selection and why; plus the state
+# Jacobian at the start (or after simulating to --at T)
+./target/release/daedalus structure model.mo -m MyModel --at 1 [--format json]
+
+# Choose other states without editing the model (any command; NAME may be a glob)
+./target/release/daedalus simulate model.mo -m MyModel --state body.v=prefer --state 'arm.*.phi=avoid'
+```
+
+`structure` lists every variable with its role (state, derivative, dummy
+derivative, algebraic, alias, parameter, discrete) and the BLT blocks in
+evaluation order: which equation computes which unknown, and for linear and
+nonlinear loops the tear variables, inner equations and residuals. For each
+candidate set of the dummy-derivative state selection it shows which variables
+stayed states and which became dummy derivatives, their `stateSelect` tiers
+(and overrides), and the reason. DAEdalus selects states once, statically;
+when a set's constraint Jacobian depends on the solution, `structure` checks
+the choice along the simulated trajectory and warns when it degenerates (a
+pendulum in cartesian coordinates with `y` as state, at the bottom of the
+swing), naming the states that would work there.
+
+The Jacobian part gives the exact state Jacobian `df/dx` (the `linearize`
+machinery) with its sparsity and 1-norm condition number, the eigenvalues
+with time constants, frequencies, damping and participation factors (from left
+and right eigenvectors), the stiffness ratio with a stiff or non-stiff solver
+suggestion, and the condition number of each algebraic loop's Jacobian with
+respect to its tear variables.
+
+`--state NAME=always|prefer|default|avoid|never` sets the `stateSelect` of the
+matching variables before alias elimination and index reduction; later
+overrides win, and one that matches nothing is reported. In the workbench the
+**Structure** tab shows the blocks (click one for its equations), the
+incidence matrix in BLT order, a heatmap of `df/dx` and the eigenvalues in
+the complex plane (hover for time constant and participating states). Each
+state candidate can be pinned or forbidden there; the model is translated
+again and the new states, eigenvalues and stiffness are shown next to the old
+ones before simulating. The overrides are kept per model for the session, used
+by **Simulate**, and **Copy as modifier** gives the equivalent
+`x(stateSelect = StateSelect.prefer)` modifications.
+
 ## Workbench
 
 ```sh

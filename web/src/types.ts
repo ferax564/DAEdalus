@@ -104,6 +104,8 @@ export interface SimSettings {
   tolerance?: number;
   method?: string;
   params?: [string, number][];
+  /** stateSelect overrides `[name or glob, tier]` (Structure view). */
+  stateOverrides?: [string, string][];
 }
 
 /** Progress of loading a library bundle in the worker. */

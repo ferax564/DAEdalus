@@ -36,6 +36,15 @@
   validated with FMPy in CI.
 - `mcp`: a Model Context Protocol server (browse, edit, check, simulate,
   linearize) and an in-app Claude assistant in the workbench with the same tools.
+- `structure`: variable roles, BLT blocks with their equations, incidence,
+  the dummy-derivative state sets and why each state was chosen; at a time
+  point the exact state Jacobian with its condition number, eigenvalues, time
+  constants, participation factors, stiffness ratio and a solver suggestion,
+  the Jacobians of the algebraic loops, and a check of the static state
+  choice along the trajectory. Workbench Structure view with the same.
+- State selection without editing the model: `--state NAME=prefer|avoid|...`
+  (globs allowed) on every command, and pin/forbid in the Structure view,
+  with "copy as modifier".
 - Browser workbench:
   - package browser;
   - icon, diagram and text views;

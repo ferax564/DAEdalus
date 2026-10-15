@@ -37,6 +37,10 @@ COMMANDS:
                 process with a time limit; prints a report
   sweep       simulate once per parameter combination (-s), in parallel
               threads; prints a summary table (see SWEEP OPTIONS)
+  structure   model structure: variable roles, BLT blocks, incidence,
+              state selection and why; with the state Jacobian at the start
+              (or --at T): sparsity, condition, eigenvalues, time constants,
+              participation factors, stiffness, algebraic-loop Jacobians
 
 SOURCES:
   .mo files or directories (loaded recursively). The bundled Daedalus library
@@ -67,6 +71,12 @@ OPTIONS:
   --fmi-lib FILE          fmu: the FMI runtime library (default: next to this
                           executable, or $DAEDALUS_FMI_LIB)
   --timeout S             per-model time limit for test-library (default 60)
+  --state NAME=TIER       stateSelect override, TIER = always | prefer | default
+                          | avoid | never; NAME may be a glob (arm.*.phi)
+                          (repeatable; check, dump, simulate, linearize,
+                          structure, fmu, export-casadi)
+  --no-jacobian           structure: skip the Jacobian analysis (structure also
+                          takes --at T and --format text | json)
 
 SWEEP OPTIONS:
   -s, --sweep NAME=VALUES  swept parameter (repeatable); VALUES is a list
@@ -129,6 +139,7 @@ fn run() -> anyhow::Result<()> {
     let mut summary_out: Option<String> = None;
     let mut retranslate = false;
     let mut set_format = false;
+    let mut no_jacobian = false;
     let mut i = 1;
     let next = |i: &mut usize| -> anyhow::Result<String> {
         *i += 1;
@@ -188,6 +199,10 @@ fn run() -> anyhow::Result<()> {
             }
             "--no-index-reduction" => opts.index_reduction = false,
             "--no-tearing" => opts.tearing = false,
+            "--state" => opts.state_overrides.push(
+                daedalus_core::backend::state_select::StateOverride::parse(&next(&mut i)?)?,
+            ),
+            "--no-jacobian" => no_jacobian = true,
             "--jobs" => jobs = next(&mut i)?.parse::<usize>()?.max(1),
             "--timeout" => timeout = next(&mut i)?.parse()?,
             "--fmi-lib" => fmi_lib = Some(next(&mut i)?.into()),
@@ -474,6 +489,49 @@ fn run() -> anyhow::Result<()> {
             match out {
                 Some(path) => {
                     std::fs::write(&path, text)?;
+                    eprintln!("wrote {path}");
+                }
+                None => print!("{text}"),
+            }
+            Ok(())
+        }
+        "structure" => {
+            let mut so2 = daedalus_core::structure::StructureOptions {
+                jacobian: !no_jacobian,
+                at: lin_at,
+                params: so.params.clone(),
+                ..Default::default()
+            };
+            if set_start || set_tol || set_method || set_stop {
+                // Experiment defaults with the command-line changes on top.
+                let m = with_all_files(&mut lib, |l| daedalus_core::translate(l, &model, &opts))?;
+                let mut o = SimOptions::from_model(&m);
+                if set_start {
+                    o.start_time = so.start_time;
+                }
+                if set_stop {
+                    o.stop_time = so.stop_time;
+                }
+                if set_tol {
+                    o.tolerance = so.tolerance;
+                }
+                if set_method {
+                    o.method = so.method;
+                }
+                o.params = so.params.clone();
+                so2.sim = Some(o);
+            }
+            let rep = with_all_files(&mut lib, |l| {
+                daedalus_core::structure::structure(l, &model, &opts, &so2)
+            })?;
+            let text = match format.as_str() {
+                "text" => rep.to_text(),
+                "json" => serde_json::to_string_pretty(&rep)? + "\n",
+                f => anyhow::bail!("unknown format '{f}' (text | json)"),
+            };
+            match &output {
+                Some(path) => {
+                    std::fs::write(path, text)?;
                     eprintln!("wrote {path}");
                 }
                 None => print!("{text}"),

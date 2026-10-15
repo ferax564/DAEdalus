@@ -65,4 +65,6 @@ export const api = {
   values: (names: string[]) => call<{ time: Float64Array; cols: Float64Array[] }>("values", names),
   resultMat: () => call<Uint8Array>("resultMat"),
   resultCsv: (names: string) => call<string>("resultCsv", names),
+  /** Structure report (see structure.ts); `opts.stateOverrides` are `[name, tier]` pairs. */
+  structure: (model: string, opts: Record<string, unknown>) => call<unknown>("structure", model, opts),
 };
