@@ -4,10 +4,13 @@ pub mod backend;
 pub mod casadi;
 pub mod codegen;
 pub mod expr;
+pub mod external;
 pub mod flat;
 pub mod fmi;
 #[cfg(all(feature = "fmu", not(target_arch = "wasm32")))]
 pub mod fmu;
+#[cfg(all(feature = "fmu", not(target_arch = "wasm32")))]
+pub mod fmu_import;
 pub mod frontend;
 pub mod linalg;
 pub mod linearize;

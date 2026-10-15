@@ -110,6 +110,12 @@ pub fn linearize(
 /// Linearize at the runtime's current (consistent) solution point.
 pub fn linearize_at(rt: &mut Runtime, method: JacobianMethod) -> Result<Linearization, String> {
     let m = rt.m;
+    if !m.externals.is_empty() {
+        return Err(format!(
+            "{} contains FMU components, which cannot be linearized",
+            m.name
+        ));
+    }
     let inputs = real_inputs(m);
     let outputs = real_outputs(m);
     let name = |v: &VarId| m.vars[*v as usize].name.clone();

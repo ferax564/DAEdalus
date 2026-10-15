@@ -115,6 +115,8 @@ regression scripts run unchanged; see [docs/scripting.md](docs/scripting.md).
 # FMI 2.0 FMU (Model Exchange and Co-Simulation) for linux64
 cargo build --release -p daedalus-cli -p daedalus-fmi
 ./target/release/daedalus fmu library/Daedalus -m Daedalus.Examples.TorqueConverter.StallTest -o StallTest.fmu
+# the same as an FMI 3.0 FMU (x86_64-linux)
+./target/release/daedalus fmu library/Daedalus -m Daedalus.Examples.TorqueConverter.StallTest --fmi-version 3 -o StallTest3.fmu
 # validate with FMPy and compare its ME and CS runs with `daedalus simulate`
 ./target/release/daedalus simulate library/Daedalus -m Daedalus.Examples.TorqueConverter.StallTest -o ref.csv --vars rpm_engine
 python3 tools/fmu_check.py StallTest.fmu ref.csv rpm_engine
@@ -127,7 +129,45 @@ in `resources/model.bin`, and the model-independent FMI runtime
 or via `--fmi-lib` / `DAEDALUS_FMI_LIB`) as `binaries/linux64/<id>.so`.
 Co-Simulation steps with the model's own BDF/Dopri5 solver and event handling;
 Model Exchange exposes the states, derivatives and one event indicator per
-relation. FMU state get/set and directional derivatives are not provided.
+relation. With `--fmi-version 3` the same runtime implements the `fmi3*` API
+(Float64, Int32 and Boolean variables, `fmi3UpdateDiscreteStates`, and exact
+directional derivatives from the forward tangents of the compiled equations, after
+initialization). FMU state get/set is not provided.
+
+### FMU and SSP import
+
+```sh
+# simulate an FMU (FMI 2.0 or 3.0) on its own: Model Exchange if it has it, its
+# outputs and local variables in the result
+./target/release/daedalus simulate StallTest.fmu -o fmu.csv --vars rpm_engine
+./target/release/daedalus simulate StallTest.fmu --fmi-type cs --comm-step 0.004 -o cs.csv
+# wrapper block, usable as a component in any model (connect its inputs and outputs)
+./target/release/daedalus import-fmu Plant.fmu -o Plant.mo [--fmi-type me|cs] [--comm-step H] [--class NAME] [--within PKG]
+# SSP: simulate a system of FMUs as a co-simulation master, import it as a model,
+# or export a model made of FMU components
+./target/release/daedalus simulate System.ssp --comm-step 0.01 -o sys.csv
+./target/release/daedalus import-ssp System.ssp -o System.mo
+./target/release/daedalus export-ssp . -m Loop -o Loop.ssp
+```
+
+The wrapper declares the FMU's parameters, its inputs and outputs as connectors, and
+an annotation `__Daedalus_FMU(fileName = "Plant.fmu", fmiType = "ModelExchange")`
+(the file relative to the `.mo`). The FMU is unpacked and its binary loaded when the
+simulation starts. A Model Exchange FMU's states (`fmu_x`) are integrated together
+with the model's, its event indicators are located like the model's own zero
+crossings, and its time events and discrete state updates take part in the event
+iteration; outputs that depend directly on inputs are iterated to a fixed point.
+A Co-Simulation FMU is stepped over the communication grid `t0 + k*communicationStepSize`
+with its inputs held over each step; its outputs change at the grid points (a
+signal through a chain of Co-Simulation FMUs is delayed one step per FMU, so the
+error is first order in the step). `import-ssp` reads `SystemStructure.ssd` (FMU
+components, parameter bindings inline or in `.ssv` files, connections, system
+connectors, default experiment) and writes one model with a wrapper class per FMU;
+nested systems are not supported. `export-ssp` packs the FMU components of a model,
+their parameter values, placements and connections. FMU components need the native
+tool (CLI or Python package): the browser workbench reports an error for them, and
+`linearize`/`steady` refuse them. Tests: `crates/daedalus-cli/tests/fmu_import.rs`
+imports exported FMUs back and compares them with the native simulation.
 
 Other source directories, such as the Modelica Standard Library, are loaded by
 passing them as extra sources or with `-L DIR`.
@@ -265,7 +305,7 @@ of the EV model, which take 109k steps.
 | `crates/daedalus-cli` | `daedalus` command line tool |
 | `crates/daedalus-wasm` | WebAssembly bindings used by the workbench |
 | `crates/daedalus-py` | Python package `daedalus` (PyO3, built with maturin; not a cargo workspace member) |
-| `crates/daedalus-fmi` | FMI 2.0 runtime (`fmi2*` C functions) of exported FMUs |
+| `crates/daedalus-fmi` | FMI 2.0 and 3.0 runtime (`fmi2*`, `fmi3*` C functions) of exported FMUs |
 | `library/Daedalus` | Component library (Blocks, Mechanics, Hydraulics, Vehicle) and the examples |
 | `library/MultiBodyVehicle` | 3-D suspensions (double wishbone with external or pushrod springs, MacPherson, multilink), test rigs (K&C, seven-post) and full-car manoeuvres on MSL `Modelica.Mechanics.MultiBody` (needs MSL 4.1.0) |
 | `web` | Browser workbench (TypeScript, Vite, CodeMirror) |

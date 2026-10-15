@@ -144,6 +144,8 @@ pub struct FlatModel {
     pub origins: Vec<String>,
     pub experiment: Experiment,
     pub warnings: Vec<String>,
+    /// Instances of FMU wrapper blocks (see [`crate::external`]).
+    pub externals: Vec<crate::external::ExternalComponent>,
 }
 
 impl FlatModel {

@@ -423,3 +423,177 @@ pub fn model_identifier(name: &str) -> String {
     }
     s
 }
+
+/// FMI 3.0 value reference of the independent variable `time` (after the variables).
+pub fn time_vr3(m: &Model) -> u32 {
+    m.vars.len() as u32
+}
+
+/// FMI 3.0 value reference of event indicator `k` (local `Float64` variables after
+/// `time`).
+pub fn indicator_vr3(m: &Model, k: usize) -> u32 {
+    (m.vars.len() + 1 + k) as u32
+}
+
+/// `modelDescription.xml` (FMI 3.0, Model Exchange and Co-Simulation). Same variables
+/// and value references as FMI 2.0, plus the independent variable `time` and one local
+/// variable per event indicator ([`time_vr3`], [`indicator_vr3`]).
+pub fn model_description_xml3(
+    m: &Model,
+    d: &Description,
+    model_identifier: &str,
+    token: &str,
+    generation_tool: &str,
+) -> String {
+    let mut s = String::new();
+    let _ = writeln!(s, r#"<?xml version="1.0" encoding="UTF-8"?>"#);
+    let _ = writeln!(
+        s,
+        r#"<fmiModelDescription fmiVersion="3.0" modelName="{}" instantiationToken="{}" description="{}" generationTool="{}" variableNamingConvention="flat">"#,
+        xml_escape(&m.name),
+        xml_escape(token),
+        xml_escape(&format!("{} (DAEdalus)", m.name)),
+        xml_escape(generation_tool),
+    );
+    let _ = writeln!(
+        s,
+        r#"  <ModelExchange modelIdentifier="{model_identifier}" canGetAndSetFMUState="false" canSerializeFMUState="false" providesDirectionalDerivatives="true"/>"#
+    );
+    let _ = writeln!(
+        s,
+        r#"  <CoSimulation modelIdentifier="{model_identifier}" canHandleVariableCommunicationStepSize="true" canGetAndSetFMUState="false" canSerializeFMUState="false" providesDirectionalDerivatives="true" hasEventMode="false"/>"#
+    );
+    let mut units: Vec<&str> = d
+        .vars
+        .iter()
+        .map(|v| v.unit.as_str())
+        .filter(|u| !u.is_empty())
+        .collect();
+    units.sort_unstable();
+    units.dedup();
+    if !units.is_empty() {
+        let _ = writeln!(s, "  <UnitDefinitions>");
+        for u in units {
+            let _ = writeln!(s, r#"    <Unit name="{}"/>"#, xml_escape(u));
+        }
+        let _ = writeln!(s, "  </UnitDefinitions>");
+    }
+    let e = &m.experiment;
+    let mut exp = String::new();
+    if let Some(t) = e.start_time {
+        let _ = write!(exp, r#" startTime="{}""#, real(t));
+    }
+    if let Some(t) = e.stop_time {
+        let _ = write!(exp, r#" stopTime="{}""#, real(t));
+    }
+    if let Some(t) = e.tolerance {
+        let _ = write!(exp, r#" tolerance="{}""#, real(t));
+    }
+    if let Some(t) = e.interval {
+        let _ = write!(exp, r#" stepSize="{}""#, real(t));
+    }
+    if !exp.is_empty() {
+        let _ = writeln!(s, "  <DefaultExperiment{exp}/>");
+    }
+    let _ = writeln!(s, "  <ModelVariables>");
+    let _ = writeln!(
+        s,
+        r#"    <Float64 name="time" valueReference="{}" causality="independent" variability="continuous" description="Simulation time"/>"#,
+        time_vr3(m)
+    );
+    for v in &d.vars {
+        let tag = match v.ty {
+            BaseType::Real => "Float64",
+            BaseType::Integer => "Int32",
+            BaseType::Boolean => "Boolean",
+        };
+        let _ = write!(
+            s,
+            r#"    <{tag} name="{}" valueReference="{}""#,
+            xml_escape(&v.name),
+            v.vr
+        );
+        if !v.description.is_empty() {
+            let _ = write!(s, r#" description="{}""#, xml_escape(&v.description));
+        }
+        let _ = write!(
+            s,
+            r#" causality="{}" variability="{}""#,
+            match v.causality {
+                Causality::Parameter => "parameter",
+                Causality::CalculatedParameter => "calculatedParameter",
+                Causality::Input => "input",
+                Causality::Output => "output",
+                Causality::Local => "local",
+            },
+            match v.variability {
+                Variability::Fixed => "fixed",
+                Variability::Discrete => "discrete",
+                Variability::Continuous => "continuous",
+            }
+        );
+        if let Some(i) = v.initial {
+            let _ = write!(
+                s,
+                r#" initial="{}""#,
+                match i {
+                    Initial::Exact => "exact",
+                    Initial::Calculated => "calculated",
+                }
+            );
+        }
+        if let Some(x) = v.start {
+            let _ = write!(
+                s,
+                r#" start="{}""#,
+                match v.ty {
+                    BaseType::Real => real(x),
+                    BaseType::Integer => format!("{}", x.round() as i64),
+                    BaseType::Boolean => (x != 0.0).to_string(),
+                }
+            );
+        }
+        if !v.unit.is_empty() {
+            let _ = write!(s, r#" unit="{}""#, xml_escape(&v.unit));
+        }
+        if let Some(st) = v.derivative {
+            let _ = write!(s, r#" derivative="{}""#, d.vars[st - 1].vr);
+        }
+        let _ = writeln!(s, "/>");
+    }
+    for k in 0..d.n_event_indicators {
+        let _ = writeln!(
+            s,
+            r#"    <Float64 name="_eventIndicator[{}]" valueReference="{}" causality="local" variability="continuous" description="{}"/>"#,
+            k + 1,
+            indicator_vr3(m, k),
+            xml_escape(m.rel_text.get(k).map_or("", |t| t.as_str()))
+        );
+    }
+    let _ = writeln!(s, "  </ModelVariables>");
+    let _ = writeln!(s, "  <ModelStructure>");
+    let vr = |k: usize| d.vars[k - 1].vr;
+    for &k in &d.outputs {
+        let _ = writeln!(s, r#"    <Output valueReference="{}"/>"#, vr(k));
+    }
+    for &k in &d.derivatives {
+        let _ = writeln!(
+            s,
+            r#"    <ContinuousStateDerivative valueReference="{}"/>"#,
+            vr(k)
+        );
+    }
+    for &k in &d.initial_unknowns {
+        let _ = writeln!(s, r#"    <InitialUnknown valueReference="{}"/>"#, vr(k));
+    }
+    for k in 0..d.n_event_indicators {
+        let _ = writeln!(
+            s,
+            r#"    <EventIndicator valueReference="{}"/>"#,
+            indicator_vr3(m, k)
+        );
+    }
+    let _ = writeln!(s, "  </ModelStructure>");
+    let _ = writeln!(s, "</fmiModelDescription>");
+    s
+}

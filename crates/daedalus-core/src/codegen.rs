@@ -172,6 +172,9 @@ pub struct Model {
     pub jac_pattern: Vec<Vec<u32>>,
     pub aliases: Vec<(VarId, AliasKind)>,
     pub experiment: crate::flat::Experiment,
+    /// FMU components evaluated outside the tape (see [`crate::external`]).
+    #[serde(default)]
+    pub externals: Vec<crate::external::ExternalComponent>,
     pub stats: crate::backend::Stats,
     pub warnings: Vec<String>,
     pub tape_len: usize,
@@ -841,6 +844,7 @@ pub fn compile(mut sys: System) -> Model {
             .map(|a| (a.var, a.kind.clone()))
             .collect(),
         experiment: sys.experiment,
+        externals: sys.externals,
         stats: sys.stats,
         warnings: sys.warnings,
         vars: sys.vars,
@@ -1409,6 +1413,8 @@ pub struct Runtime<'m> {
     step_cap: f64,
     /// `delay()` reads the right value at a delayed jump (set while events are handled).
     pub delay_right: bool,
+    /// External components (imported FMUs): evaluates `m.ode` in [`Runtime::run_ode`].
+    pub ext: Option<Box<dyn crate::external::Hook>>,
 }
 
 impl<'m> Runtime<'m> {
@@ -1441,6 +1447,7 @@ impl<'m> Runtime<'m> {
             init_mode: false,
             step_cap: 0.0,
             delay_right: true,
+            ext: None,
         }
     }
 
@@ -1944,9 +1951,22 @@ impl<'m> Runtime<'m> {
     pub fn rhs(&mut self, t: f64, x: &[f64], dx: &mut [f64]) {
         self.set_time(t);
         self.set_states(x);
-        let m = self.m;
-        self.run(&m.ode);
+        self.run_ode();
         self.get_derivs(dx);
+    }
+
+    /// Run `m.ode`, through the external components' hook when there is one.
+    pub fn run_ode(&mut self) {
+        match self.ext.take() {
+            Some(mut h) => {
+                h.ode(self);
+                self.ext = Some(h);
+            }
+            None => {
+                let m = self.m;
+                self.run(&m.ode);
+            }
+        }
     }
 
     /// Forward-mode (tangent) run of `prog`: recomputes the values in `r` as [`run`]

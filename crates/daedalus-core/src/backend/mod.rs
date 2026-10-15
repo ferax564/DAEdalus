@@ -95,6 +95,8 @@ pub struct System {
     pub asserts: Vec<(ExprId, String)>,
     pub aliases: Vec<Alias>,
     pub experiment: Experiment,
+    /// FMU components (see [`crate::external`]).
+    pub externals: Vec<crate::external::ExternalComponent>,
     pub stats: Stats,
     pub warnings: Vec<String>,
     pub origins: Vec<String>,
@@ -242,6 +244,7 @@ pub fn compile(flat: FlatModel, opts: &Options) -> Result<System> {
         origins,
         experiment,
         warnings,
+        externals,
     } = flat;
     let mut vars = vars;
     let mut arena = arena;
@@ -494,6 +497,7 @@ pub fn compile(flat: FlatModel, opts: &Options) -> Result<System> {
         asserts: w.asserts,
         aliases: w.aliases,
         experiment,
+        externals,
         stats,
         warnings: w.warnings,
         origins: w.origins,
