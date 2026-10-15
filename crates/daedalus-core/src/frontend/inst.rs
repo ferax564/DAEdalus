@@ -3102,6 +3102,11 @@ impl<'a, 't> Flattener<'a, 't> {
                 };
             }
             if let Some(subs) = &p.subs {
+                // An element of a conditional array that is not present (`derv[1].y`
+                // with `Der derv[3] if false`): the connection is dropped.
+                if matches!(cur, Comp::Removed) {
+                    return Ok((None, !outside));
+                }
                 cur = self.subscript_comp(cur, subs, scope, ctx)?;
             }
         }
