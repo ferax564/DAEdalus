@@ -128,6 +128,9 @@ docker build -t daedalus-web .
 docker run --rm -p 8080:80 daedalus-web   # http://localhost:8080
 ```
 
+The live workbench at https://daedalus.apps.ezkeel.com is built from this
+Dockerfile, and ezkeel redeploys it on every push to `main`.
+
 The page is laid out like Dymola:
 - the package browser is on the left;
 - the class you open shows in Icon, Diagram or Text view;
