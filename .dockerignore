@@ -5,3 +5,5 @@ web/dist
 web/src/wasm
 web/public/msl
 **/*.log
+docs
+tools
