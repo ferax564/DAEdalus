@@ -82,6 +82,8 @@ impl Library {
             .unwrap_or(1)
             .min(16);
         let next = std::sync::atomic::AtomicUsize::new(0);
+        let cache_dir = lazy::cache::dir();
+        let cache_dir = cache_dir.as_deref();
         let mut docs: Vec<(usize, Document)> = std::thread::scope(|sc| {
             let handles: Vec<_> = (0..threads)
                 .map(|_| {
@@ -94,7 +96,10 @@ impl Library {
                             }
                             let p = &files[i];
                             if let Ok(text) = std::fs::read_to_string(p) {
-                                out.push((i, parse_document(&p.to_string_lossy(), &text)));
+                                out.push((
+                                    i,
+                                    lazy::cache::parse(cache_dir, &p.to_string_lossy(), &text),
+                                ));
                             }
                         }
                         out

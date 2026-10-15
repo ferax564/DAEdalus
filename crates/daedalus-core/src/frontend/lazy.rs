@@ -12,7 +12,7 @@
 //! Anything the scan cannot see shows up as a failed translation, and the caller then
 //! loads the rest with [`Library::load_all`].
 
-use super::{Library, parse_document};
+use super::Library;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::path::{Path, PathBuf};
 
@@ -653,6 +653,8 @@ impl Library {
         order.sort_by_key(|&k| std::cmp::Reverse(files[k].1.len()));
         let next = std::sync::atomic::AtomicUsize::new(0);
         let lazy = &self.lazy;
+        let cache_dir = cache::dir();
+        let cache_dir = cache_dir.as_deref();
         let mut docs: Vec<(usize, super::Document)> = std::thread::scope(|sc| {
             let handles: Vec<_> = (0..threads)
                 .map(|_| {
@@ -665,7 +667,7 @@ impl Library {
                             };
                             let (i, text) = &files[o];
                             let uri = lazy[*i].path.to_string_lossy();
-                            out.push((*i, parse_document(&uri, text)));
+                            out.push((*i, cache::parse(cache_dir, &uri, text)));
                         }
                         out
                     })
@@ -681,6 +683,74 @@ impl Library {
             self.lazy[i].loaded = true;
             self.insert(d);
         }
+    }
+}
+
+/// Parsed files kept on disk, keyed by path and content: reading one back is far faster
+/// than parsing it again.
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) mod cache {
+    use super::super::{Document, parse_document};
+    use bincode::Options;
+    use rumoca_ir_ast as ast;
+    use std::hash::Hasher;
+    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
+
+    /// Changes whenever the AST layout can change (the parser revision or this crate).
+    const FORMAT: &str = concat!("rumoca-ad00214/", env!("CARGO_PKG_VERSION"));
+
+    /// `$DAEDALUS_CACHE`, else `$XDG_CACHE_HOME/daedalus/ast` or `~/.cache/daedalus/ast`;
+    /// none with `DAEDALUS_NO_CACHE` set.
+    pub fn dir() -> Option<PathBuf> {
+        if std::env::var_os("DAEDALUS_NO_CACHE").is_some() {
+            return None;
+        }
+        if let Some(d) = std::env::var_os("DAEDALUS_CACHE") {
+            return Some(PathBuf::from(d));
+        }
+        let base = std::env::var_os("XDG_CACHE_HOME")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))?;
+        Some(base.join("daedalus").join("ast"))
+    }
+
+    fn key(uri: &str, text: &str) -> String {
+        let mut h = rustc_hash::FxHasher::default();
+        h.write(FORMAT.as_bytes());
+        h.write(uri.as_bytes());
+        h.write(text.as_bytes());
+        format!("{:016x}-{}.bin", h.finish(), text.len())
+    }
+
+    pub fn parse(dir: Option<&Path>, uri: &str, text: &str) -> Document {
+        let file = dir.map(|d| d.join(key(uri, text)));
+        let opts = bincode::DefaultOptions::new();
+        if let Some(f) = &file
+            && let Ok(bytes) = std::fs::read(f)
+            && let Ok(ast) = opts.deserialize::<ast::StoredDefinition>(&bytes)
+        {
+            return Document {
+                uri: uri.to_string(),
+                text: Arc::from(text),
+                ast,
+                errors: Vec::new(),
+            };
+        }
+        let d = parse_document(uri, text);
+        // Only clean parses are kept, so errors are always reported afresh.
+        if d.errors.is_empty()
+            && let Some(f) = &file
+            && let Ok(bytes) = opts.serialize(&d.ast)
+            && let Some(parent) = f.parent()
+            && std::fs::create_dir_all(parent).is_ok()
+        {
+            let tmp = f.with_extension(format!("tmp{}", std::process::id()));
+            if std::fs::write(&tmp, &bytes).is_ok() {
+                let _ = std::fs::rename(&tmp, f);
+            }
+        }
+        d
     }
 }
 
