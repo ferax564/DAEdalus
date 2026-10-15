@@ -30,11 +30,19 @@ def daedalus_binary() -> str:
 
 
 def bundled_library() -> str:
-    """The bundled Modelica library ``Daedalus`` of this checkout (or ``$DAEDALUS_LIB``)."""
+    """The bundled Modelica library ``Daedalus``: ``$DAEDALUS_LIB``, this checkout's,
+    or the one shipped next to the ``daedalus`` executable in a release archive."""
     env = os.environ.get("DAEDALUS_LIB")
     if env:
         return env
-    return str(_REPO / "library" / "Daedalus")
+    local = _REPO / "library" / "Daedalus"
+    if local.is_dir():
+        return str(local)
+    try:
+        beside = Path(daedalus_binary()).resolve().parent / "library" / "Daedalus"
+    except FileNotFoundError:
+        return str(local)
+    return str(beside if beside.is_dir() else local)
 
 
 def _sources(sources: Sequence[str | Path] | None) -> list[str]:

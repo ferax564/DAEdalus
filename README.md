@@ -48,7 +48,9 @@ cd daedalus-v0.1.0-x86_64-unknown-linux-gnu
 On macOS, clear the download quarantine first with
 `xattr -dr com.apple.quarantine <folder>`, since the binaries are not notarized.
 The release also carries the `daedalus-casadi` Python wheel
-(`pip install daedalus_casadi-*.whl`). Maintainers cut a release by pushing a
+(`pip install daedalus_casadi-*.whl`). It drives the CLI, so put the extracted
+folder on `PATH` (or set `DAEDALUS_BIN` to the executable); it then finds the
+`library/Daedalus` shipped next to it, or `DAEDALUS_LIB` if set. Maintainers cut a release by pushing a
 tag that matches the workspace version, for example `git tag v0.1.0 && git push origin v0.1.0`.
 
 ## Quick start
