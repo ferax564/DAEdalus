@@ -5,8 +5,9 @@ import type { ClassEntry, ClassInfo, ComponentInfo, SimSettings, SimSummary, Var
 import { DiagramView, type ViewKind } from "./diagram";
 import { TextView } from "./editor";
 import { PlotWindow, displayUnit, interp } from "./plot";
-import { bundledLibrary, readPicked } from "./library";
+import { bundledLibrary, bundledResources, readPicked, type Picked } from "./library";
 import { drawIcon, newCtx, SVG_NS, systemExtent, IDENTITY, el } from "./graphics";
+import type { Animation3D, AnimData } from "./anim3d";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -41,6 +42,8 @@ let summaryPath = "";
 let showPrev = false;
 const overrides = new Map<string, number>();
 const docs = new Map<string, string>();
+/** Non-Modelica files loaded with the libraries (shape meshes), keyed by relative path. */
+const resources = new Map<string, ArrayBuffer>();
 
 // ---------------------------------------------------------------- messages
 function log(msg: string, cls = "") {
@@ -412,6 +415,7 @@ async function simulate() {
     setMode("simulation");
     renderVariables();
     refreshXSelect();
+    await loadAnimation(s, name);
   } catch (e) {
     log(String(e), "err");
   } finally {
@@ -618,6 +622,75 @@ $("export-csv").onclick = async () => {
 };
 $("export-mat").onclick = async () => download("dsres.mat", await api.resultMat(), "application/octet-stream");
 
+// ---------------------------------------------------------------- 3-D animation
+let anim: Animation3D | null = null;
+let simView: "plot" | "anim" = "plot";
+/** Model whose results the animation shows, so a new model with shapes opens it once. */
+let animShown = "";
+let animData: AnimData | null = null;
+
+function setSimView(v: typeof simView) {
+  simView = v;
+  setActive($("sim-views"), "data-sim", v);
+  $("plot").classList.toggle("hidden", v !== "plot");
+  $("anim").classList.toggle("hidden", v !== "anim");
+  for (const id of ["plot-new", "plot-clear", "export-csv", "export-mat"]) $(id).classList.toggle("hidden", v !== "plot");
+  $("plot-x").parentElement!.classList.toggle("hidden", v !== "plot");
+  if (v === "plot") {
+    anim?.stop();
+    requestAnimationFrame(() => plot.draw());
+  } else requestAnimationFrame(() => anim?.resize());
+}
+$("sim-views").addEventListener("click", (e) => {
+  const v = (e.target as HTMLElement).getAttribute("data-sim");
+  if (v) setSimView(v as typeof simView);
+});
+
+/** Build the animation from the Visualizers.Advanced.Shape instances in the result, if any. */
+async function loadAnimation(s: SimSummary, model: string) {
+  const mod = await import("./anim3d");
+  const shapes = mod.findShapes(s.vars.map((v) => v.name));
+  $("anim-tab").classList.toggle("hidden", shapes.length === 0);
+  if (!shapes.length) {
+    animData = null;
+    if (simView === "anim") setSimView("plot");
+    return;
+  }
+  const t0 = performance.now();
+  const types = await mod.resolveShapeTypes(model, shapes, src);
+  const params = new Map(s.vars.filter((v) => v.kind === "param").map((v) => [v.name, v.value ?? 0]));
+  const lists = shapes.map((p) => mod.shapeVarNames(p));
+  const need = [...new Set(lists.flat().filter((n) => !params.has(n)))];
+  const r = need.length ? await api.values(need) : { time: await api.values([]).then((x) => x.time), cols: [] };
+  const meshes: Record<string, ArrayBuffer> = {};
+  for (const t of new Set(types.values())) {
+    if (!mod.isFileShape(t)) continue;
+    const p = mod.resolveResource(t, resources.keys());
+    if (p) meshes[t] = resources.get(p)!;
+  }
+  const cols = new Map(need.map((n, i) => [n, r.cols[i]]));
+  const track = (n: string) => (params.has(n) ? params.get(n)! : mod.compact(cols.get(n) ?? new Float64Array()));
+  const g = [1, 2, 3].map((i) => params.get(`world.n[${i}]`) ?? (i === 2 ? -1 : 0));
+  animData = {
+    model,
+    time: r.time,
+    gravity: g,
+    shapes: shapes.map((p, k) => mod.assembleShape(p, types.get(p) ?? "cylinder", lists[k].map(track))),
+    meshes,
+  };
+  if (!anim) {
+    anim = new mod.Animation3D($("anim"));
+    anim.onWarning = (m) => log(m, "warn");
+    anim.onRecorded = (v, f) => log(`Recorded ${f} (${(v.size / 1e6).toFixed(1)} MB): download it from the animation bar`, "ok");
+  }
+  if (animShown !== model) {
+    animShown = model;
+    setSimView("anim");
+  }
+  anim.setData(animData);
+  log(`Animation: ${shapes.length} shapes in ${(performance.now() - t0).toFixed(0)} ms`);
+}
+
 // ---------------------------------------------------------------- modes
 function setMode(m: typeof mode) {
   mode = m;
@@ -626,29 +699,37 @@ function setMode(m: typeof mode) {
   $("vars-pane").classList.toggle("hidden", m !== "simulation");
   $("model-pane").classList.toggle("hidden", m !== "modeling");
   $("plot-pane").classList.toggle("hidden", m !== "simulation");
-  if (m === "simulation") requestAnimationFrame(() => plot.draw());
+  if (m === "simulation") requestAnimationFrame(() => (simView === "plot" ? plot.draw() : anim?.resize()));
   else showView();
 }
 $("topbar").querySelectorAll<HTMLButtonElement>("button[data-mode]").forEach((b) => (b.onclick = () => setMode(b.dataset.mode as typeof mode)));
 
 // ---------------------------------------------------------------- loading sources
-async function load(files: [string, string][], label: string) {
-  if (!files.length) return;
+async function load(files: [string, string][], label: string, res: [string, ArrayBuffer][] = []) {
+  for (const [p, b] of res) resources.set(p, b);
+  if (!files.length) {
+    if (res.length) log(`Loaded ${res.length} shape files (${label})`, "ok");
+    return;
+  }
   const t0 = performance.now();
   const errs = await api.setDocuments(files);
   for (const f of files) docs.delete(f[0]);
   classes.clear();
   const nerr = Object.values(errs).reduce((a, e) => a + e.length, 0);
-  log(`Loaded ${files.length} files (${label}) in ${(performance.now() - t0).toFixed(0)} ms${nerr ? `, ${nerr} parse errors` : ""}`, nerr ? "warn" : "ok");
+  log(
+    `Loaded ${files.length} files (${label}) in ${(performance.now() - t0).toFixed(0)} ms${res.length ? `, ${res.length} shape files` : ""}${nerr ? `, ${nerr} parse errors` : ""}`,
+    nerr ? "warn" : "ok",
+  );
   for (const [uri, e] of Object.entries(errs).slice(0, 5)) log(`${uri}: ${e[0]}`, "err");
   await refreshTree();
 }
-$("open-files").onchange = async (e) => load(await readPicked((e.target as HTMLInputElement).files!), "files");
-$("open-dir").onchange = async (e) => load(await readPicked((e.target as HTMLInputElement).files!), "folder");
+const loadPicked = (p: Picked, label: string) => load(p.mo, label, p.resources);
+$("open-files").onchange = async (e) => loadPicked(await readPicked((e.target as HTMLInputElement).files!), "files");
+$("open-dir").onchange = async (e) => loadPicked(await readPicked((e.target as HTMLInputElement).files!), "folder");
 document.body.addEventListener("dragover", (e) => e.preventDefault());
 document.body.addEventListener("drop", async (e) => {
   e.preventDefault();
-  if (e.dataTransfer?.files.length) await load(await readPicked(e.dataTransfer.files), "dropped");
+  if (e.dataTransfer?.files.length) await loadPicked(await readPicked(e.dataTransfer.files), "dropped");
 });
 
 // The Modelica Standard Library ships as a bundle next to the page (scripts/fetch-msl.mjs).
@@ -701,8 +782,8 @@ async function start() {
   const hash = decodeURIComponent(location.hash.slice(1));
   // for automated checks
   const w = window as unknown as { daedalus: Record<string, unknown> };
-  w.daedalus = { api, simulate, openClass, plot, timings, togglePlot: (n: string) => togglePlot(n, summary!.vars.find((v) => v.name === n)!) };
-  await load(bundledLibrary(), "Daedalus library");
+  w.daedalus = { api, simulate, openClass, plot, timings, anim: () => anim, animData: () => animData, setSimView, togglePlot: (n: string) => togglePlot(n, summary!.vars.find((v) => v.name === n)!) };
+  await load(bundledLibrary(), "Daedalus library", await bundledResources());
   const msl = loadMsl();
   w.daedalus.msl = msl;
   if (hash && isMsl(hash)) {

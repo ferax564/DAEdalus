@@ -14,7 +14,7 @@
         <button data-mode="simulation">Simulation</button>
       </nav>
       <div class="tools">
-        <label class="file" title="Open .mo files">Open .mo<input id="open-files" type="file" multiple accept=".mo" /></label>
+        <label class="file" title="Open .mo files (and .stl/.obj shape files)">Open .mo<input id="open-files" type="file" multiple accept=".mo,.stl,.obj" /></label>
         <label class="file" title="Load a library folder">Library<input id="open-dir" type="file" webkitdirectory /></label>
         <span class="sep"></span>
         <button id="btn-check" title="Translate and check the model">Check</button>
@@ -62,7 +62,8 @@
         </div>
         <div id="plot-pane" class="pane hidden">
           <div class="tabs">
-            <span class="model-title">Plot</span>
+            <span class="model-title">Results</span>
+            <span class="seg" id="sim-views"><button data-sim="plot" class="active">Plot</button><button data-sim="anim" id="anim-tab" class="hidden" title="3-D animation of the MultiBody shapes">Animation</button></span>
             <button id="plot-new">New subplot</button>
             <button id="plot-clear">Clear</button>
             <label>x-axis <select id="plot-x"><option value="">time</option></select></label>
@@ -71,6 +72,7 @@
             <button id="export-mat">Export .mat</button>
           </div>
           <div id="plot" class="plot-host"></div>
+          <div id="anim" class="plot-host hidden"></div>
         </div>
       </section>
       <aside id="right">

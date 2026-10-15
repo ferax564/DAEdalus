@@ -76,6 +76,10 @@ package QuarterCar "Quarter-car ride model with a physical hydraulic damper (aft
     Daedalus.Blocks.Interfaces.RealInput z_road(unit="m") annotation (Placement(transformation(extent={{-20,-20},{20,20}}, rotation=90, origin={0,-120})));
     Units.Acceleration a_body = body.a "Vertical body acceleration (ride comfort)";
     Units.Force F_tyre = -tyre.f "Tyre load (road holding)";
+    parameter Real y_vis=0 "Lateral position in the 3-D animation" annotation (Dialog(tab="Animation"));
+    parameter Real visColor[3]={200, 40, 40} "Body colour in the 3-D animation" annotation (Dialog(tab="Animation"));
+    Daedalus.Visualizers.QuarterCar vis(y0=y_vis, color=visColor, R_tyre=0.3, z_road=road.s, z_wheel=wheel.s, z_body=body.s)
+      "3-D animation (draws only)";
   equation
     connect(z_road, road.s_ref);
     connect(road.flange, tyre.flange_a);
@@ -102,11 +106,12 @@ package QuarterCar "Quarter-car ride model with a physical hydraulic damper (aft
   model BumpComparison "Linear damper versus hydraulic damper with clean and aerated oil over a 50 mm bump"
     extends Daedalus.Icons.Example;
     RoadBump bump(h=0.05, L=0.5, v=10);
-    Corner linear(hydraulicDamper=false, wheel.s(start=0.3, fixed=true), body.s(start=0.6, fixed=true),
+    Daedalus.Visualizers.World world "Animation: z up";
+    Corner linear(y_vis=1.4, visColor={150, 155, 165}, hydraulicDamper=false, wheel.s(start=0.3, fixed=true), body.s(start=0.6, fixed=true),
       wheel.v(start=0, fixed=true), body.v(start=0, fixed=true));
-    Corner clean(x_air=0, wheel.s(start=0.3, fixed=true), body.s(start=0.6, fixed=true),
+    Corner clean(visColor={30, 90, 170}, x_air=0, wheel.s(start=0.3, fixed=true), body.s(start=0.6, fixed=true),
       wheel.v(start=0, fixed=true), body.v(start=0, fixed=true));
-    Corner aerated(x_air=0.02, wheel.s(start=0.3, fixed=true), body.s(start=0.6, fixed=true),
+    Corner aerated(y_vis=-1.4, x_air=0.02, wheel.s(start=0.3, fixed=true), body.s(start=0.6, fixed=true),
       wheel.v(start=0, fixed=true), body.v(start=0, fixed=true));
   equation
     connect(bump.y, linear.z_road);
