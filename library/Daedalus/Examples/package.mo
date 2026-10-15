@@ -14,5 +14,7 @@ were assumed. The aim is the same physics and the same kind of result plot, not 
 <li><b>VehicleEfficiency</b>: Claytex, <i>Sensitivity testing of vehicle efficiency using VeSyMA drive cycle</i>;
     Modelon, <i>Advancing your vehicle's energy-efficient design</i></li>
 </ul>
+<p><b>OptimalControl</b> holds plants with top-level inputs for optimal control, MPC and moving horizon
+estimation with CasADi (<code>daedalus export-casadi</code>, <code>python/daedalus_casadi</code>).</p>
 </html>"));
 end Examples;

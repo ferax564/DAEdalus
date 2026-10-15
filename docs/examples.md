@@ -277,6 +277,18 @@ only larger point errors are single samples at tyre lift-off and touchdown.
 In OpenModelica the full-car examples take 7 to 16 s of simulation time,
 against 1.1 to 2.0 s in DAEdalus (including the animation shapes).
 
+## Optimal control plants
+
+`Daedalus.Examples.OptimalControl` holds three plants whose control or unknown
+inputs are top-level `input` variables or free parameters. They are solved with
+CasADi from `python/examples/`; see [optimal-control.md](optimal-control.md).
+- **AileronServo**: the aileron actuator without its position loop. The
+  servo-valve command `u` is the input.
+- **ActiveSuspension**: a quarter car with a force actuator `F_act` and a soft
+  passive damper, over the same 50 mm bump.
+- **CoastDownTest**: the coast-down without the stop at 15 km/h. It is used to
+  estimate `body.Cd` and `body.crr`.
+
 ## Note on sources
 
 From the build environment, modelon.com and claytex.com returned HTTP 403.

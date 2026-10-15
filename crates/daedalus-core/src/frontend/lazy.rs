@@ -11,13 +11,18 @@
 //!
 //! Anything the scan cannot see shows up as a failed translation, and the caller then
 //! loads the rest with [`Library::load_all`].
+//!
+//! The browser has no file system: there the files are registered with their text
+//! ([`Library::add_lazy_text`]), and a light outline of each file (its classes with kind
+//! and description) stands in for the parsed classes in the package browser until a
+//! class is needed ([`Library::load_class`]).
 
-// The browser build registers no directories, so the closure code is unused there.
 #![cfg_attr(target_arch = "wasm32", allow(dead_code, unused_imports))]
 
 use super::Library;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// A library file known by path, not parsed yet.
 #[derive(Clone, Debug)]
@@ -26,12 +31,37 @@ pub struct LazyFile {
     /// Dotted class path the file defines (the package for a `package.mo`).
     pub class: String,
     pub loaded: bool,
+    /// The file's text when it was registered from memory (the browser).
+    pub text: Option<Arc<str>>,
+    /// Outline of the file's classes (files registered from memory only).
+    pub outline: Vec<OClass>,
+}
+
+impl LazyFile {
+    fn read(&self) -> Option<Arc<str>> {
+        match &self.text {
+            Some(t) => Some(t.clone()),
+            None => std::fs::read_to_string(&self.path).ok().map(Arc::from),
+        }
+    }
+}
+
+/// One class of a file's outline: what the package browser shows before parsing.
+#[derive(Clone, Debug, Default)]
+pub struct OClass {
+    /// Path below the file's class ("" for the file's class itself).
+    pub rel: String,
+    pub kind: &'static str,
+    pub partial: bool,
+    pub description: String,
+    /// Has an `experiment` annotation.
+    pub experiment: bool,
 }
 
 /// One class found by the token scan, with what its own body (not its nested classes)
 /// mentions.
 #[derive(Default, Debug)]
-struct SClass {
+pub(super) struct SClass {
     /// Path below the file's class ("" for the file's class itself).
     rel: String,
     children: Vec<usize>,
@@ -56,10 +86,12 @@ enum Tok {
     LParen,
     RParen,
     Comma,
+    /// A string literal's raw text (only when asked for).
+    Str(String),
     Other,
 }
 
-fn tokens(text: &str) -> Vec<Tok> {
+fn tokens(text: &str, strings: bool) -> Vec<Tok> {
     let b = text.as_bytes();
     let n = b.len();
     let mut i = 0;
@@ -99,11 +131,17 @@ fn tokens(text: &str) -> Vec<Tok> {
             i += 2;
         } else if c == b'"' {
             i += 1;
+            let s = i;
             while i < n && b[i] != b'"' {
                 if b[i] == b'\\' {
                     i += 1;
                 }
                 i += 1;
+            }
+            if strings {
+                toks.push(Tok::Str(
+                    text.get(s.min(n)..i.min(n)).unwrap_or("").to_string(),
+                ));
             }
             i += 1;
         } else if starts_ident(c) {
@@ -163,7 +201,7 @@ const PREFIX_KW: [&str; 6] = [
 
 /// Split a file into its classes. The first top-level class is the file's class (rel "").
 fn scan(text: &str) -> Vec<SClass> {
-    let toks = tokens(text);
+    let toks = tokens(text, false);
     let mut classes: Vec<SClass> = vec![SClass::default()];
     // Stack of open long class definitions (index, name); the root entry holds whatever
     // lies outside every class (the `within` clause).
@@ -294,16 +332,193 @@ fn scan(text: &str) -> Vec<SClass> {
     classes
 }
 
+/// The classes a file defines at element level, with kind, `partial`, description and
+/// whether they carry an `experiment` annotation; parents come before their children.
+pub fn outline(text: &str) -> Vec<OClass> {
+    let toks = tokens(text, true);
+    let mut out: Vec<OClass> = Vec::new();
+    // Open long class definitions: (index, name).
+    let mut stack: Vec<(usize, String)> = Vec::new();
+    let mut top_seen = false;
+    let mut depth = 0i32;
+    let name_at = |j: usize| match toks.get(j) {
+        Some(Tok::Name(s)) => Some(s.as_str()),
+        _ => None,
+    };
+    let unescape = |s: &str| s.replace("\\\"", "\"").replace("\\\\", "\\");
+    let mut k = 0;
+    while k < toks.len() {
+        match &toks[k] {
+            Tok::LParen => depth += 1,
+            Tok::RParen => depth -= 1,
+            Tok::Name(w) if depth == 0 && w == "end" => {
+                if let (Some(x), Some(top)) = (name_at(k + 1), stack.last())
+                    && x == top.1
+                {
+                    stack.pop();
+                    k += 2;
+                    continue;
+                }
+            }
+            Tok::Name(w) if depth == 1 && w == "experiment" => {
+                if toks.get(k + 1) == Some(&Tok::LParen)
+                    && let Some(&(i, _)) = stack.last()
+                {
+                    out[i].experiment = true;
+                }
+            }
+            Tok::Name(w) if depth == 0 && CLASS_KW.contains(&w.as_str()) => {
+                let mut j = k + 1;
+                let kw = |x: &str| {
+                    CLASS_KW
+                        .iter()
+                        .copied()
+                        .find(|c| *c == x)
+                        .unwrap_or("class")
+                };
+                let mut kind: &'static str = kw(w);
+                while let Some(x) = name_at(j) {
+                    if CLASS_KW.contains(&x) {
+                        kind = kw(x);
+                        j += 1;
+                    } else if PREFIX_KW.contains(&x) {
+                        j += 1;
+                    } else {
+                        break;
+                    }
+                }
+                let mut cname = name_at(j);
+                if cname == Some("extends") {
+                    j += 1;
+                    cname = name_at(j);
+                }
+                let call = toks.get(j + 1) == Some(&Tok::LParen);
+                let Some(cn) = cname.filter(|c| !c.contains('.') && !call) else {
+                    k += 1;
+                    continue;
+                };
+                // `partial`/`encapsulated` and friends come before the keyword.
+                let mut b = k;
+                let mut partial = false;
+                while b > 0 {
+                    match name_at(b - 1) {
+                        Some(x) if PREFIX_KW.contains(&x) => {
+                            partial |= x == "partial";
+                            b -= 1;
+                        }
+                        _ => break,
+                    }
+                }
+                let rel = match stack.last() {
+                    None if !top_seen => String::new(),
+                    None => cn.to_string(),
+                    Some((p, _)) if out[*p].rel.is_empty() => cn.to_string(),
+                    Some((p, _)) => format!("{}.{cn}", out[*p].rel),
+                };
+                if stack.is_empty() && top_seen {
+                    // A second top-level class in one file is not a library class.
+                    k = j + 1;
+                    continue;
+                }
+                top_seen = true;
+                out.push(OClass {
+                    rel,
+                    kind,
+                    partial,
+                    ..Default::default()
+                });
+                let idx = out.len() - 1;
+                if toks.get(j + 1) == Some(&Tok::Eq) {
+                    // Short definition: runs to its `;`; the description is the last
+                    // string at its own level, before any annotation.
+                    let mut d = 0i32;
+                    let mut m = j + 2;
+                    let mut desc: Option<&str> = None;
+                    let mut ann = false;
+                    while m < toks.len() {
+                        match &toks[m] {
+                            Tok::LParen => d += 1,
+                            Tok::RParen => d -= 1,
+                            Tok::Semi if d <= 0 => break,
+                            Tok::Str(s) if d == 0 && !ann => desc = Some(s),
+                            Tok::Name(x) if d == 0 && x == "annotation" => ann = true,
+                            Tok::Name(x) if d == 1 && ann && x == "experiment" => {
+                                out[idx].experiment = true
+                            }
+                            _ => {}
+                        }
+                        m += 1;
+                    }
+                    if let Some(s) = desc {
+                        out[idx].description = unescape(s);
+                    }
+                    k = m + 1;
+                } else {
+                    let mut m = j + 1;
+                    let mut desc = String::new();
+                    while let Some(Tok::Str(s)) = toks.get(m) {
+                        desc.push_str(s);
+                        m += 1;
+                        // `"a" + "b"`
+                        if let (Some(Tok::Other), Some(Tok::Str(_))) =
+                            (toks.get(m), toks.get(m + 1))
+                        {
+                            m += 1;
+                        }
+                    }
+                    out[idx].description = unescape(&desc);
+                    stack.push((idx, cn.to_string()));
+                    k = m;
+                }
+                continue;
+            }
+            _ => {}
+        }
+        k += 1;
+    }
+    out
+}
+
+/// The dotted class a library file defines, from its path relative to the directory
+/// holding the library's top package (`Modelica/Blocks/package.mo` is
+/// `Modelica.Blocks`, `Complex.mo` is `Complex`).
+pub fn class_for_path(rel: &str) -> String {
+    let rel = rel.strip_suffix(".mo").unwrap_or(rel);
+    let mut parts: Vec<&str> = rel.split('/').filter(|p| !p.is_empty()).collect();
+    if parts.len() > 1 && parts.last() == Some(&"package") {
+        parts.pop();
+    }
+    parts.join(".")
+}
+
 /// Where a class lives: a file and one of the classes its scan found.
 type Loc = (usize, usize);
 
-/// State of one closure computation.
-struct Closure<'a> {
-    lib: &'a Library,
+/// Scans of registered files, kept across closure computations (the browser computes one
+/// for every class it opens).
+#[derive(Default)]
+pub(super) struct ScanCache {
     scans: FxHashMap<usize, Vec<SClass>>,
-    texts: FxHashMap<usize, String>,
     /// Every class of the scanned files, by full path.
     classes: FxHashMap<String, Loc>,
+}
+
+impl ScanCache {
+    /// Forget a file whose text changed.
+    fn forget(&mut self, f: usize) {
+        if self.scans.remove(&f).is_some() {
+            self.classes.retain(|_, l| l.0 != f);
+        }
+    }
+}
+
+/// State of one closure computation.
+struct Closure<'a> {
+    lazy: &'a [LazyFile],
+    index: &'a FxHashMap<String, usize>,
+    cache: &'a mut ScanCache,
+    /// Texts read for this computation, by file.
+    texts: FxHashMap<usize, Arc<str>>,
     /// (class, full) already queued; a class needed in full is also marked for its body.
     done: FxHashSet<(Loc, bool)>,
     queue: Vec<(Loc, bool)>,
@@ -311,42 +526,42 @@ struct Closure<'a> {
 
 impl<'a> Closure<'a> {
     fn path(&self, (f, c): Loc) -> String {
-        let rel = &self.scans[&f][c].rel;
+        let rel = &self.cache.scans[&f][c].rel;
         if rel.is_empty() {
-            self.lib.lazy[f].class.clone()
+            self.lazy[f].class.clone()
         } else {
-            format!("{}.{rel}", self.lib.lazy[f].class)
+            format!("{}.{rel}", self.lazy[f].class)
         }
     }
 
     fn scan_file(&mut self, f: usize) -> bool {
-        if self.scans.contains_key(&f) {
+        if self.cache.scans.contains_key(&f) {
             return true;
         }
-        let Ok(text) = std::fs::read_to_string(&self.lib.lazy[f].path) else {
+        let Some(text) = self.lazy[f].read() else {
             return false;
         };
         let sc = scan(&text);
-        let base = self.lib.lazy[f].class.clone();
+        let base = self.lazy[f].class.clone();
         for (i, c) in sc.iter().enumerate() {
             let p = if c.rel.is_empty() {
                 base.clone()
             } else {
                 format!("{base}.{}", c.rel)
             };
-            self.classes.entry(p).or_insert((f, i));
+            self.cache.classes.entry(p).or_insert((f, i));
         }
-        self.scans.insert(f, sc);
+        self.cache.scans.insert(f, sc);
         self.texts.insert(f, text);
         true
     }
 
     /// The class at a full path, scanning the file that would hold it.
     fn class_at(&mut self, p: &str) -> Option<Loc> {
-        if let Some(&l) = self.classes.get(p) {
+        if let Some(&l) = self.cache.classes.get(p) {
             return Some(l);
         }
-        let &f = self.lib.lazy_index.get(p)?;
+        let &f = self.index.get(p)?;
         if !self.scan_file(f) {
             return None;
         }
@@ -382,7 +597,7 @@ impl<'a> Closure<'a> {
             }
             if let Some(sl) = self.class_at(&s) {
                 let (f, c) = sl;
-                let cls = &self.scans[&f][c];
+                let cls = &self.cache.scans[&f][c];
                 if let Some((_, t)) = cls.aliases.iter().find(|(a, _)| a == first) {
                     let t = t.clone();
                     head = self.class_at(&t);
@@ -451,7 +666,7 @@ impl<'a> Closure<'a> {
             }
             // `Medium.X` with `package Medium = Lib.Water`: continue in Lib.Water.
             let (f, c) = *cur;
-            let short = self.scans[&f][c].short.clone();
+            let short = self.cache.scans[&f][c].short.clone();
             if let Some(t) = short
                 && hops < 8
                 && let Some(mut l) = self.resolve(*cur, &t, hops + 1)
@@ -480,7 +695,7 @@ impl<'a> Closure<'a> {
             if !full && self.done.contains(&(l, true)) {
                 continue;
             }
-            let cls = &self.scans[&f][c];
+            let cls = &self.cache.scans[&f][c];
             // Base classes and abbreviated classes are needed whole; a package named
             // otherwise (an import, a `uses` annotation) only for its own body.
             let mut whole: Vec<String> = cls.extends.clone();
@@ -496,7 +711,7 @@ impl<'a> Closure<'a> {
             }
             for n in &names {
                 if let Some(r) = self.resolve(l, n, 0) {
-                    let pkg = self.scans[&r.0][r.1].package;
+                    let pkg = self.cache.scans[&r.0][r.1].package;
                     self.need(r, !pkg);
                 }
             }
@@ -505,11 +720,11 @@ impl<'a> Closure<'a> {
                     self.need((f, ch), true);
                 }
                 // A package stored as a directory: the classes in its own files.
-                if c == 0 && self.lib.lazy[f].path.ends_with("package.mo") {
+                if c == 0 && self.lazy[f].path.ends_with("package.mo") {
                     let pre = format!("{p}.");
-                    let subs: Vec<usize> = (0..self.lib.lazy.len())
+                    let subs: Vec<usize> = (0..self.lazy.len())
                         .filter(|&i| {
-                            let s = &self.lib.lazy[i].class;
+                            let s = &self.lazy[i].class;
                             s.starts_with(&pre) && !s[pre.len()..].contains('.')
                         })
                         .collect();
@@ -563,6 +778,8 @@ impl Library {
                         path: p,
                         class: c,
                         loaded: false,
+                        text: None,
+                        outline: Vec::new(),
                     });
                     count += 1;
                 }
@@ -571,38 +788,139 @@ impl Library {
         Ok(count)
     }
 
+    /// Register one library file from memory without parsing it: `uri` names the document
+    /// once it is parsed and `class` is the class the file defines (see
+    /// [`class_for_path`]). The file is outlined for browsing ([`Library::lazy_files`]).
+    /// Registering a file again replaces its text.
+    pub fn add_lazy_text(&mut self, uri: &str, class: &str, text: &str) {
+        let outline = outline(text);
+        if let Some(&i) = self.lazy_index.get(class) {
+            let f = &mut self.lazy[i];
+            f.text = Some(Arc::from(text));
+            f.outline = outline;
+            f.loaded = false;
+            self.lazy_cache.forget(i);
+            self.docs.retain(|d| d.uri != uri);
+            return;
+        }
+        self.lazy_index.insert(class.to_string(), self.lazy.len());
+        self.lazy.push(LazyFile {
+            path: PathBuf::from(uri),
+            class: class.to_string(),
+            loaded: false,
+            text: Some(Arc::from(text)),
+            outline,
+        });
+    }
+
+    /// Record the `package.order` file of a registered package.
+    pub fn add_package_order(&mut self, class: &str, text: &str) {
+        let names = text
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(String::from)
+            .collect();
+        self.package_orders.insert(class.to_string(), names);
+    }
+
+    /// The registered file a document came from.
+    pub(super) fn lazy_file_of(&self, uri: &str) -> Option<usize> {
+        self.lazy.iter().position(|f| f.path.as_os_str() == uri)
+    }
+
+    /// A document's text changed: keep a registered file in step, so browsing and
+    /// closures see the edit.
+    pub(super) fn lazy_edited(&mut self, uri: &str, text: &str) {
+        if let Some(i) = self.lazy_file_of(uri) {
+            let f = &mut self.lazy[i];
+            if f.text.is_some() {
+                f.outline = outline(text);
+                f.text = Some(Arc::from(text));
+            }
+            f.loaded = true;
+            self.lazy_cache.forget(i);
+        }
+    }
+
     /// Whether registered files are still unparsed.
     pub fn has_pending(&self) -> bool {
         self.lazy.iter().any(|f| !f.loaded)
     }
 
+    /// Text of a registered file by document uri, parsed or not.
+    pub fn lazy_text(&self, uri: &str) -> Option<Arc<str>> {
+        self.lazy_file_of(uri).and_then(|i| self.lazy[i].read())
+    }
+
     /// Parse the registered files `model` can need (see the module documentation).
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn load_for(&mut self, model: &str) {
+        self.load_closure(model, true, true);
+    }
+
+    /// Parse the registered files needed to inspect or translate one class: all of it
+    /// when `full`, else its own body (a package without its members). Names in the
+    /// directly loaded documents are roots only when the class is not a registered one.
+    /// Returns the number of files parsed.
+    pub fn load_class(&mut self, path: &str, full: bool) -> usize {
+        self.load_closure(path, full, false)
+    }
+
+    /// Whether a registered class is a package (by the scan), if it is a registered class.
+    pub fn lazy_is_package(&mut self, path: &str) -> Option<bool> {
         let mut cl = Closure {
-            lib: self,
-            scans: FxHashMap::default(),
+            lazy: &self.lazy,
+            index: &self.lazy_index,
+            cache: &mut self.lazy_cache,
             texts: FxHashMap::default(),
-            classes: FxHashMap::default(),
             done: FxHashSet::default(),
             queue: Vec::new(),
         };
-        if let Some(l) = cl.walk_from_root(model, "", 0) {
-            cl.need(l, true);
+        let l = cl.walk_from_root(path, "", 0)?;
+        // The walk stops at the deepest class it reaches; only an exact hit counts.
+        (cl.path(l) == path).then(|| cl.cache.scans[&l.0][l.1].package)
+    }
+
+    fn load_closure(&mut self, model: &str, full: bool, always_doc_roots: bool) -> usize {
+        let lazy_docs: FxHashSet<&str> = self
+            .lazy
+            .iter()
+            .filter(|f| f.loaded)
+            .filter_map(|f| f.path.to_str())
+            .collect();
+        let mut cl = Closure {
+            lazy: &self.lazy,
+            index: &self.lazy_index,
+            cache: &mut self.lazy_cache,
+            texts: FxHashMap::default(),
+            done: FxHashSet::default(),
+            queue: Vec::new(),
+        };
+        let found = cl.walk_from_root(model, "", 0);
+        if let Some(l) = found {
+            // A class the scan cannot see (inherited, or not there at all) must not pull
+            // in the whole package the walk stopped at: only that package's own body.
+            let exact = always_doc_roots || cl.path(l) == model;
+            cl.need(l, full && exact);
         }
-        // Names in documents loaded directly (the user's own models) are roots too.
-        for d in &self.docs {
-            for sc in scan(&d.text) {
-                for n in sc
-                    .names
-                    .iter()
-                    .chain(&sc.extends)
-                    .chain(sc.short.iter())
-                    .chain(sc.aliases.iter().map(|(_, t)| t))
-                {
-                    if let Some(l) = cl.walk_from_root(n, "", 0) {
-                        let pkg = cl.scans[&l.0][l.1].package;
-                        cl.need(l, !pkg);
+        if always_doc_roots || found.is_none() {
+            // Names in documents loaded directly (the user's own models) are roots too.
+            for d in &self.docs {
+                if lazy_docs.contains(d.uri.as_str()) {
+                    continue;
+                }
+                for sc in scan(&d.text) {
+                    for n in sc
+                        .names
+                        .iter()
+                        .chain(&sc.extends)
+                        .chain(sc.short.iter())
+                        .chain(sc.aliases.iter().map(|(_, t)| t))
+                    {
+                        if let Some(l) = cl.walk_from_root(n, "", 0) {
+                            let pkg = cl.cache.scans[&l.0][l.1].package;
+                            cl.need(l, !pkg);
+                        }
                     }
                 }
             }
@@ -626,25 +944,40 @@ impl Library {
             }
         }
         let mut texts = std::mem::take(&mut cl.texts);
-        let files: Vec<(usize, String)> = used
+        drop(lazy_docs);
+        let files: Vec<(usize, Arc<str>)> = used
             .into_iter()
-            .filter_map(|f| Some((f, texts.remove(&f)?)))
+            .filter(|&f| !self.lazy[f].loaded)
+            .filter_map(|f| Some((f, texts.remove(&f).or_else(|| self.lazy[f].read())?)))
             .collect();
+        let n = files.len();
         self.parse_lazy(files);
+        n
     }
 
     /// Parse every registered file not parsed yet.
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn load_all(&mut self) {
-        let files: Vec<(usize, String)> = (0..self.lazy.len())
+        let files: Vec<(usize, Arc<str>)> = (0..self.lazy.len())
             .filter(|&i| !self.lazy[i].loaded)
-            .filter_map(|i| Some((i, std::fs::read_to_string(&self.lazy[i].path).ok()?)))
+            .filter_map(|i| Some((i, self.lazy[i].read()?)))
             .collect();
         self.parse_lazy(files);
     }
 
+    #[cfg(target_arch = "wasm32")]
+    fn parse_lazy(&mut self, mut files: Vec<(usize, Arc<str>)>) {
+        files.retain(|(i, _)| !self.lazy[*i].loaded);
+        files.sort_by_key(|(i, _)| *i);
+        for (i, text) in files {
+            let uri = self.lazy[i].path.to_string_lossy().to_string();
+            let d = super::parse_document(&uri, &text);
+            self.lazy[i].loaded = true;
+            self.insert(d);
+        }
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
-    fn parse_lazy(&mut self, mut files: Vec<(usize, String)>) {
+    fn parse_lazy(&mut self, mut files: Vec<(usize, Arc<str>)>) {
         files.retain(|(i, _)| !self.lazy[*i].loaded);
         files.sort_by_key(|(i, _)| *i);
         let threads = std::thread::available_parallelism()
@@ -759,7 +1092,43 @@ pub(super) mod cache {
 
 #[cfg(test)]
 mod tests {
-    use super::scan;
+    use super::{class_for_path, outline, scan};
+
+    #[test]
+    fn outline_lists_classes_with_kind_and_description() {
+        let o = outline(
+            "within Modelica; package Blocks \"Library of \\\"basic\\\" blocks\"\n\
+             extends Modelica.Icons.Package;\n\
+             encapsulated partial model Base \"base\" end Base;\n\
+             model Ex \"An example\" Real x(start = 1) \"state\"; Base b(redeclare model M = Ex);\n\
+             equation der(x) = -x; if x > 0 then end if;\n\
+             annotation(experiment(StopTime = 1)); end Ex;\n\
+             operator record Rec \"r\" encapsulated operator function f \"f\" end f;\n\
+             Real y = g(function h(x = 1)); end Rec;\n\
+             type Angle = Real(final unit = \"rad\") \"An angle\" annotation(Evaluate = true);\n\
+             annotation(Documentation(info = \"<html>model X</html>\")); end Blocks;",
+        );
+        let rels: Vec<&str> = o.iter().map(|c| c.rel.as_str()).collect();
+        assert_eq!(rels, vec!["", "Base", "Ex", "Rec", "Rec.f", "Angle"]);
+        assert_eq!(o[0].kind, "package");
+        assert_eq!(o[0].description, "Library of \"basic\" blocks");
+        assert!(o[1].partial && o[1].kind == "model");
+        assert!(o[2].experiment && !o[0].experiment);
+        assert_eq!(o[2].description, "An example");
+        assert_eq!(o[3].kind, "record");
+        assert_eq!(o[4].kind, "function");
+        assert_eq!(o[5].kind, "type");
+        assert_eq!(o[5].description, "An angle");
+        assert_eq!(
+            class_for_path("Modelica/Blocks/package.mo"),
+            "Modelica.Blocks"
+        );
+        assert_eq!(
+            class_for_path("Modelica/Blocks/Examples.mo"),
+            "Modelica.Blocks.Examples"
+        );
+        assert_eq!(class_for_path("Complex.mo"), "Complex");
+    }
 
     #[test]
     fn scan_splits_classes_and_finds_names() {

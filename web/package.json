@@ -5,7 +5,8 @@
   "type": "module",
   "license": "Apache-2.0",
   "scripts": {
-    "wasm": "cargo build -p daedalus-wasm --profile release-wasm --target wasm32-unknown-unknown --manifest-path ../Cargo.toml && wasm-bindgen --target web --out-dir src/wasm ../target/wasm32-unknown-unknown/release-wasm/daedalus_wasm.wasm",
+    "wasm": "cargo build -p daedalus-wasm --profile release-wasm --target wasm32-unknown-unknown --manifest-path ../Cargo.toml && wasm-bindgen --target web --out-dir src/wasm ${CARGO_TARGET_DIR:-../target}/wasm32-unknown-unknown/release-wasm/daedalus_wasm.wasm",
+    "msl": "node scripts/fetch-msl.mjs",
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",

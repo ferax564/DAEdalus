@@ -155,3 +155,40 @@ fn coast_down_and_road_load_agree() {
     let km = r.final_value("physical.distance_km").unwrap();
     assert!((km - 11.99).abs() < 0.05, "{km} km");
 }
+
+#[test]
+fn casadi_export_of_aileron_servo() {
+    let flat = library()
+        .flatten("Daedalus.Examples.OptimalControl.AileronServo")
+        .unwrap();
+    let sys = daedalus_core::backend::compile(flat, &Default::default()).unwrap();
+    let doc = daedalus_core::casadi::export(sys, &SimOptions::default()).unwrap();
+    assert_eq!(doc["format"], "daedalus-casadi");
+    assert_eq!(doc["initialized"], true);
+    let len = |k: &str| doc[k].as_array().unwrap().len();
+    assert_eq!(len("states"), 6);
+    assert_eq!(len("derivatives"), 6);
+    assert_eq!(len("inputs"), 1);
+    assert_eq!(len("algebraics"), len("residuals"));
+    let vars = doc["variables"].as_array().unwrap();
+    let u = &vars[doc["inputs"][0].as_u64().unwrap() as usize];
+    assert_eq!(u["name"], "u");
+    // Every node refers only to earlier nodes (the loader relies on it for children).
+    for (i, n) in doc["nodes"].as_array().unwrap().iter().enumerate() {
+        let n = n.as_array().unwrap();
+        let op = n[0].as_str().unwrap();
+        let children: &[serde_json::Value] = match op {
+            "const" | "time" | "var" | "pre" => &[],
+            "f1" => &n[2..],
+            "f2" | "cmp" => &n[2..],
+            "interp" | "interp_der" => &n[3..],
+            _ => &n[1..],
+        };
+        for c in children {
+            assert!(
+                (c.as_u64().unwrap() as usize) < i,
+                "node {i} ({op}) refers forward"
+            );
+        }
+    }
+}
