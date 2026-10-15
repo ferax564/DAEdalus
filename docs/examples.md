@@ -90,11 +90,11 @@ Assumed values:
 <figure><img src="img/examples/tc_stall_plot.webp" alt="Engine speed settles at the 2160 rpm stall speed; torque ratio 2.1"></figure>
 </div>
 
-[Open TorqueConverter.StallTest](/#Daedalus.Examples.TorqueConverter.StallTest)
+[Open TorqueConverter.StallTest](https://daedalus.apps.ezkeel.com/#Daedalus.Examples.TorqueConverter.StallTest)
 
 ![Launch: engine speed and vehicle speed with the static and the dynamic converter](img/examples/tc_launch_plot.webp)
 
-[Open TorqueConverter.Launch](/#Daedalus.Examples.TorqueConverter.Launch)
+[Open TorqueConverter.Launch](https://daedalus.apps.ezkeel.com/#Daedalus.Examples.TorqueConverter.Launch)
 
 ### Quarter car with a physical hydraulic damper
 
@@ -125,7 +125,7 @@ Assumed values:
 <figure><img src="img/examples/quarter_car_plot.webp" alt="Body travel of the three corners, and damper force against damper velocity for clean and aerated oil"></figure>
 </div>
 
-[Open QuarterCar.BumpComparison](/#Daedalus.Examples.QuarterCar.BumpComparison)
+[Open QuarterCar.BumpComparison](https://daedalus.apps.ezkeel.com/#Daedalus.Examples.QuarterCar.BumpComparison)
 
 ### Vehicle efficiency sensitivity over NEDC
 
@@ -155,7 +155,7 @@ Assumed values:
 <figure><img src="img/examples/nedc_plot.webp" alt="Consumption in Wh/km of the four cases over 11 NEDC cycles"></figure>
 </div>
 
-[Open VehicleEfficiency.NEDCSensitivity](/#Daedalus.Examples.VehicleEfficiency.NEDCSensitivity)
+[Open VehicleEfficiency.NEDCSensitivity](https://daedalus.apps.ezkeel.com/#Daedalus.Examples.VehicleEfficiency.NEDCSensitivity)
 
 ### Coast-down and road-load coefficients
 
@@ -180,11 +180,11 @@ NREL FASTSim.
 <figure><img src="img/examples/coastdown_plot.webp" alt="Speed and deceleration force during the coast-down"></figure>
 </div>
 
-[Open VehicleEfficiency.CoastDown](/#Daedalus.Examples.VehicleEfficiency.CoastDown)
+[Open VehicleEfficiency.CoastDown](https://daedalus.apps.ezkeel.com/#Daedalus.Examples.VehicleEfficiency.CoastDown)
 
 ![UDDSEnergy: the UDDS speed trace, and the energy difference between the physical and the fitted car, which settles near zero](img/examples/udds_plot.webp)
 
-[Open VehicleEfficiency.UDDSEnergy](/#Daedalus.Examples.VehicleEfficiency.UDDSEnergy)
+[Open VehicleEfficiency.UDDSEnergy](https://daedalus.apps.ezkeel.com/#Daedalus.Examples.VehicleEfficiency.UDDSEnergy)
 
 ## Hydraulic and aerospace
 
@@ -220,7 +220,7 @@ Assumed values:
 <figure><img src="img/examples/landing_gear_plot.webp" alt="Load factor of the three drops, and strut force against stroke"></figure>
 </div>
 
-[Open LandingGear.SinkRates](/#Daedalus.Examples.LandingGear.SinkRates)
+[Open LandingGear.SinkRates](https://daedalus.apps.ezkeel.com/#Daedalus.Examples.LandingGear.SinkRates)
 
 ### Aileron actuator
 
@@ -251,11 +251,11 @@ Assumed values:
 <figure><img src="img/examples/aileron_position_plot.webp" alt="Aileron deflection following the steps and the sine, and the position error"></figure>
 </div>
 
-[Open AileronActuator.PositionControl](/#Daedalus.Examples.AileronActuator.PositionControl)
+[Open AileronActuator.PositionControl](https://daedalus.apps.ezkeel.com/#Daedalus.Examples.AileronActuator.PositionControl)
 
 ![SpeedVsLoad: rod speed against the ideal valve law as the opposing force ramps up](img/examples/aileron_speed_plot.webp)
 
-[Open AileronActuator.SpeedVsLoad](/#Daedalus.Examples.AileronActuator.SpeedVsLoad)
+[Open AileronActuator.SpeedVsLoad](https://daedalus.apps.ezkeel.com/#Daedalus.Examples.AileronActuator.SpeedVsLoad)
 
 ## Multibody suspension and full vehicle
 

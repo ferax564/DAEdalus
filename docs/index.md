@@ -6,7 +6,7 @@ workbench, the Modelica Standard Library 4.1.0, 3-D animation, FMI export and Ca
 optimal control.</p>
 
 <div class="cta">
-  <a class="btn primary" href="/#Daedalus.Examples.TorqueConverter.Launch">Open the workbench</a>
+  <a class="btn primary" href="https://daedalus.apps.ezkeel.com/#Daedalus.Examples.TorqueConverter.Launch">Open the workbench</a>
   <a class="btn" href="getting-started.md">Get started</a>
   <a class="btn" href="whats-new.md">What's new</a>
 </div>

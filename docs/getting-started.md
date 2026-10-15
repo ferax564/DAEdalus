@@ -6,7 +6,7 @@ including the workbench on your own machine.
 
 ## 1. The live workbench
 
-Open [daedalus.apps.ezkeel.com](/#Daedalus.Examples.TorqueConverter.StallTest). The page
+Open [daedalus.apps.ezkeel.com](https://daedalus.apps.ezkeel.com/#Daedalus.Examples.TorqueConverter.StallTest). The page
 loads the bundled `Daedalus` library first, then the Modelica Standard Library 4.1.0 in the
 background (about 2.6 MB, unpacked in the browser).
 
@@ -25,7 +25,7 @@ background (about 2.6 MB, unpacked in the browser).
 ![After Simulate: engine speed rises to the 2160 rpm stall speed that the K-factor predicts](img/examples/tc_stall_plot.webp)
 
 Every class has its own address: the URL ends in `#` and the class name, so a link such as
-[`/#Modelica.Electrical.Analog.Examples.ChuaCircuit`](/#Modelica.Electrical.Analog.Examples.ChuaCircuit)
+[`/#Modelica.Electrical.Analog.Examples.ChuaCircuit`](https://daedalus.apps.ezkeel.com/#Modelica.Electrical.Analog.Examples.ChuaCircuit)
 opens that model directly, and the browser's Back and Forward buttons (or Alt+← and Alt+→)
 walk through the classes you opened.
 

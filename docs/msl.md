@@ -53,7 +53,7 @@ of friction events, stuck and sliding phases.
 <figure><img src="img/msl/coupled_clutches_plot.webp" alt="Speeds of the four inertias"></figure>
 </div>
 
-[Open Modelica.Mechanics.Rotational.Examples.CoupledClutches](/#Modelica.Mechanics.Rotational.Examples.CoupledClutches)
+[Open Modelica.Mechanics.Rotational.Examples.CoupledClutches](https://daedalus.apps.ezkeel.com/#Modelica.Mechanics.Rotational.Examples.CoupledClutches)
 
 ### Analog electronics: ChuaCircuit
 
@@ -65,7 +65,7 @@ scroll attractor.
 <figure><img src="img/msl/chua_plot.webp" alt="Chua attractor"></figure>
 </div>
 
-[Open Modelica.Electrical.Analog.Examples.ChuaCircuit](/#Modelica.Electrical.Analog.Examples.ChuaCircuit)
+[Open Modelica.Electrical.Analog.Examples.ChuaCircuit](https://daedalus.apps.ezkeel.com/#Modelica.Electrical.Analog.Examples.ChuaCircuit)
 
 ### Control: PID_Controller
 
@@ -77,7 +77,7 @@ a load step hits it.
 <figure><img src="img/msl/pid_plot.webp" alt="Speeds and controller output"></figure>
 </div>
 
-[Open Modelica.Blocks.Examples.PID_Controller](/#Modelica.Blocks.Examples.PID_Controller)
+[Open Modelica.Blocks.Examples.PID_Controller](https://daedalus.apps.ezkeel.com/#Modelica.Blocks.Examples.PID_Controller)
 
 ### Heat transfer: TwoMasses
 
@@ -88,7 +88,7 @@ Two masses at different temperatures that equalize through a thermal conductor.
 <figure><img src="img/msl/heat_plot.webp" alt="Temperatures of the two masses"></figure>
 </div>
 
-[Open Modelica.Thermal.HeatTransfer.Examples.TwoMasses](/#Modelica.Thermal.HeatTransfer.Examples.TwoMasses)
+[Open Modelica.Thermal.HeatTransfer.Examples.TwoMasses](https://daedalus.apps.ezkeel.com/#Modelica.Thermal.HeatTransfer.Examples.TwoMasses)
 
 ### MultiBody: DoublePendulum
 
@@ -99,7 +99,7 @@ Two bodies on revolute joints, with the 3-D animation that every MultiBody resul
 <figure><img src="img/msl/double_pendulum_anim.webp" alt="DoublePendulum animation"></figure>
 </div>
 
-[Open Modelica.Mechanics.MultiBody.Examples.Elementary.DoublePendulum](/#Modelica.Mechanics.MultiBody.Examples.Elementary.DoublePendulum)
+[Open Modelica.Mechanics.MultiBody.Examples.Elementary.DoublePendulum](https://daedalus.apps.ezkeel.com/#Modelica.Mechanics.MultiBody.Examples.Elementary.DoublePendulum)
 
 For full vehicle models built on MultiBody, see [Multibody vehicles](multibody.md).
 

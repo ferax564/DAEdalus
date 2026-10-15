@@ -64,7 +64,7 @@ Any MSL MultiBody example animates too:
 <figure><img src="img/msl/double_pendulum_plot.webp" alt="Double pendulum joint angles"></figure>
 </div>
 
-[Open Modelica.Mechanics.MultiBody.Examples.Elementary.DoublePendulum](/#Modelica.Mechanics.MultiBody.Examples.Elementary.DoublePendulum)
+[Open Modelica.Mechanics.MultiBody.Examples.Elementary.DoublePendulum](https://daedalus.apps.ezkeel.com/#Modelica.Mechanics.MultiBody.Examples.Elementary.DoublePendulum)
 
 ## Animating your own model
 

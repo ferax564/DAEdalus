@@ -5,7 +5,7 @@ browser. The compiler and solvers are the same Rust code as the command line, co
 WebAssembly and run in a Web Worker, so the page stays responsive while a model
 translates or simulates, and models never leave your machine.
 
-[Open the workbench](/#Daedalus.Examples.TorqueConverter.StallTest)
+[Open the workbench](https://daedalus.apps.ezkeel.com/#Daedalus.Examples.TorqueConverter.StallTest)
 
 ## Layout
 

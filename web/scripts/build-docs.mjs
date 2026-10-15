@@ -16,6 +16,7 @@ const docsDir = path.resolve(process.argv[2] ?? path.join(here, "../../docs"));
 const outDir = path.resolve(process.argv[3] ?? path.join(here, "../dist/docs"));
 const REPO = "https://github.com/ferax564/DAEdalus/blob/main/";
 const APP = "../";
+const LIVE = "https://daedalus.apps.ezkeel.com/";
 
 // The sidebar, in reading order. Pages not listed here are not published.
 const NAV = [
@@ -57,8 +58,10 @@ const assets = new Set();
 
 /** Rewrites a link or asset reference found in `page`. */
 function rewrite(href, page, kind) {
+  // Links into the live workbench stay absolute in the Markdown (so they work on GitHub)
+  // and become relative here, so a self-hosted copy opens its own workbench.
+  if (href?.startsWith(LIVE)) return APP + href.slice(LIVE.length);
   if (!href || /^(https?:|mailto:|#|data:)/.test(href)) return href;
-  if (href.startsWith("/#") || href.startsWith("../#")) return APP + href.replace(/^(\.\.)?\//, "");
   const [p, hash] = href.split("#");
   const target = path.normalize(path.join(path.dirname(page), p));
   if (target.startsWith("..")) return REPO + path.normalize(target).replace(/^(\.\.[\/\\])+/, "") + (hash ? `#${hash}` : "");
