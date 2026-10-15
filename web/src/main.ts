@@ -264,6 +264,16 @@ async function refreshTree() {
 // Alt+←/→, mouse side buttons, or the arrows next to the class name) walk through them.
 let navIdx = 0;
 let navLen = 1;
+/** Bumped by every openClass call, so a slower, older load cannot overwrite a newer one. */
+let openGen = 0;
+// Entries ahead of this one survive a reload; the tab's session storage remembers how many.
+function saveNavLen() {
+  try {
+    sessionStorage.setItem("daedalus.navLen", String(navLen));
+  } catch {
+    /* storage unavailable: Forward is just not offered after a reload */
+  }
+}
 function updateNav() {
   ($("nav-back") as HTMLButtonElement).disabled = navIdx <= 0;
   ($("nav-fwd") as HTMLButtonElement).disabled = navIdx >= navLen - 1;
@@ -277,6 +287,7 @@ window.addEventListener("popstate", (e) => {
     // The hash was edited by hand: that made a new entry.
     navIdx++;
     navLen = navIdx + 1;
+    saveNavLen();
     history.replaceState({ idx: navIdx }, "");
   }
   updateNav();
@@ -285,7 +296,9 @@ window.addEventListener("popstate", (e) => {
 });
 
 async function openClass(path: string, push = true) {
+  const gen = ++openGen;
   const info = await src.get(path);
+  if (gen !== openGen) return;
   if (!info) {
     log(`class ${path} not found`, "err");
     return;
@@ -313,6 +326,7 @@ async function openClass(path: string, push = true) {
   if (push && location.hash !== hash) {
     navIdx++;
     navLen = navIdx + 1;
+    saveNavLen();
     history.pushState({ idx: navIdx }, "", hash);
   } else {
     history.replaceState({ idx: navIdx }, "", hash);
@@ -699,7 +713,13 @@ async function start() {
   const st = history.state as { idx?: number } | null;
   if (typeof st?.idx === "number") {
     navIdx = st.idx;
-    navLen = navIdx + 1;
+    let saved = 0;
+    try {
+      saved = Number(sessionStorage.getItem("daedalus.navLen")) || 0;
+    } catch {
+      /* storage unavailable */
+    }
+    navLen = Math.max(navIdx + 1, saved);
   }
   await openClass(hash || "Daedalus.Examples.TorqueConverter.Launch", false);
   timings.interactive = performance.now();
