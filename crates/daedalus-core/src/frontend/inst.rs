@@ -7,8 +7,9 @@
 
 use super::overconstrained::{OcAnswers, OcLog};
 use super::tree::{ClassId, ClassTree, ROOT, builtin_name};
-use crate::expr::{Arena, Cmp, ExprId, Fn1, Fn2, LoopProg, Node, Table, VarId};
+use crate::expr::{Arena, Cmp, ExprId, Fn1, Fn2, LoopProg, Node, Table, Table2, VarId, tkind};
 use crate::flat::*;
+use crate::table2::kind as k2;
 use anyhow::{Context, Result, anyhow, bail};
 use indexmap::IndexMap;
 use rumoca_core::{ArrayConstructor, Causality, ClassType, OpBinary, OpUnary, Variability};
@@ -289,6 +290,8 @@ pub struct Flattener<'a, 't> {
     sample_count: usize,
     /// Native stand-ins for the MSL external table objects: (arena table, `columns`).
     ext_tables: Vec<(u32, Vec<usize>)>,
+    /// Native stand-ins for the MSL 2-D table objects: arena 2-D tables.
+    ext_tables2: Vec<u32>,
     /// Instances of expandable connectors (and connectors nested in them).
     expandable_insts: FxHashSet<InstId>,
     /// Variables declared inside expandable connectors.
@@ -327,6 +330,20 @@ pub struct Flattener<'a, 't> {
     /// Structured components bound to a value as a whole (`Orientation R = nullRotation()`,
     /// `Complex c = a*b`): the value is distributed over the fields in pass 2.
     record_bindings: Vec<(InstId, Scoped<'a>)>,
+    /// Calls of impure external functions translated since the current when-branch
+    /// began, with the condition under which they run: they become
+    /// [`WhenAction::Effect`]s of the branch.
+    effects: Vec<(ExprId, ExprId)>,
+    /// Condition of the time-varying `if` branches being executed (for effects).
+    effect_path: Option<ExprId>,
+    /// Hidden state of the impure random number generator (`initializeImpureRandom`),
+    /// and whether `setInternalState` defined it.
+    rng_vars: Option<Vec<VarId>>,
+    rng_set: bool,
+    /// Programs of the pure native external functions, shared by all calls.
+    native_progs: FxHashMap<crate::external::NativeCall, u32>,
+    /// Directory of each top-level package, for `modelica://` URIs.
+    pub resource_roots: FxHashMap<String, String>,
 }
 
 const MAX_DEPTH: usize = 200;
@@ -360,6 +377,7 @@ impl<'a, 't> Flattener<'a, 't> {
             binding_mods: FxHashMap::default(),
             sample_count: 0,
             ext_tables: Vec::new(),
+            ext_tables2: Vec::new(),
             expandable_insts: FxHashSet::default(),
             expandable_vars: Vec::new(),
             when_assigned: FxHashSet::default(),
@@ -379,6 +397,12 @@ impl<'a, 't> Flattener<'a, 't> {
             oc_answers: None,
             oc_class: FxHashMap::default(),
             record_bindings: Vec::new(),
+            effects: Vec::new(),
+            effect_path: None,
+            rng_vars: None,
+            rng_set: false,
+            native_progs: FxHashMap::default(),
+            resource_roots: FxHashMap::default(),
         }
     }
 
@@ -752,6 +776,7 @@ impl<'a, 't> Flattener<'a, 't> {
             self.translate_instance(i as InstId)
                 .with_context(|| format!("in component '{}'", self.inst_name(i as InstId)))?;
         }
+        self.finish_impure_rng();
         self.finish_streams();
         self.finish_connections();
         self.lower_clocks()?;
@@ -799,6 +824,10 @@ impl<'a, 't> Flattener<'a, 't> {
                             roots.push(*e);
                         }
                         WhenAction::Assert(e, _) => roots.push(*e),
+                        WhenAction::Effect(c, e) => {
+                            roots.push(*c);
+                            roots.push(*e);
+                        }
                         WhenAction::Terminate(_) => {}
                     }
                 }
@@ -2527,11 +2556,24 @@ impl<'a, 't> Flattener<'a, 't> {
                 let mut branches = Vec::new();
                 for b in blocks {
                     let c = self.when_condition(&b.cond, scope, ctx)?;
+                    let saved = (std::mem::take(&mut self.effects), self.effect_path.take());
                     let mut acts = Vec::new();
+                    let mut res = Ok(());
                     for e in &b.eqs {
-                        self.when_actions(e, scope, ctx, &mut acts)?;
+                        res = self.when_actions(e, scope, ctx, &mut acts);
+                        if res.is_err() {
+                            break;
+                        }
                     }
-                    branches.push((c, acts));
+                    let effects = std::mem::replace(&mut self.effects, saved.0);
+                    self.effect_path = saved.1;
+                    res?;
+                    let mut all: Vec<WhenAction> = effects
+                        .into_iter()
+                        .map(|(c, e)| WhenAction::Effect(c, e))
+                        .collect();
+                    all.extend(acts);
+                    branches.push((c, all));
                 }
                 let o = self.eq_origin(scope, "when-equation");
                 self.model.whens.push(WhenClause {
@@ -2747,7 +2789,17 @@ impl<'a, 't> Flattener<'a, 't> {
                             args.get(1).map(expr_string).unwrap_or_default(),
                         ));
                     }
-                    _ => {}
+                    _ => {
+                        // A call for its side effects (`print`, writing a file): the
+                        // impure external calls it makes become effects of the branch.
+                        let n = self.effects.len();
+                        if let Err(e) = self.call(comp, args, scope, ctx) {
+                            self.effects.truncate(n);
+                            self.model
+                                .warnings
+                                .push(format!("call of '{name}' in a when-clause ignored: {e:#}"));
+                        }
+                    }
                 }
             }
             ast::Equation::If {
@@ -2756,19 +2808,45 @@ impl<'a, 't> Flattener<'a, 't> {
             } => {
                 // Conditional assignments inside when: v = if c then a else b (else keeps pre(v)).
                 let mut per_branch: Vec<(ExprId, Vec<WhenAction>)> = Vec::new();
+                let base_path = self.effect_path;
+                let mut none_before: Option<ExprId> = None;
+                let and = |a: &mut Arena, p: Option<ExprId>, c: ExprId| match p {
+                    Some(p) => a.f2(Fn2::And, p, c),
+                    None => c,
+                };
                 for b in cond_blocks {
                     let c = self.translate(&b.cond, scope, ctx)?.scalar()?;
+                    let here = and(&mut self.model.arena, none_before, c);
+                    self.effect_path = Some(and(&mut self.model.arena, base_path, here));
                     let mut a = Vec::new();
+                    let mut res = Ok(());
                     for e in &b.eqs {
-                        self.when_actions(e, scope, ctx, &mut a)?;
+                        res = self.when_actions(e, scope, ctx, &mut a);
+                        if res.is_err() {
+                            break;
+                        }
                     }
+                    self.effect_path = base_path;
+                    res?;
+                    let nc = self.model.arena.not(c);
+                    none_before = Some(and(&mut self.model.arena, none_before, nc));
                     per_branch.push((c, a));
                 }
                 let mut else_acts = Vec::new();
                 if let Some(eb) = else_block {
+                    self.effect_path = match none_before {
+                        Some(nb) => Some(and(&mut self.model.arena, base_path, nb)),
+                        None => base_path,
+                    };
+                    let mut res = Ok(());
                     for e in eb {
-                        self.when_actions(e, scope, ctx, &mut else_acts)?;
+                        res = self.when_actions(e, scope, ctx, &mut else_acts);
+                        if res.is_err() {
+                            break;
+                        }
                     }
+                    self.effect_path = base_path;
+                    res?;
                 }
                 // Merge assignments by variable.
                 let mut vars: Vec<VarId> = Vec::new();
@@ -3995,6 +4073,33 @@ impl<'a, 't> Flattener<'a, 't> {
         }
         // Relations in function bodies do not generate events (MLS 8.5).
         let no_event = ctx.no_event || ctx.in_function;
+        match (op, &l, &r) {
+            // String concatenation, elementwise with string arrays.
+            (OpBinary::Add | OpBinary::AddElem, Val::Str(a), Val::Str(b)) => {
+                return Ok(Val::Str(format!("{a}{b}")));
+            }
+            (OpBinary::Add | OpBinary::AddElem, Val::SA(d, a), Val::Str(b)) => {
+                return Ok(Val::SA(
+                    d.clone(),
+                    a.iter().map(|x| format!("{x}{b}")).collect(),
+                ));
+            }
+            (OpBinary::Add | OpBinary::AddElem, Val::Str(a), Val::SA(d, b)) => {
+                return Ok(Val::SA(
+                    d.clone(),
+                    b.iter().map(|x| format!("{a}{x}")).collect(),
+                ));
+            }
+            (OpBinary::Add | OpBinary::AddElem, Val::SA(d, a), Val::SA(_, b))
+                if a.len() == b.len() =>
+            {
+                return Ok(Val::SA(
+                    d.clone(),
+                    a.iter().zip(b).map(|(x, y)| format!("{x}{y}")).collect(),
+                ));
+            }
+            _ => {}
+        }
         match op {
             OpBinary::Add | OpBinary::AddElem => self.zip2(l, r, &mut |a, x, y| a.add(x, y)),
             OpBinary::Sub | OpBinary::SubElem => self.zip2(l, r, &mut |a, x, y| a.sub(x, y)),
@@ -4188,7 +4293,9 @@ impl<'a, 't> Flattener<'a, 't> {
                 Ok(Val::A(dims, out))
             }
             ArrayConstructor::Horizontal | ArrayConstructor::Vertical
-                if vals.iter().any(|v| matches!(v, Val::A(d, _) if d.len() > 2)) =>
+                if vals
+                    .iter()
+                    .any(|v| matches!(v, Val::A(d, _) if d.len() > 2)) =>
             {
                 // [A] / [A, B] / [A; B] with arrays of three or more dimensions:
                 // cat along dimension 2 (`,`) or 1 (`;`); the others must agree.
@@ -5137,7 +5244,7 @@ impl<'a, 't> Flattener<'a, 't> {
                 });
             }
             "initial" => return Ok(Val::S(self.model.arena.initial())),
-            "terminal" => return Ok(Val::S(Arena::ZERO)),
+            "terminal" => return Ok(Val::S(self.model.arena.terminal())),
             "noEvent" => {
                 let saved = ctx.no_event;
                 ctx.no_event = true;
@@ -5582,24 +5689,70 @@ impl<'a, 't> Flattener<'a, 't> {
             }
             "Integer" | "Real" | "Boolean" => return Ok(arg!(0)),
             "String" => {
-                // The text of a translation-time value; run-time values only reach
-                // diagnostic messages, which are not evaluated.
+                // Values known at translation time are formatted; others (run-time
+                // values, which only reach diagnostic messages) give "".
                 let v = match pos.first() {
                     Some(e) => self.translate(e, scope, ctx).ok(),
                     None => None,
                 };
-                let text = match v {
-                    Some(Val::Str(x)) => x,
-                    Some(Val::S(e)) => match self.eval_param_expr(e) {
-                        Some(x) if x.fract() == 0.0 && x.abs() < 1e15 => format!("{}", x as i64),
-                        Some(x) => format!("{x:.6}"),
-                        None => String::new(),
-                    },
-                    _ => String::new(),
+                let e = match v {
+                    Some(Val::Str(x)) => return Ok(Val::Str(x)),
+                    Some(Val::S(e)) => e,
+                    _ => return Ok(Val::Str(String::new())),
                 };
-                return Ok(Val::Str(text));
+                let Some(x) = self.eval_param_expr(e) else {
+                    return Ok(Val::Str(String::new()));
+                };
+                let mut sig = 6usize;
+                let mut min_len = 0usize;
+                let mut left = true;
+                let mut format = None;
+                for (n, ex) in &named {
+                    let Ok(val) = self.translate(ex, scope, ctx) else {
+                        continue;
+                    };
+                    match *n {
+                        "format" => {
+                            if let Val::Str(f) = val {
+                                format = Some(f);
+                            }
+                        }
+                        _ => {
+                            let k = val
+                                .scalar()
+                                .ok()
+                                .and_then(|e| self.eval_param_expr(e))
+                                .unwrap_or(0.0);
+                            match *n {
+                                "significantDigits" => sig = k.max(1.0) as usize,
+                                "minimumLength" => min_len = k.max(0.0) as usize,
+                                "leftJustified" => left = k != 0.0,
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+                let ty = match self.model.arena.node(e) {
+                    Node::Var(v) => Some(self.model.vars[v as usize].ty),
+                    _ => None,
+                };
+                let mut t = match (&format, ty) {
+                    (Some(f), _) => format_c(f, x),
+                    (None, Some(VarType::Boolean)) => (x != 0.0).to_string(),
+                    (None, Some(VarType::Integer)) => format!("{}", x as i64),
+                    (None, _) => format_g(x, sig),
+                };
+                if t.chars().count() < min_len {
+                    let pad = " ".repeat(min_len - t.chars().count());
+                    t = if left { t + &pad } else { pad + &t };
+                }
+                return Ok(Val::Str(t));
             }
-            "assert" | "terminate" | "print" => return Ok(Val::S(Arena::ZERO)),
+            "assert" | "terminate" => return Ok(Val::S(Arena::ZERO)),
+            // `print` is MSL's `Streams.print` when it is visible (imported) here.
+            "print" if self.lookup_class(&scope.env, &["print"]).is_none() => {
+                return Ok(Val::S(Arena::ZERO));
+            }
             "inStream" | "actualStream" => {
                 let v = arg!(0);
                 let (dims, xs) = v.elems()?;
@@ -5644,7 +5797,20 @@ impl<'a, 't> Flattener<'a, 't> {
                 let n = self.cardinality(arg, scope, ctx)?;
                 return Ok(Val::S(self.model.arena.constant(n as f64)));
             }
-            "getInstanceName" => return Ok(Val::Str(String::new())),
+            "getInstanceName" => {
+                // The simulated model's name and the instance path (MLS 3.7.4.6).
+                let model = self.model.name.rsplit('.').next().unwrap_or("").to_string();
+                let path = scope
+                    .inst
+                    .map(|i| self.insts[i as usize].prefix.clone())
+                    .unwrap_or_default();
+                let name = model;
+                return Ok(Val::Str(if path.is_empty() {
+                    name
+                } else {
+                    format!("{name}.{path}")
+                }));
+            }
             "Connections.isRoot" | "Connections.rooted" => {
                 self.oc_log.used = true;
                 let node = match pos.first() {
@@ -5688,8 +5854,13 @@ impl<'a, 't> Flattener<'a, 't> {
                     nargv.push((n.clone(), v.clone()));
                 }
             }
-            let outs =
-                self.inline_function_in(fv.cls, argv, nargv, fv.overrides.clone(), fv.penv.clone())?;
+            let outs = self.inline_function_in(
+                fv.cls,
+                argv,
+                nargv,
+                fv.overrides.clone(),
+                fv.penv.clone(),
+            )?;
             return Ok(if outs.len() == 1 {
                 outs.into_iter().next().unwrap()
             } else {
@@ -5953,17 +6124,17 @@ impl<'a, 't> Flattener<'a, 't> {
             let tparts: Vec<&str> = c.type_name.name.iter().map(|t| &*t.text).collect();
             // Through the package the function was reached by (`Medium.density`), the
             // record is the medium's own `ThermodynamicState`.
-            let t = match penv
-                .clone()
-                .and_then(|pe| this.lookup_class(&pe, &tparts))
-            {
+            let t = match penv.clone().and_then(|pe| this.lookup_class(&pe, &tparts)) {
                 Some(t) => t,
                 None => {
                     let env = this.env_of(*owner);
                     this.lookup_class(&env, &tparts)?
                 }
             };
-            if !matches!(this.tree.class_type(t), ClassType::Record | ClassType::Operator) {
+            if !matches!(
+                this.tree.class_type(t),
+                ClassType::Record | ClassType::Operator
+            ) {
                 return None;
             }
             // An array of record components: one call per element.
@@ -6425,6 +6596,7 @@ impl<'a, 't> Flattener<'a, 't> {
                 .with_context(|| format!("in builtin function '{fname}'"));
         }
         // External builtin intrinsics.
+        let mut native_ext = None;
         if let Some((ext, short)) = self.function_external(cls, 0) {
             let lang = ext.language.clone().unwrap_or_default();
             let ins: Vec<Val> = inputs.iter().map(|n| ctx.locals[0][n].clone()).collect();
@@ -6443,14 +6615,24 @@ impl<'a, 't> Flattener<'a, 't> {
                 self.depth += 1;
                 let mut args = Vec::with_capacity(ext.args.len());
                 for a in &ext.args {
-                    args.push(self.translate(a, &scope, &mut ctx)?);
+                    match self.translate(a, &scope, &mut ctx) {
+                        Ok(v) => args.push(v),
+                        // `CombiTable2D_minimumAbscissa(tableID, uMin)`: the output array
+                        // argument has no value yet (and is not needed)
+                        Err(_) if op.ends_with("Abscissa") && !args.is_empty() => {
+                            args.push(Val::S(Arena::ZERO))
+                        }
+                        Err(e) => return Err(e),
+                    }
                 }
                 self.depth -= 1;
                 return self
                     .standard_table(op, args)
                     .with_context(|| format!("in function '{fname}'"));
             }
-            if let Some(op) = cname.strip_prefix("ModelicaStrings_") {
+            if let Some(op) = cname.strip_prefix("ModelicaStrings_")
+                && matches!(op, "length" | "substring" | "skipWhiteSpace" | "compare")
+            {
                 self.depth += 1;
                 let mut args = Vec::with_capacity(ext.args.len());
                 for a in &ext.args {
@@ -6469,11 +6651,16 @@ impl<'a, 't> Flattener<'a, 't> {
                     .lapack_solve(ins)
                     .with_context(|| format!("in function '{fname}'"));
             }
-            bail!("external function '{}' is not supported", fname);
+            if !is_native_external(&cname) {
+                bail!("external function '{}' is not supported", fname);
+            }
+            // Implemented natively: after the outputs and locals get their sizes below.
+            self.depth += 1;
+            native_ext = Some((ext, cname));
         }
         // A large function called with run-time arguments is compiled once and called,
         // instead of being inlined at every call (property functions of media).
-        if !self.outlining.contains(&cls) {
+        if native_ext.is_none() && !self.outlining.contains(&cls) {
             let ins: Vec<Val> = inputs.iter().map(|n| ctx.locals[0][n].clone()).collect();
             if !self.outline_failed.contains(&cls) && self.should_outline(cls, &ins) {
                 // Not every function compiles on its own (recursion on a structural
@@ -6551,6 +6738,13 @@ impl<'a, 't> Flattener<'a, 't> {
             };
             ctx.locals.last_mut().unwrap().insert(n.clone(), init);
         }
+        if let Some((ext, cname)) = native_ext {
+            let r = self
+                .native_external(ext, &cname, &elems, &outputs, &scope, &mut ctx)
+                .with_context(|| format!("in function '{fname}'"));
+            self.depth -= 1;
+            return r;
+        }
         let mut algs = Vec::new();
         self.function_algorithms(cls, &mut algs, 0);
         let mut returned = false;
@@ -6602,23 +6796,14 @@ impl<'a, 't> Flattener<'a, 't> {
             .ok_or_else(|| anyhow!("unknown table function '{op}'"))?;
         let time = kind == "CombiTimeTable";
         if kind == "CombiTable2D" {
-            bail!("2-D tables are not supported yet");
+            return self.standard_table2(fun, args);
         }
         let out = match fun {
             "init2" | "init3" => {
                 // (fileName, tableName, table, nrow, ncol, [startTime,] columns, ncols, smoothness,
-                //  extrapolation, [shiftTime, timeEvents,] verboseRead, ...); nrow and ncol follow table
-                let (d, e) = args[2].elems()?;
-                if d.len() != 2 || d[0] == 0 {
-                    bail!("tables read from files are not supported; give the table as a matrix");
-                }
-                let mut data = Vec::with_capacity(e.len());
-                for v in e {
-                    data.push(
-                        self.eval_param_expr(v)
-                            .ok_or_else(|| anyhow!("table data must be constant or parameter"))?,
-                    );
-                }
+                //  extrapolation, [shiftTime, timeEvents,] verboseRead, delimiter, nHeaderLines);
+                // nrow and ncol follow table
+                let (rows, cols, data) = self.table_data(&args, if time { 13 } else { 10 })?;
                 let o = usize::from(time);
                 let (_, ce) = args[5 + o].elems()?;
                 let mut columns = Vec::with_capacity(ce.len());
@@ -6632,8 +6817,8 @@ impl<'a, 't> Flattener<'a, 't> {
                 let smooth = num(self, &args[7 + o], "smoothness")? as u8;
                 let extrap = num(self, &args[8 + o], "extrapolation")? as u8;
                 let mut t = Table::linear(
-                    d[0],
-                    d[1],
+                    rows,
+                    cols,
                     data,
                     match extrap {
                         2 => 1,
@@ -6643,13 +6828,14 @@ impl<'a, 't> Flattener<'a, 't> {
                 );
                 match smooth {
                     3 => t.smoothness = 1,
-                    2 | 6 => t.make_cubic(false),
-                    4 | 5 => t.make_cubic(true),
+                    2 | 4 | 5 | 6 => t.make_spline(smooth),
                     _ => {}
                 }
                 if time {
                     t.start = num(self, &args[5], "startTime")?;
                     t.shift = num(self, &args[9 + o], "shiftTime")?;
+                    let events = num(self, &args[10 + o], "timeEvents")? as u8;
+                    t.set_time_events(events);
                 }
                 if columns.iter().any(|&c| c == 0 || c > t.cols) {
                     bail!(
@@ -6665,32 +6851,38 @@ impl<'a, 't> Flattener<'a, 't> {
                         .constant((self.ext_tables.len() - 1) as f64),
                 )
             }
-            "getValue" => {
-                let (t, cols) = handle(self, &args[0])?;
-                let c = column(self, &cols, &args[1])?;
-                let mut x = args[2].scalar()?;
-                // (.., time, nextTimeEvent, pre(nextTimeEvent)): until the event at
-                // nextTimeEvent is handled, the table stays on the segment left of it.
-                if time && args.len() >= 4 {
-                    let ne = args[3].scalar()?;
-                    let a = &mut self.model.arena;
-                    let an = a.f1(Fn1::Abs, ne);
-                    let sc = a.f2(Fn2::Max, an, Arena::ONE);
-                    let eps = a.constant(1e-13);
-                    let d = a.mul(sc, eps);
-                    let left = a.sub(ne, d);
-                    let at = a.cmp(Cmp::Ge, x, ne);
-                    x = a.if_(at, left, x);
-                }
-                Val::S(self.model.arena.interp(t, c, x))
-            }
-            "getDerValue" => {
+            "getValue" | "getDerValue" | "getDer2Value" => {
+                // (tableID, icol, u, [nextTimeEvent, pre(nextTimeEvent),] [der_u, [der2_u]]):
+                // a time table stays on the event interval that ends at nextTimeEvent
+                // until that event has been handled (see `crate::table1`).
                 let (t, cols) = handle(self, &args[0])?;
                 let c = column(self, &cols, &args[1])?;
                 let x = args[2].scalar()?;
-                let dx = args[if time { 5 } else { 3 }].scalar()?;
-                let s = self.model.arena.interp_der(t, c, x);
-                Val::S(self.model.arena.mul(s, dx))
+                let ne = match args.get(3) {
+                    Some(v) if time => v.scalar()?,
+                    _ if time => self.model.arena.constant(f64::INFINITY),
+                    _ => Arena::ZERO,
+                };
+                let o = if time { 5 } else { 3 };
+                let a = &mut self.model.arena;
+                let v = match fun {
+                    "getValue" => a.table_lookup(t, c, tkind::VALUE, x, ne),
+                    "getDerValue" => {
+                        let s = a.table_lookup(t, c, tkind::D1, x, ne);
+                        a.mul(s, args[o].scalar()?)
+                    }
+                    _ => {
+                        // der2_y = y'(u) der2_u + y''(u) der_u^2
+                        let (du, ddu) = (args[o].scalar()?, args[o + 1].scalar()?);
+                        let s1 = a.table_lookup(t, c, tkind::D1, x, ne);
+                        let s2 = a.table_lookup(t, c, tkind::D2, x, ne);
+                        let p1 = a.mul(s1, ddu);
+                        let du2 = a.mul(du, du);
+                        let p2 = a.mul(s2, du2);
+                        a.add(p1, p2)
+                    }
+                };
+                Val::S(v)
             }
             "minimumTime" | "minimumAbscissa" | "maximumTime" | "maximumAbscissa" => {
                 let (t, _) = handle(self, &args[0])?;
@@ -6704,14 +6896,168 @@ impl<'a, 't> Flattener<'a, 't> {
             }
             "nextTimeEvent" => {
                 let (t, _) = handle(self, &args[0])?;
+                let x = args[1].scalar()?;
                 Val::S(
                     self.model
                         .arena
-                        .interp(t, Table::NEXT_EVENT, args[1].scalar()?),
+                        .table_lookup(t, 0, tkind::NEXT_EVENT, x, Arena::ZERO),
                 )
             }
             "close" => Val::S(Arena::ZERO),
             _ => bail!("table function '{op}' is not supported"),
+        };
+        Ok(vec![out])
+    }
+
+    /// The matrix of a table object: read from the file when `tableName` and `fileName`
+    /// are given (`delim_at` is the index of the CSV `delimiter` argument, followed by
+    /// `nHeaderLines`), else the `table` argument (as `getTableSource` decides in C).
+    fn table_data(&mut self, args: &[Val], delim_at: usize) -> Result<(usize, usize, Vec<f64>)> {
+        let text = |v: Option<&Val>| match v {
+            Some(Val::Str(s)) => s.clone(),
+            _ => String::new(),
+        };
+        let valid = |s: &str| s != "NoName" && s.chars().any(|c| c != ' ');
+        let (file, name) = (text(args.first()), text(args.get(1)));
+        if valid(&name) {
+            if !valid(&file) {
+                bail!(
+                    "table \"{name}\" without a file name would come from a user-supplied \
+                     usertab C function, which is not supported"
+                );
+            }
+            let delimiter = match args.get(delim_at) {
+                Some(Val::Str(s)) => s.clone(),
+                _ => ",".to_string(),
+            };
+            let header = match args.get(delim_at + 1) {
+                Some(v) => self
+                    .eval_param_expr(v.scalar()?)
+                    .ok_or_else(|| anyhow!("nHeaderLines must be a parameter expression"))?
+                    .max(0.0) as usize,
+                None => 0,
+            };
+            let m = super::tablefile::read_table(&file, &name, &delimiter, header)?;
+            return Ok((m.rows, m.cols, m.data));
+        }
+        if valid(&file) {
+            bail!(
+                "the file name for a table (= \"{file}\") is defined, but not the corresponding table name"
+            );
+        }
+        let (d, e) = args[2].elems()?;
+        if d.len() != 2 || d[0] == 0 {
+            bail!(
+                "the table matrix is empty (give the table, or tableOnFile with a table name and a file name)"
+            );
+        }
+        let mut data = Vec::with_capacity(e.len());
+        for v in e {
+            data.push(
+                self.eval_param_expr(v)
+                    .ok_or_else(|| anyhow!("table data must be constant or parameter"))?,
+            );
+        }
+        Ok((d[0], d[1], data))
+    }
+
+    /// `ModelicaStandardTables_CombiTable2D_*`: lookups become [`Node::Interp2`] nodes.
+    fn standard_table2(&mut self, fun: &str, args: Vec<Val>) -> Result<Vec<Val>> {
+        let num = |f: &mut Self, v: &Val, what: &str| -> Result<f64> {
+            let e = v.scalar()?;
+            f.eval_param_expr(e)
+                .ok_or_else(|| anyhow!("{what} must be a parameter expression"))
+        };
+        let handle = |f: &mut Self, v: &Val| -> Result<u32> {
+            let e = v.scalar()?;
+            if let Node::Var(var) = f.model.arena.node(e) {
+                f.ensure_binding(var).with_context(|| {
+                    format!("in table object '{}'", f.model.vars[var as usize].name)
+                })?;
+            }
+            let k = num(f, v, "table object")? as usize;
+            f.ext_tables2
+                .get(k)
+                .copied()
+                .ok_or_else(|| anyhow!("invalid table object"))
+        };
+        let arg = |i: usize| -> Result<ExprId> {
+            args.get(i)
+                .ok_or_else(|| anyhow!("missing argument {}", i + 1))?
+                .scalar()
+        };
+        let out = match fun {
+            "init2" | "init3" => {
+                // (fileName, tableName, table, nrow, ncol, smoothness, extrapolation,
+                //  verboseRead, delimiter, nHeaderLines)
+                let (rows, cols, data) = self.table_data(&args, 8)?;
+                let smooth = num(self, &args[5], "smoothness")? as u8;
+                let extrap = match args.get(6) {
+                    Some(v) => num(self, v, "extrapolation")? as u8,
+                    None => crate::table2::LAST_TWO_POINTS,
+                };
+                let t = Table2::new(rows, cols, &data, smooth, extrap).map_err(|e| anyhow!(e))?;
+                let id = self.model.arena.add_table2(t);
+                self.ext_tables2.push(id);
+                Val::S(
+                    self.model
+                        .arena
+                        .constant((self.ext_tables2.len() - 1) as f64),
+                )
+            }
+            "getValue" => {
+                let t = handle(self, &args[0])?;
+                Val::S(self.model.arena.interp2(t, k2::VALUE, arg(1)?, arg(2)?))
+            }
+            "getDerValue" => {
+                // (tableID, u1, u2, der_u1, der_u2)
+                let t = handle(self, &args[0])?;
+                let (u1, u2, du1, du2) = (arg(1)?, arg(2)?, arg(3)?, arg(4)?);
+                let a = &mut self.model.arena;
+                let p1 = a.interp2(t, k2::D1, u1, u2);
+                let p2 = a.interp2(t, k2::D2, u1, u2);
+                let t1 = a.mul(p1, du1);
+                let t2 = a.mul(p2, du2);
+                Val::S(a.add(t1, t2))
+            }
+            "getDer2Value" => {
+                // (tableID, u1, u2, der_u1, der_u2, der2_u1, der2_u2)
+                let t = handle(self, &args[0])?;
+                let (u1, u2) = (arg(1)?, arg(2)?);
+                let (d1, d2, dd1, dd2) = (arg(3)?, arg(4)?, arg(5)?, arg(6)?);
+                let a = &mut self.model.arena;
+                let two = a.constant(2.0);
+                let d12 = a.mul(d1, d2);
+                let d12 = a.mul(two, d12);
+                let d11 = a.mul(d1, d1);
+                let d22 = a.mul(d2, d2);
+                let mut acc = Arena::ZERO;
+                for (k, w) in [
+                    (k2::D11, d11),
+                    (k2::D12, d12),
+                    (k2::D22, d22),
+                    (k2::D1, dd1),
+                    (k2::D2, dd2),
+                ] {
+                    let p = a.interp2(t, k, u1, u2);
+                    let term = a.mul(p, w);
+                    acc = a.add(acc, term);
+                }
+                Val::S(acc)
+            }
+            "minimumAbscissa" | "maximumAbscissa" => {
+                let t = handle(self, &args[0])?;
+                let tb = &self.model.arena.tables2[t as usize];
+                let v = if fun.starts_with("min") {
+                    tb.min_abscissa()
+                } else {
+                    tb.max_abscissa()
+                };
+                let a = &mut self.model.arena;
+                Val::A(vec![2], vec![a.constant(v[0]), a.constant(v[1])])
+            }
+            "close" => Val::S(Arena::ZERO),
+            _ => bail!("table function 'CombiTable2D_{fun}' is not supported"),
         };
         Ok(vec![out])
     }
@@ -6770,6 +7116,331 @@ impl<'a, 't> Flattener<'a, 't> {
             _ => bail!("string function '{op}' is not supported"),
         };
         Ok(vec![r])
+    }
+
+    /// An external C function of the MSL implemented natively ([`crate::external`]).
+    /// The outputs and locals of the function are already in `ctx` with their sizes;
+    /// the external call's arguments are inputs, or outputs written by the function.
+    fn native_external(
+        &mut self,
+        ext: &'a ast::ExternalFunction,
+        cname: &str,
+        elems: &[(String, &'a ast::Component, ClassId)],
+        outputs: &[String],
+        scope: &Scope,
+        ctx: &mut Ctx,
+    ) -> Result<Vec<Val>> {
+        let local = |n: &str| {
+            elems
+                .iter()
+                .any(|(m, c, _)| m == n && !matches!(c.causality, Causality::Input(_)))
+        };
+        let mut ins = Vec::new();
+        let mut outs: Vec<String> = Vec::new();
+        if let Some(cr) = &ext.output {
+            outs.push(cr.parts[0].ident.text.to_string());
+        }
+        for a in &ext.args {
+            if let E::ComponentReference(cr) = a
+                && cr.parts.len() == 1
+                && cr.parts[0].subs.is_none()
+                && local(&cr.parts[0].ident.text)
+            {
+                outs.push(cr.parts[0].ident.text.to_string());
+            } else {
+                ins.push(self.translate(a, scope, ctx)?);
+            }
+        }
+        let vals = match self.translation_external(cname, &ins)? {
+            Some(v) => v,
+            None => self.native_call(cname, ins, &outs, ctx)?,
+        };
+        for (n, v) in outs.iter().zip(vals) {
+            ctx.locals[0].insert(n.clone(), v);
+        }
+        Ok(outputs.iter().map(|n| ctx.locals[0][n].clone()).collect())
+    }
+
+    /// A string argument known at translation time.
+    fn ext_str(&self, v: Option<&Val>) -> Result<String> {
+        match v {
+            Some(Val::Str(s)) => Ok(s.clone()),
+            Some(other) => bail!("expected a string, found {}", other.kind()),
+            None => bail!("missing string argument"),
+        }
+    }
+
+    /// A numeric argument known at translation time.
+    fn ext_num(&mut self, v: Option<&Val>) -> Result<f64> {
+        let e = v.ok_or_else(|| anyhow!("missing argument"))?.scalar()?;
+        self.eval_param_expr(e)
+            .ok_or_else(|| anyhow!("argument must be known at translation time"))
+    }
+
+    /// External functions on strings and files, evaluated at translation time. Returns
+    /// the values of the outputs (the return value first, then the output arguments),
+    /// or `None` when `cname` is a run-time native function.
+    fn translation_external(&mut self, cname: &str, ins: &[Val]) -> Result<Option<Vec<Val>>> {
+        use crate::external as x;
+        let num = |f: &mut Self, v: f64| Val::S(f.model.arena.constant(v));
+        let r = match cname {
+            "ModelicaStrings_scanReal" | "ModelicaStrings_scanInteger" => {
+                let s = self.ext_str(ins.first())?;
+                let start = self.ext_num(ins.get(1))? as i64;
+                let unsigned = self.ext_num(ins.get(2))? != 0.0;
+                let (next, v) = if cname.ends_with("Real") {
+                    x::scan_real(&s, start, unsigned)
+                } else {
+                    let (n, v) = x::scan_integer(&s, start, unsigned);
+                    (n, v as f64)
+                };
+                vec![num(self, next as f64), num(self, v)]
+            }
+            "ModelicaStrings_scanString" | "ModelicaStrings_scanIdentifier" => {
+                let s = self.ext_str(ins.first())?;
+                let start = self.ext_num(ins.get(1))? as i64;
+                let (next, t) = if cname.ends_with("String") {
+                    x::scan_string(&s, start)
+                } else {
+                    x::scan_identifier(&s, start)
+                };
+                vec![num(self, next as f64), Val::Str(t)]
+            }
+            "ModelicaStrings_hashString" => {
+                let s = self.ext_str(ins.first())?;
+                vec![num(self, f64::from(x::hash_string(&s)))]
+            }
+            "ModelicaInternal_fullPathName" => {
+                let s = self.ext_str(ins.first())?;
+                vec![Val::Str(self.resolve_uri(&s)?)]
+            }
+            "ModelicaInternal_stat" => {
+                let s = self.ext_str(ins.first())?;
+                vec![num(self, f64::from(x::fs::stat(&s)))]
+            }
+            "ModelicaInternal_getcwd" => vec![Val::Str(x::fs::cwd())],
+            "ModelicaInternal_temporaryFileName" => {
+                let n = self.model.vars.len();
+                let dir = x::fs::getenv("TMPDIR").unwrap_or_else(|| "/tmp".into());
+                vec![Val::Str(format!(
+                    "{}/daedalus_{}_{n}.tmp",
+                    dir.trim_end_matches('/'),
+                    x::process_id()
+                ))]
+            }
+            "ModelicaInternal_getenv" => {
+                let name = self.ext_str(ins.first())?;
+                let slash = self.ext_num(ins.get(1)).unwrap_or(0.0) != 0.0;
+                let v = x::fs::getenv(&name);
+                let exist = v.is_some();
+                let mut v = v.unwrap_or_default();
+                if slash {
+                    v = v.replace('\\', "/");
+                }
+                vec![Val::Str(v), num(self, f64::from(u8::from(exist)))]
+            }
+            "ModelicaInternal_countLines" => {
+                let f = self.ext_str(ins.first())?;
+                let n = x::read_lines(&f).map_err(|e| anyhow!(e))?.len();
+                vec![num(self, n as f64)]
+            }
+            "ModelicaInternal_readLine" => {
+                let f = self.ext_str(ins.first())?;
+                let k = self.ext_num(ins.get(1))? as usize;
+                let lines = x::read_lines(&f).map_err(|e| anyhow!(e))?;
+                match k.checked_sub(1).and_then(|i| lines.get(i)) {
+                    Some(l) => vec![Val::Str(l.clone()), num(self, 0.0)],
+                    None => vec![Val::Str(String::new()), num(self, 1.0)],
+                }
+            }
+            "ModelicaInternal_readFile" => {
+                let f = self.ext_str(ins.first())?;
+                let n = self.ext_num(ins.get(1))? as usize;
+                let mut lines = x::read_lines(&f).map_err(|e| anyhow!(e))?;
+                lines.resize(n, String::new());
+                vec![Val::SA(vec![n], lines)]
+            }
+            "ModelicaRandom_setInternalState_xorshift1024star" => {
+                let (_, st) = ins
+                    .first()
+                    .ok_or_else(|| anyhow!("missing state"))?
+                    .elems()?;
+                if st.len() != 33 {
+                    bail!("the impure random number generator needs a state of 33 integers");
+                }
+                let vars = self.impure_rng_vars();
+                if !self.rng_set {
+                    self.rng_set = true;
+                    let o = self.model.origin("initializeImpureRandom");
+                    for (v, e) in vars.iter().zip(st) {
+                        let lhs = self.model.arena.var(*v);
+                        self.model.initial_equations.push(Equation {
+                            lhs,
+                            rhs: e,
+                            origin: o,
+                        });
+                    }
+                }
+                Vec::new()
+            }
+            _ => return Ok(None),
+        };
+        Ok(Some(r))
+    }
+
+    /// Call of a native function with numeric results ([`crate::external::NativeFn`]):
+    /// evaluated now when pure with constant arguments, else a [`Node::Call`] of a native
+    /// program. Calls of impure functions are recorded as effects.
+    fn native_call(
+        &mut self,
+        cname: &str,
+        ins: Vec<Val>,
+        outs: &[String],
+        ctx: &mut Ctx,
+    ) -> Result<Vec<Val>> {
+        use crate::external::{NativeCall, NativeFn};
+        let f = NativeFn::lookup(cname)
+            .ok_or_else(|| anyhow!("external function '{cname}' is not supported"))?;
+        let mut strs = Vec::new();
+        let mut nums = Vec::new();
+        for v in ins {
+            match v {
+                Val::Str(s) => strs.push(s),
+                Val::SA(..) => bail!("string array arguments are not supported"),
+                other => nums.extend(other.elems()?.1),
+            }
+        }
+        if f == NativeFn::ImpureRandom {
+            for v in self.impure_rng_vars() {
+                nums.push(self.model.arena.var(v));
+            }
+        }
+        let shapes: Vec<Vec<usize>> = outs
+            .iter()
+            .map(|n| match &ctx.locals[0][n] {
+                Val::A(d, _) => d.clone(),
+                _ => Vec::new(),
+            })
+            .collect();
+        let n_out: usize = shapes.iter().map(|d| d.iter().product::<usize>()).sum();
+        let call = NativeCall {
+            f,
+            strs,
+            n_out: n_out.max(1),
+        };
+        let impure = f.impure();
+        if impure && !self.outlining.is_empty() {
+            bail!("impure external function in a compiled function");
+        }
+        let consts: Option<Vec<f64>> = nums.iter().map(|&e| self.model.arena.as_const(e)).collect();
+        let results: Vec<ExprId> = match consts {
+            Some(args) if !impure => {
+                let mut out = Vec::new();
+                let log = {
+                    let mut st = self.model.arena.ext.borrow_mut();
+                    crate::external::eval(&call, &args, &mut out, &mut st)
+                        .map_err(|e| anyhow!(e))?;
+                    st.take_log()
+                };
+                self.model.warnings.extend(log);
+                out.iter().map(|&v| self.model.arena.constant(v)).collect()
+            }
+            _ => {
+                let pid = if impure {
+                    self.model.arena.add_prog(LoopProg::native(call.clone()))
+                } else if let Some(&p) = self.native_progs.get(&call) {
+                    p
+                } else {
+                    let p = self.model.arena.add_prog(LoopProg::native(call.clone()));
+                    self.native_progs.insert(call.clone(), p);
+                    p
+                };
+                let r: Vec<ExprId> = (0..call.n_out as u32)
+                    .map(|k| self.model.arena.call(pid, nums.clone(), k))
+                    .collect();
+                if impure {
+                    let cond = self.effect_path.unwrap_or(Arena::ONE);
+                    self.effects.push((cond, r[0]));
+                }
+                r
+            }
+        };
+        let mut it = results.into_iter();
+        let mut vals = Vec::with_capacity(outs.len());
+        for d in shapes {
+            let n: usize = d.iter().product();
+            let v: Vec<ExprId> = it.by_ref().take(n.max(1)).collect();
+            vals.push(if d.is_empty() {
+                Val::S(v[0])
+            } else {
+                Val::A(d, v)
+            });
+        }
+        Ok(vals)
+    }
+
+    /// Hidden state of the impure random number generator: 33 parameters computed by
+    /// initialization from the state `initializeImpureRandom` passes to `setInternalState`.
+    fn impure_rng_vars(&mut self) -> Vec<VarId> {
+        if let Some(v) = &self.rng_vars {
+            return v.clone();
+        }
+        let vs: Vec<VarId> = (1..=33)
+            .map(|i| {
+                let mut v = Variable::new(
+                    format!("$impureRandom.state[{i}]"),
+                    VarKind::Parameter,
+                    VarType::Integer,
+                );
+                v.fixed = Some(false);
+                v.generated = true;
+                v.is_protected = true;
+                self.model.add_var(v)
+            })
+            .collect();
+        self.rng_vars = Some(vs.clone());
+        vs
+    }
+
+    /// Without `initializeImpureRandom` the generator state is zero (an error at the
+    /// first `impureRandom`).
+    fn finish_impure_rng(&mut self) {
+        if let Some(vs) = &self.rng_vars
+            && !self.rng_set
+        {
+            for &v in vs {
+                let var = &mut self.model.vars[v as usize];
+                var.fixed = None;
+                var.binding = Some(Arena::ZERO);
+            }
+        }
+    }
+
+    /// File name of `uri`: `modelica://Package/path` relative to the directory of the
+    /// top-level package, `file://path`, or a (relative) file name.
+    fn resolve_uri(&self, uri: &str) -> Result<String> {
+        if let Some(rest) = uri.strip_prefix("modelica://") {
+            let (pkg, path) = rest.split_once('/').unwrap_or((rest, ""));
+            let top = pkg.split('.').next().unwrap_or(pkg);
+            let root = self
+                .resource_roots
+                .get(top)
+                .ok_or_else(|| anyhow!("cannot resolve '{uri}': package '{top}' is not loaded"))?;
+            let mut p = root.trim_end_matches('/').to_string();
+            for part in pkg.split('.').skip(1) {
+                p.push('/');
+                p.push_str(part);
+            }
+            if !path.is_empty() {
+                p.push('/');
+                p.push_str(path);
+            }
+            return Ok(p);
+        }
+        if let Some(rest) = uri.strip_prefix("file://") {
+            return Ok(rest.to_string());
+        }
+        Ok(crate::external::fs::full_path(uri))
     }
 
     /// `(x, info) = dgesv(A, b)`: the solution of `A*x = b` (`b` a vector or a matrix).
@@ -7123,6 +7794,7 @@ impl<'a, 't> Flattener<'a, 't> {
                 | Node::Der(_)
                 | Node::Time
                 | Node::Initial
+                | Node::Terminal
                 | Node::Rel(_)
                 | Node::Delay(..) => {
                     bad = Some(n);
@@ -7147,6 +7819,7 @@ impl<'a, 't> Flattener<'a, 't> {
             n: (1 + n_in + n_out) as usize,
             cond,
             next,
+            native: None,
         });
         Ok((pid, n_in as usize, outs))
     }
@@ -7264,6 +7937,7 @@ impl<'a, 't> Flattener<'a, 't> {
                 | Node::Der(_)
                 | Node::Time
                 | Node::Initial
+                | Node::Terminal
                 | Node::Rel(_)
                 | Node::Delay(..) => {
                     let i = match fmap.get(&n) {
@@ -7298,6 +7972,7 @@ impl<'a, 't> Flattener<'a, 't> {
             n: (n_state + n_foreign) as usize,
             cond,
             next,
+            native: None,
         });
         let mut args: Vec<ExprId> = slots.iter().map(|&k| init[k]).collect();
         args.extend(foreign.iter().copied());
@@ -7344,16 +8019,23 @@ impl<'a, 't> Flattener<'a, 't> {
             Some(p) => a.f2(Fn2::And, p, c),
             None => c,
         };
+        let saved_effect_path = self.effect_path;
         let (outer_ret, outer_brk) = (ctx.sret, ctx.sbrk);
         ctx.path = Some(and(&mut self.model.arena, saved_path, c));
+        self.effect_path = Some(and(&mut self.model.arena, saved_effect_path, c));
         let mut r1 = false;
         let res = self.exec(&first.stmts, scope, ctx, &mut r1);
         ctx.path = saved_path;
+        self.effect_path = saved_effect_path;
         res?;
         // How each branch leaves: unconditionally (static flag) or under a run-time
         // condition (symbolic flag); `None` if it falls through.
         let exit_of = |stat: bool, sym: Option<ExprId>| -> ExprId {
-            if stat { Arena::ONE } else { sym.unwrap_or(Arena::ZERO) }
+            if stat {
+                Arena::ONE
+            } else {
+                sym.unwrap_or(Arena::ZERO)
+            }
         };
         let t_ret = exit_of(r1, ctx.sret);
         let t_brk = exit_of(ctx.broke, ctx.sbrk);
@@ -7362,9 +8044,11 @@ impl<'a, 't> Flattener<'a, 't> {
         let then_locals = std::mem::replace(&mut ctx.locals, base);
         let nc = self.model.arena.not(c);
         ctx.path = Some(and(&mut self.model.arena, saved_path, nc));
+        self.effect_path = Some(and(&mut self.model.arena, saved_effect_path, nc));
         let mut r2 = false;
         let res = self.exec_if(rest, else_block, scope, ctx, &mut r2);
         ctx.path = saved_path;
+        self.effect_path = saved_effect_path;
         res?;
         let e_ret = exit_of(r2, ctx.sret);
         let e_brk = exit_of(ctx.broke, ctx.sbrk);
@@ -7385,6 +8069,17 @@ impl<'a, 't> Flattener<'a, 't> {
         ctx.sret = merge_flag(&mut self.model.arena, t_ret, e_ret);
         ctx.sbrk = merge_flag(&mut self.model.arena, t_brk, e_brk);
         let else_locals = std::mem::take(&mut ctx.locals);
+        self.merge_locals(c, then_locals, else_locals, ctx)
+    }
+
+    /// `ctx.locals := if c then then_locals else else_locals`, local by local.
+    fn merge_locals(
+        &mut self,
+        c: ExprId,
+        then_locals: Vec<FxHashMap<String, Val>>,
+        else_locals: Vec<FxHashMap<String, Val>>,
+        ctx: &mut Ctx,
+    ) -> Result<()> {
         let mut merged = else_locals.clone();
         for (fi, frame) in then_locals.iter().enumerate() {
             for (k, tv) in frame {
@@ -7552,7 +8247,46 @@ impl<'a, 't> Flattener<'a, 't> {
     ) -> Result<Val> {
         match cur {
             Val::A(dims, mut el) => {
-                let sel = self.eval_subscripts(subs, &dims, scope, ctx)?;
+                let sel = match self.eval_subscripts(subs, &dims, scope, ctx) {
+                    Ok(sel) => sel,
+                    Err(e) => {
+                        // `x[i] := v` with an index known only at run time: every element
+                        // becomes `if i == k then v else x[k]`.
+                        if subs.len() != dims.len()
+                            || !subs
+                                .iter()
+                                .all(|s| matches!(s, ast::Subscript::Expression(_)))
+                        {
+                            return Err(e);
+                        }
+                        let mut idx = Vec::with_capacity(subs.len());
+                        for (k, s) in subs.iter().enumerate() {
+                            let ast::Subscript::Expression(x) = s else {
+                                unreachable!()
+                            };
+                            let saved = ctx.end_value;
+                            ctx.end_value = Some(dims[k]);
+                            let i = self.translate(x, scope, ctx);
+                            ctx.end_value = saved;
+                            idx.push(i?.scalar()?);
+                        }
+                        let val = v.scalar()?;
+                        for (flat, e) in el.iter_mut().enumerate() {
+                            let mut rem = flat;
+                            let mut cond = Arena::ONE;
+                            for k in (0..dims.len()).rev() {
+                                let pos = rem % dims[k];
+                                rem /= dims[k];
+                                let a = &mut self.model.arena;
+                                let kc = a.constant((pos + 1) as f64);
+                                let c = a.cmp(Cmp::Eq, idx[k], kc);
+                                cond = a.f2(Fn2::And, cond, c);
+                            }
+                            *e = self.model.arena.if_(cond, val, *e);
+                        }
+                        return Ok(Val::A(dims, el));
+                    }
+                };
                 let (_, idx) = select_indices(&dims, &sel);
                 let (_, vals) = v.elems()?;
                 for (k, i) in idx.into_iter().enumerate() {
@@ -7601,6 +8335,7 @@ impl<'a, 't> Flattener<'a, 't> {
                     let c = self.when_condition(&b.cond, scope, &mut ctx)?;
                     let mut acts = Vec::new();
                     let mut rest = Vec::new();
+                    let mut calls = 0;
                     for st in &b.stmts {
                         match st {
                             ast::Statement::Reinit { variable, value } => {
@@ -7619,7 +8354,11 @@ impl<'a, 't> Flattener<'a, 't> {
                                     acts.push(WhenAction::Reinit(var, v));
                                 }
                             }
-                            ast::Statement::FunctionCall { outputs, .. } if outputs.is_empty() => {}
+                            ast::Statement::FunctionCall { outputs, .. } if outputs.is_empty() => {
+                                // Called for its side effects (see the effects below).
+                                rest.push(st.clone());
+                                calls += 1;
+                            }
                             ast::Statement::Assert { .. } => {}
                             other => rest.push(other.clone()),
                         }
@@ -7637,9 +8376,36 @@ impl<'a, 't> Flattener<'a, 't> {
                         wctx.locals[0].insert(t.clone(), v.clone());
                         orig.push((t.clone(), v));
                     }
-                    let leaked: &'a [ast::Statement] = Box::leak(rest.into_boxed_slice());
+                    // Impure external calls (random numbers, `print`, file output) become
+                    // effects of the branch, run in order when it fires.
+                    let saved = (std::mem::take(&mut self.effects), self.effect_path.take());
+                    let leaked: &'a [ast::Statement] = Box::leak(rest.clone().into_boxed_slice());
                     let mut returned = false;
-                    self.exec(leaked, scope, &mut wctx, &mut returned)?;
+                    let start = wctx.clone();
+                    let mut res = self.exec(leaked, scope, &mut wctx, &mut returned);
+                    if let Err(e) = &res
+                        && calls > 0
+                    {
+                        // Retry without the statements called only for their effects.
+                        self.model
+                            .warnings
+                            .push(format!("function calls in a when-statement ignored: {e:#}"));
+                        self.effects.clear();
+                        wctx = start;
+                        let plain: Vec<ast::Statement> = rest
+                            .into_iter()
+                            .filter(|st| {
+                                !matches!(st, ast::Statement::FunctionCall { outputs, .. } if outputs.is_empty())
+                            })
+                            .collect();
+                        let leaked: &'a [ast::Statement] = Box::leak(plain.into_boxed_slice());
+                        returned = false;
+                        res = self.exec(leaked, scope, &mut wctx, &mut returned);
+                    }
+                    let effects = std::mem::replace(&mut self.effects, saved.0);
+                    self.effect_path = saved.1;
+                    res?;
+                    acts.extend(effects.into_iter().map(|(c, e)| WhenAction::Effect(c, e)));
                     for (t, ov) in orig {
                         let nv = wctx.locals[0][&t].clone();
                         let (mut oe, mut ne) = (Vec::new(), Vec::new());
@@ -8096,7 +8862,9 @@ fn vals_identical(a: &Val, b: &Val) -> bool {
         (Val::SA(d1, x), Val::SA(d2, y)) => d1 == d2 && x == y,
         (Val::Rec(x), Val::Rec(y)) => {
             x.len() == y.len()
-                && x.iter().zip(y).all(|((n, u), (m, v))| n == m && vals_identical(u, v))
+                && x.iter()
+                    .zip(y)
+                    .all(|((n, u), (m, v))| n == m && vals_identical(u, v))
         }
         (Val::Tuple(x), Val::Tuple(y)) => {
             x.len() == y.len() && x.iter().zip(y).all(|(u, v)| vals_identical(u, v))
@@ -8171,5 +8939,96 @@ fn val_shape(v: &Val) -> String {
             t.iter().map(val_shape).collect::<Vec<_>>().join(",")
         ),
         other => other.kind().to_string(),
+    }
+}
+
+/// External C functions implemented by [`Flattener::native_external`].
+fn is_native_external(cname: &str) -> bool {
+    crate::external::NativeFn::lookup(cname).is_some()
+        || matches!(
+            cname,
+            "ModelicaStrings_scanReal"
+                | "ModelicaStrings_scanInteger"
+                | "ModelicaStrings_scanString"
+                | "ModelicaStrings_scanIdentifier"
+                | "ModelicaStrings_hashString"
+                | "ModelicaInternal_fullPathName"
+                | "ModelicaInternal_stat"
+                | "ModelicaInternal_getcwd"
+                | "ModelicaInternal_temporaryFileName"
+                | "ModelicaInternal_getenv"
+                | "ModelicaInternal_countLines"
+                | "ModelicaInternal_readLine"
+                | "ModelicaInternal_readFile"
+                | "ModelicaRandom_setInternalState_xorshift1024star"
+        )
+}
+
+/// `x` formatted like C's `%.{sig}g`.
+fn format_g(x: f64, sig: usize) -> String {
+    if !x.is_finite() {
+        return if x.is_nan() {
+            "nan".into()
+        } else if x > 0.0 {
+            "inf".into()
+        } else {
+            "-inf".into()
+        };
+    }
+    if x == 0.0 {
+        return "0".into();
+    }
+    let p = sig.max(1);
+    let exp = format!("{:.*e}", p - 1, x);
+    let (mant, e) = exp.split_once('e').unwrap_or((&exp, "0"));
+    let e: i32 = e.parse().unwrap_or(0);
+    let strip = |s: &str| -> String {
+        if s.contains('.') {
+            s.trim_end_matches('0').trim_end_matches('.').to_string()
+        } else {
+            s.to_string()
+        }
+    };
+    if e < -4 || e >= p as i32 {
+        let sign = if e < 0 { '-' } else { '+' };
+        format!("{}e{sign}{:02}", strip(mant), e.abs())
+    } else {
+        let decimals = (p as i32 - 1 - e).max(0) as usize;
+        strip(&format!("{:.*}", decimals, x))
+    }
+}
+
+/// `x` formatted with a C format specification such as `".3f"`, `"10.4e"` or `"d"`.
+fn format_c(spec: &str, x: f64) -> String {
+    let spec = spec.trim_start_matches('%');
+    let conv = spec.chars().last().unwrap_or('g');
+    let body = &spec[..spec.len() - conv.len_utf8()];
+    let left = body.starts_with('-');
+    let body = body.trim_start_matches(['-', '+', ' ', '#', '0']);
+    let (w, prec) = match body.split_once('.') {
+        Some((w, p)) => (w.parse().unwrap_or(0usize), p.parse().ok()),
+        None => (body.parse().unwrap_or(0usize), None),
+    };
+    let s = match conv {
+        'f' | 'F' => format!("{:.*}", prec.unwrap_or(6), x),
+        'e' | 'E' => {
+            let s = format!("{:.*e}", prec.unwrap_or(6), x);
+            let (m, e) = s.split_once('e').unwrap_or((&s, "0"));
+            let e: i32 = e.parse().unwrap_or(0);
+            let r = format!("{m}e{}{:02}", if e < 0 { '-' } else { '+' }, e.abs());
+            if conv == 'E' { r.to_uppercase() } else { r }
+        }
+        'd' | 'i' | 'u' => format!("{}", x as i64),
+        'x' => format!("{:x}", x as i64),
+        'X' => format!("{:X}", x as i64),
+        'o' => format!("{:o}", x as i64),
+        'G' => format_g(x, prec.unwrap_or(6)).to_uppercase(),
+        _ => format_g(x, prec.unwrap_or(6)),
+    };
+    if s.len() < w {
+        let pad = " ".repeat(w - s.len());
+        if left { s + &pad } else { pad + &s }
+    } else {
+        s
     }
 }

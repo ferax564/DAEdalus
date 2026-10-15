@@ -9,6 +9,8 @@ use rustc_hash::FxHashMap;
 use std::fmt::Write as _;
 use std::rc::Rc;
 
+pub use crate::table2::Table2;
+
 /// Index of an expression node in the arena.
 pub type ExprId = u32;
 /// Index of a variable in the flat model.
@@ -149,12 +151,18 @@ pub enum Node {
     Rel(u32),
     /// `if c then a else b` with c a 0/1 valued expression.
     If(ExprId, ExprId, ExprId),
-    /// Piecewise-linear interpolation in a constant table: (table id, column, x).
-    Interp(u32, u32, ExprId),
-    /// Slope of [`Node::Interp`] with respect to x (used by symbolic differentiation).
-    InterpDer(u32, u32, ExprId),
+    /// Lookup in a 1-D table: `(view << 2 | kind, x, ne)`, where the view
+    /// ([`Arena::views`]) names the table and column, `kind` (see [`tkind`]) selects the
+    /// value, a derivative or the next time event, and `ne` is the current
+    /// `nextTimeEvent` of a time table (`ZERO` otherwise).
+    Interp(u32, ExprId, ExprId),
+    /// Interpolation in a 2-D table: `(table << 5 | kind, u1, u2)`, where `kind` (see
+    /// [`crate::table2::kind`]) selects the value or a partial derivative up to second order.
+    Interp2(u32, ExprId, ExprId),
     /// Integration-time `initial()` flag (1 during initialization, else 0).
     Initial,
+    /// `terminal()` flag (1 only at the terminal event, when the simulation ends).
+    Terminal,
     /// Synchronous operator with up to two operands (unused operands are `ZERO`).
     Clk(ClkOp, ExprId, ExprId),
     /// `delay(x, d)`: the value of the hidden variable [`Arena::delays`]`[k]` at
@@ -179,6 +187,26 @@ pub struct LoopProg {
     pub n: usize,
     pub cond: ExprId,
     pub next: Vec<ExprId>,
+    /// A natively implemented external function instead of a loop: the call's
+    /// arguments go in, `native.n_out` results come out (`n`, `cond` and `next` unused).
+    pub native: Option<crate::external::NativeCall>,
+}
+
+impl LoopProg {
+    /// A native external function as a program.
+    pub fn native(call: crate::external::NativeCall) -> LoopProg {
+        LoopProg {
+            n: call.n_out,
+            cond: Arena::ZERO,
+            next: Vec::new(),
+            native: Some(call),
+        }
+    }
+
+    /// An impure native function: executed at every call, never folded or cached.
+    pub fn is_impure(&self) -> bool {
+        self.native.as_ref().is_some_and(|c| c.f.impure())
+    }
 }
 
 /// One call of a loop program: its initial state.
@@ -196,290 +224,7 @@ pub struct Relation {
     pub rhs: ExprId,
 }
 
-/// Constant interpolation table (rows of `[x, y1, y2, ...]`).
-///
-/// This is the runtime half of the bundled `interpolate` builtin and of the MSL
-/// `CombiTable1D*` / `CombiTimeTable` blocks, whose external C tables are implemented
-/// natively here.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct Table {
-    pub rows: usize,
-    pub cols: usize,
-    pub data: Vec<f64>,
-    /// 0 = hold the last value, 1 = extrapolate the last two points, 2 = periodic.
-    pub extrapolation: u8,
-    /// 0 = linear segments, 1 = constant segments, 2 = cubic Hermite (slopes in `slopes`).
-    #[serde(default)]
-    pub smoothness: u8,
-    /// Hermite slopes, same layout as `data` (column 0 unused); empty unless `smoothness == 2`.
-    #[serde(default)]
-    pub slopes: Vec<f64>,
-    /// The abscissa is `x - shift` (time tables: `shiftTime`).
-    #[serde(default)]
-    pub shift: f64,
-    /// Below `start` the table yields 0 (time tables: `startTime`).
-    #[serde(default = "neg_inf")]
-    pub start: f64,
-}
-
-fn neg_inf() -> f64 {
-    f64::NEG_INFINITY
-}
-
-impl Table {
-    /// Column index that asks for the next breakpoint after `x` (time events).
-    pub const NEXT_EVENT: u32 = u32::MAX;
-
-    pub fn linear(rows: usize, cols: usize, data: Vec<f64>, extrapolation: u8) -> Table {
-        Table {
-            rows,
-            cols,
-            data,
-            extrapolation,
-            smoothness: 0,
-            slopes: Vec::new(),
-            shift: 0.0,
-            start: f64::NEG_INFINITY,
-        }
-    }
-
-    #[inline]
-    pub fn at(&self, r: usize, c: usize) -> f64 {
-        self.data[r * self.cols + c]
-    }
-
-    /// Compute Hermite slopes: Akima (`monotone == false`) or Fritsch–Butland.
-    pub fn make_cubic(&mut self, monotone: bool) {
-        let n = self.rows;
-        self.smoothness = 2;
-        self.slopes = vec![0.0; self.data.len()];
-        if n < 2 {
-            return;
-        }
-        for c in 1..self.cols {
-            // Secants between rows.
-            let m: Vec<f64> = (0..n - 1)
-                .map(|r| {
-                    let h = self.at(r + 1, 0) - self.at(r, 0);
-                    if h > 0.0 {
-                        (self.at(r + 1, c) - self.at(r, c)) / h
-                    } else {
-                        0.0
-                    }
-                })
-                .collect();
-            for r in 0..n {
-                let s = if n == 2 {
-                    m[0]
-                } else if monotone {
-                    if r == 0 {
-                        m[0]
-                    } else if r == n - 1 {
-                        m[n - 2]
-                    } else {
-                        let (a, b) = (m[r - 1], m[r]);
-                        if a * b <= 0.0 {
-                            0.0
-                        } else {
-                            2.0 * a * b / (a + b)
-                        }
-                    }
-                } else {
-                    // Akima with the usual end extension of the secants.
-                    let get = |k: isize| -> f64 {
-                        let last = (n - 2) as isize;
-                        if (0..=last).contains(&k) {
-                            m[k as usize]
-                        } else if k < 0 {
-                            let (m0, m1) = (m[0], *m.get(1).unwrap_or(&m[0]));
-                            if k == -1 {
-                                2.0 * m0 - m1
-                            } else {
-                                3.0 * m0 - 2.0 * m1
-                            }
-                        } else {
-                            let ml = m[last as usize];
-                            let ml1 = if last >= 1 { m[last as usize - 1] } else { ml };
-                            if k == last + 1 {
-                                2.0 * ml - ml1
-                            } else {
-                                3.0 * ml - 2.0 * ml1
-                            }
-                        }
-                    };
-                    let r = r as isize;
-                    let (m1, m2, m3, m4) = (get(r - 2), get(r - 1), get(r), get(r + 1));
-                    let (w1, w2) = ((m4 - m3).abs(), (m2 - m1).abs());
-                    if w1 + w2 < 1e-300 {
-                        0.5 * (m2 + m3)
-                    } else {
-                        (w1 * m2 + w2 * m3) / (w1 + w2)
-                    }
-                };
-                self.slopes[r * self.cols + c] = s;
-            }
-        }
-    }
-
-    /// Map `x` into table coordinates: shift, then fold for periodic tables.
-    #[inline]
-    fn map(&self, x: f64) -> f64 {
-        let x = x - self.shift;
-        if self.extrapolation == 2 && self.rows >= 2 {
-            let (x0, x1) = (self.at(0, 0), self.at(self.rows - 1, 0));
-            let p = x1 - x0;
-            if p > 0.0 {
-                return x0 + (x - x0).rem_euclid(p);
-            }
-        }
-        x
-    }
-
-    /// Locate the interval for `x` (binary search) and return (row, weight).
-    #[inline]
-    fn locate(&self, x: f64) -> (usize, f64) {
-        let n = self.rows;
-        if n < 2 {
-            return (0, 0.0);
-        }
-        let (mut lo, mut hi) = (0usize, n - 1);
-        if x <= self.at(0, 0) {
-            lo = 0;
-        } else if x >= self.at(n - 1, 0) {
-            lo = n - 2;
-        } else {
-            while hi - lo > 1 {
-                let mid = (lo + hi) / 2;
-                if self.at(mid, 0) <= x {
-                    lo = mid;
-                } else {
-                    hi = mid;
-                }
-            }
-        }
-        let x0 = self.at(lo, 0);
-        let x1 = self.at(lo + 1, 0);
-        // A repeated abscissa is a jump: at the breakpoint the right value holds.
-        let w = if x1 > x0 {
-            (x - x0) / (x1 - x0)
-        } else if x >= x1 {
-            1.0
-        } else {
-            0.0
-        };
-        (lo, w)
-    }
-
-    pub fn interp(&self, col: usize, x: f64) -> f64 {
-        if col == Self::NEXT_EVENT as usize {
-            return self.next_event(x);
-        }
-        if x < self.start || self.rows == 0 {
-            return 0.0;
-        }
-        if self.rows == 1 {
-            return self.at(0, col);
-        }
-        let x = self.map(x);
-        let (r, w) = self.locate(x);
-        let (y0, y1) = (self.at(r, col), self.at(r + 1, col));
-        let inside = (0.0..=1.0).contains(&w);
-        if !inside && self.extrapolation == 0 {
-            return if w < 0.0 { y0 } else { y1 };
-        }
-        match self.smoothness {
-            1 => {
-                if w >= 1.0 {
-                    y1
-                } else {
-                    y0
-                }
-            }
-            2 => {
-                let h = self.at(r + 1, 0) - self.at(r, 0);
-                let (s0, s1) = (
-                    self.slopes[r * self.cols + col],
-                    self.slopes[(r + 1) * self.cols + col],
-                );
-                if !inside {
-                    // Extrapolate linearly with the end slope.
-                    return if w < 0.0 {
-                        y0 + s0 * w * h
-                    } else {
-                        y1 + s1 * (w - 1.0) * h
-                    };
-                }
-                let (w2, w3) = (w * w, w * w * w);
-                (2.0 * w3 - 3.0 * w2 + 1.0) * y0
-                    + (w3 - 2.0 * w2 + w) * h * s0
-                    + (-2.0 * w3 + 3.0 * w2) * y1
-                    + (w3 - w2) * h * s1
-            }
-            _ => y0 + w * (y1 - y0),
-        }
-    }
-
-    pub fn slope(&self, col: usize, x: f64) -> f64 {
-        if col == Self::NEXT_EVENT as usize || x < self.start || self.rows < 2 {
-            return 0.0;
-        }
-        let x = self.map(x);
-        let (r, w) = self.locate(x);
-        let inside = (0.0..=1.0).contains(&w);
-        if (!inside && self.extrapolation == 0) || self.smoothness == 1 {
-            return 0.0;
-        }
-        let x0 = self.at(r, 0);
-        let x1 = self.at(r + 1, 0);
-        if x1 <= x0 {
-            return 0.0;
-        }
-        let h = x1 - x0;
-        if self.smoothness == 2 {
-            let (s0, s1) = (
-                self.slopes[r * self.cols + col],
-                self.slopes[(r + 1) * self.cols + col],
-            );
-            if !inside {
-                return if w < 0.0 { s0 } else { s1 };
-            }
-            let (y0, y1) = (self.at(r, col), self.at(r + 1, col));
-            let w2 = w * w;
-            return ((6.0 * w2 - 6.0 * w) * y0
-                + (3.0 * w2 - 4.0 * w + 1.0) * h * s0
-                + (-6.0 * w2 + 6.0 * w) * y1
-                + (3.0 * w2 - 2.0 * w) * h * s1)
-                / h;
-        }
-        (self.at(r + 1, col) - self.at(r, col)) / h
-    }
-
-    /// The first breakpoint strictly after `x` (in unshifted coordinates), or +inf.
-    pub fn next_event(&self, x: f64) -> f64 {
-        if x < self.start {
-            return self.start;
-        }
-        if self.rows == 0 {
-            return f64::INFINITY;
-        }
-        let eps = 1e-12 * (1.0 + x.abs());
-        let first =
-            |lo: f64| -> Option<f64> { (0..self.rows).map(|r| self.at(r, 0)).find(|&t| t > lo) };
-        let xs = x - self.shift;
-        if self.extrapolation == 2 && self.rows >= 2 {
-            let (x0, x1) = (self.at(0, 0), self.at(self.rows - 1, 0));
-            let p = x1 - x0;
-            if p > 0.0 {
-                let k = ((xs - x0) / p).floor();
-                let local = xs - k * p;
-                // `local` lies in [x0, x1), so the last row is always a candidate.
-                let t = first(local + eps).unwrap_or(x1);
-                return t + k * p + self.shift;
-            }
-        }
-        first(xs + eps).map_or(f64::INFINITY, |t| t + self.shift)
-    }
-}
+pub use crate::table1::{Table, kind as tkind};
 
 /// The expression arena with interning and algebraic simplification on construction.
 #[derive(Default, Clone)]
@@ -489,6 +234,11 @@ pub struct Arena {
     pub relations: Vec<Relation>,
     rel_intern: FxHashMap<Relation, u32>,
     pub tables: Vec<Table>,
+    /// (table, column) pairs of the [`Node::Interp`] nodes.
+    pub views: Vec<(u32, u32)>,
+    view_intern: FxHashMap<(u32, u32), u32>,
+    /// 2-D tables of the [`Node::Interp2`] nodes.
+    pub tables2: Vec<Table2>,
     /// Delayed variables of the [`Node::Delay`] nodes.
     pub delays: Vec<VarId>,
     pub progs: Vec<LoopProg>,
@@ -496,6 +246,11 @@ pub struct Arena {
     call_intern: FxHashMap<CallSite, u32>,
     /// Results of interpreted loop-program runs, by program and arguments.
     pub prog_cache: std::cell::RefCell<FxHashMap<(u32, Vec<u64>), Rc<[f64]>>>,
+    /// State of impure external functions evaluated at translation time.
+    pub ext: std::cell::RefCell<crate::external::ExtState>,
+    /// Leaves of the arguments of each call site, for [`Arena::visit_leaves`]: many
+    /// expressions read outputs of one call on large arguments.
+    call_leaves: std::cell::RefCell<FxHashMap<u32, Rc<[Node]>>>,
 }
 
 #[inline]
@@ -582,6 +337,10 @@ impl Arena {
 
     pub fn initial(&mut self) -> ExprId {
         self.intern_node(Node::Initial)
+    }
+
+    pub fn terminal(&mut self) -> ExprId {
+        self.intern_node(Node::Terminal)
     }
 
     pub fn neg(&mut self, a: ExprId) -> ExprId {
@@ -790,20 +549,65 @@ impl Arena {
         (self.tables.len() - 1) as u32
     }
 
+    /// Value of column `col` of table `table` at `x`.
     pub fn interp(&mut self, table: u32, col: u32, x: ExprId) -> ExprId {
-        if let Some(xv) = self.as_const(x) {
-            let v = self.tables[table as usize].interp(col as usize, xv);
-            return self.constant(v);
-        }
-        self.intern_node(Node::Interp(table, col, x))
+        self.table_lookup(table, col, tkind::VALUE, x, Self::ZERO)
     }
 
-    pub fn interp_der(&mut self, table: u32, col: u32, x: ExprId) -> ExprId {
-        if let Some(xv) = self.as_const(x) {
-            let v = self.tables[table as usize].slope(col as usize, xv);
+    /// The lookup `kind` of column `col` of table `table` at `x`, with `ne` the current
+    /// `nextTimeEvent` of a time table.
+    pub fn table_lookup(
+        &mut self,
+        table: u32,
+        col: u32,
+        kind: u32,
+        x: ExprId,
+        ne: ExprId,
+    ) -> ExprId {
+        let view = match self.view_intern.get(&(table, col)) {
+            Some(&v) => v,
+            None => {
+                self.views.push((table, col));
+                let v = (self.views.len() - 1) as u32;
+                self.view_intern.insert((table, col), v);
+                v
+            }
+        };
+        self.lookup((view << tkind::BITS) | kind, x, ne)
+    }
+
+    /// [`Node::Interp`] by its packed `view << 2 | kind` field.
+    fn lookup(&mut self, vk: u32, x: ExprId, ne: ExprId) -> ExprId {
+        if let (Some(xv), Some(nv)) = (self.as_const(x), self.as_const(ne)) {
+            let v = self.eval_lookup(vk, xv, nv);
             return self.constant(v);
         }
-        self.intern_node(Node::InterpDer(table, col, x))
+        self.intern_node(Node::Interp(vk, x, ne))
+    }
+
+    /// Evaluate a [`Node::Interp`] by its packed field.
+    pub fn eval_lookup(&self, vk: u32, x: f64, ne: f64) -> f64 {
+        let (t, c) = self.views[(vk >> tkind::BITS) as usize];
+        let ne = if self.tables[t as usize].time {
+            ne
+        } else {
+            f64::INFINITY
+        };
+        self.tables[t as usize].eval(vk & 3, c as usize, x, ne)
+    }
+
+    pub fn add_table2(&mut self, t: Table2) -> u32 {
+        self.tables2.push(t);
+        (self.tables2.len() - 1) as u32
+    }
+
+    /// Value (`kind == 0`) or partial derivative of 2-D table `table` at `(u1, u2)`.
+    pub fn interp2(&mut self, table: u32, kind: u32, u1: ExprId, u2: ExprId) -> ExprId {
+        if let (Some(a), Some(b)) = (self.as_const(u1), self.as_const(u2)) {
+            let v = self.tables2[table as usize].eval(kind, a, b);
+            return self.constant(v);
+        }
+        self.intern_node(Node::Interp2((table << 5) | kind, u1, u2))
     }
 
     /// `delay(x, d)` of the variable `x`; every call creates a new history buffer.
@@ -841,6 +645,10 @@ impl Arena {
     /// Output `out` of loop program `prog` started from `args` (folded when the
     /// arguments are constants).
     pub fn call(&mut self, prog: u32, args: Vec<ExprId>, out: u32) -> ExprId {
+        if self.progs[prog as usize].is_impure() {
+            let c = self.call_site(prog, args);
+            return self.intern_node(Node::Call(c, out));
+        }
         if let Some(vals) = args
             .iter()
             .map(|&a| self.as_const(a))
@@ -867,7 +675,8 @@ impl Arena {
             | Node::Pre(_)
             | Node::Time
             | Node::Local(_)
-            | Node::Initial => {}
+            | Node::Initial
+            | Node::Terminal => {}
             Node::Call(c, _) | Node::CallD(c, _) => {
                 out.extend_from_slice(&self.calls[c as usize].args)
             }
@@ -876,18 +685,16 @@ impl Arena {
                 out.push(rel.lhs);
                 out.push(rel.rhs);
             }
-            Node::Neg(a)
-            | Node::F1(_, a)
-            | Node::Interp(_, _, a)
-            | Node::InterpDer(_, _, a)
-            | Node::Delay(_, a) => out.push(a),
-            Node::Add(a, b)
+            Node::Neg(a) | Node::F1(_, a) | Node::Delay(_, a) => out.push(a),
+            Node::Interp(_, a, b)
+            | Node::Add(a, b)
             | Node::Sub(a, b)
             | Node::Mul(a, b)
             | Node::Div(a, b)
             | Node::Pow(a, b)
             | Node::F2(_, a, b)
             | Node::Cmp(_, a, b)
+            | Node::Interp2(_, a, b)
             | Node::Clk(_, a, b) => {
                 out.push(a);
                 out.push(b);
@@ -914,7 +721,8 @@ impl Arena {
             | Node::Pre(_)
             | Node::Time
             | Node::Local(_)
-            | Node::Initial => id,
+            | Node::Initial
+            | Node::Terminal => id,
             Node::Call(c, out) => {
                 let prog = self.calls[c as usize].prog;
                 self.call(prog, ch.to_vec(), out)
@@ -929,8 +737,8 @@ impl Arena {
             }
             Node::Neg(_) => self.neg(ch[0]),
             Node::F1(f, _) => self.f1(f, ch[0]),
-            Node::Interp(t, c, _) => self.interp(t, c, ch[0]),
-            Node::InterpDer(t, c, _) => self.interp_der(t, c, ch[0]),
+            Node::Interp(vk, ..) => self.lookup(vk, ch[0], ch[1]),
+            Node::Interp2(tk, ..) => self.interp2(tk >> 5, tk & 31, ch[0], ch[1]),
             Node::Add(..) => self.add(ch[0], ch[1]),
             Node::Sub(..) => self.sub(ch[0], ch[1]),
             Node::Mul(..) => self.mul(ch[0], ch[1]),
@@ -1067,8 +875,33 @@ impl Arena {
         false
     }
 
+    /// Whether `root` calls an impure external function.
+    pub fn contains_impure(&self, root: ExprId) -> bool {
+        if !self.progs.iter().any(|p| p.is_impure()) {
+            return false;
+        }
+        let mut seen = rustc_hash::FxHashSet::default();
+        let mut stack = vec![root];
+        let mut ch = Vec::new();
+        while let Some(id) = stack.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
+            if let Node::Call(c, _) = self.node(id)
+                && self.progs[self.calls[c as usize].prog as usize].is_impure()
+            {
+                return true;
+            }
+            ch.clear();
+            self.children(id, &mut ch);
+            stack.extend(ch.iter().copied());
+        }
+        false
+    }
+
     pub fn visit_leaves(&self, root: ExprId, f: &mut dyn FnMut(Node)) {
         let mut seen = rustc_hash::FxHashSet::default();
+        let mut seen_calls = rustc_hash::FxHashSet::default();
         let mut stack = vec![root];
         let mut ch = Vec::new();
         while let Some(id) = stack.pop() {
@@ -1079,12 +912,39 @@ impl Arena {
             match n {
                 Node::Var(_) | Node::Der(_) | Node::Pre(_) | Node::Time => f(n),
                 Node::Delay(..) => f(Node::Time),
+                Node::Call(c, _) | Node::CallD(c, _) => {
+                    if seen_calls.insert(c) {
+                        for &l in self.call_leaves(c).iter() {
+                            f(l);
+                        }
+                    }
+                    continue;
+                }
                 _ => {}
             }
             ch.clear();
             self.children(id, &mut ch);
             stack.extend(ch.iter().copied());
         }
+    }
+
+    /// The distinct leaves of the arguments of call site `c`.
+    fn call_leaves(&self, c: u32) -> Rc<[Node]> {
+        if let Some(l) = self.call_leaves.borrow().get(&c) {
+            return l.clone();
+        }
+        let mut set = rustc_hash::FxHashSet::default();
+        let mut leaves = Vec::new();
+        for &a in &self.calls[c as usize].args {
+            self.visit_leaves(a, &mut |n| {
+                if set.insert(n) {
+                    leaves.push(n);
+                }
+            });
+        }
+        let l: Rc<[Node]> = leaves.into();
+        self.call_leaves.borrow_mut().insert(c, l.clone());
+        l
     }
 
     /// True if `root` references the leaf `target`.
@@ -1126,6 +986,7 @@ impl Arena {
             match n {
                 Node::Const(_)
                 | Node::Initial
+                | Node::Terminal
                 | Node::Rel(_)
                 | Node::Cmp(..)
                 | Node::Local(_)
@@ -1240,13 +1101,63 @@ impl Arena {
                     let (da, db) = (d(1), d(2));
                     self.if_(c, da, db)
                 }
-                Node::Interp(t, c, x) => {
-                    let dx = d(0);
-                    let s = self.interp_der(t, c, x);
-                    self.mul(s, dx)
+                Node::Interp(vk, x, ne) => {
+                    // Chain rule with the exact derivative up to second order (third
+                    // derivatives are taken as zero); `ne` is discrete.
+                    let k = vk & 3;
+                    if k == tkind::VALUE || k == tkind::D1 {
+                        let dx = d(0);
+                        let s = self.lookup(vk + 1, x, ne);
+                        self.mul(s, dx)
+                    } else {
+                        Self::ZERO
+                    }
+                }
+                Node::Interp2(tk, u1, u2) => {
+                    // Chain rule with the exact partial derivatives (up to second order;
+                    // third derivatives are taken as zero, like the slope of a 1-D table).
+                    // On a grid line the partials are one-sided, in the direction in
+                    // which the abscissae move (the sign of their derivatives), as the C
+                    // `getDerValue` does; derivatives of those keep their sides.
+                    use crate::table2::kind as k2;
+                    let (t, k) = (tk >> k2::BITS, tk & ((1 << k2::BITS) - 1));
+                    let (du1, du2) = (d(0), d(1));
+                    let first = k & 7 == k2::VALUE;
+                    let l1 = if first {
+                        self.cmp(Cmp::Lt, du1, Self::ZERO)
+                    } else {
+                        Self::ZERO
+                    };
+                    let l2 = if first {
+                        self.cmp(Cmp::Lt, du2, Self::ZERO)
+                    } else {
+                        Self::ZERO
+                    };
+                    let mut r = Self::ZERO;
+                    for (dim, du) in [(0, du1), (1, du2)] {
+                        if self.is_zero(du) {
+                            continue;
+                        }
+                        let Some(pk) = k2::partial(k, dim) else {
+                            continue;
+                        };
+                        let p = if first {
+                            let at = |a: &mut Self, s: u32| a.interp2(t, pk | s, u1, u2);
+                            let (rr, lr) = (at(self, 0), at(self, k2::LEFT1));
+                            let (rl, ll) = (at(self, k2::LEFT2), at(self, k2::LEFT1 | k2::LEFT2));
+                            let right1 = self.if_(l2, rl, rr);
+                            let left1 = self.if_(l2, ll, lr);
+                            self.if_(l1, left1, right1)
+                        } else {
+                            self.interp2(t, pk, u1, u2)
+                        };
+                        let term = self.mul(p, du);
+                        r = self.add(r, term);
+                    }
+                    r
                 }
                 // the history does not depend on the current values
-                Node::InterpDer(..) | Node::Delay(..) => Self::ZERO,
+                Node::Delay(..) => Self::ZERO,
                 Node::Call(c, out) => {
                     // chain rule with numerically evaluated partial derivatives
                     let prog = self.calls[c as usize].prog;
@@ -1361,6 +1272,7 @@ impl Arena {
             }
             Node::Time => s.push_str("time"),
             Node::Initial => s.push_str("initial()"),
+            Node::Terminal => s.push_str("terminal()"),
             Node::Neg(a) => paren(s, 4, &mut |s| {
                 s.push('-');
                 self.render_into(a, name, s, 5);
@@ -1443,21 +1355,38 @@ impl Arena {
                 s.push_str(" else ");
                 self.render_into(b, name, s, 0);
             }),
-            Node::Interp(t, c, x) => {
-                let _ = write!(s, "interpolate(table{t}, {c}, ");
+            Node::Interp(vk, x, ne) => {
+                let (t, c) = self.views[(vk >> tkind::BITS) as usize];
+                let f = ["", "_d1", "_d2", "_nextEvent"][(vk & 3) as usize];
+                let _ = write!(s, "interpolate{f}(table{t}, {c}, ");
                 self.render_into(x, name, s, 0);
+                if self.tables[t as usize].time {
+                    s.push_str(", ");
+                    self.render_into(ne, name, s, 0);
+                }
                 s.push(')');
             }
-            Node::InterpDer(t, c, x) => {
-                let _ = write!(s, "interpolateSlope(table{t}, {c}, ");
-                self.render_into(x, name, s, 0);
+            Node::Interp2(tk, a, b) => {
+                let f = ["", "_d1", "_d2", "_d11", "_d12", "_d22"][(tk & 7).min(5) as usize];
+                let _ = write!(s, "interpolate2D{f}(table2D{}, ", tk >> 5);
+                self.render_into(a, name, s, 0);
+                s.push_str(", ");
+                self.render_into(b, name, s, 0);
                 s.push(')');
             }
             Node::Local(k) => {
                 let _ = write!(s, "$local{k}");
             }
             Node::Call(c, out) | Node::CallD(c, out) => {
-                let _ = write!(s, "$loop{}[{}](", self.calls[c as usize].prog, out);
+                let prog = self.calls[c as usize].prog;
+                match &self.progs[prog as usize].native {
+                    Some(nc) => {
+                        let _ = write!(s, "{}[{}](", crate::external::describe(nc), out);
+                    }
+                    None => {
+                        let _ = write!(s, "$loop{}[{}](", prog, out);
+                    }
+                }
                 for (i, &a) in self.calls[c as usize].args.iter().enumerate() {
                     if i > 0 {
                         s.push_str(", ");
@@ -1617,40 +1546,5 @@ mod tests {
         let v = a.substitute(d, &|n| if n == Node::Var(0) { Some(c) } else { None });
         let expect = 0.7f64.sin() + 0.7 * 0.7f64.cos();
         assert!((a.as_const(v).unwrap() - expect).abs() < 1e-14);
-    }
-
-    #[test]
-    fn table_modes() {
-        let data = vec![0.0, 0.0, 1.0, 1.0, 2.0, 4.0, 3.0, 9.0];
-        let mut t = Table::linear(4, 2, data.clone(), 0);
-        assert_eq!(t.interp(1, 1.5), 2.5);
-        assert_eq!(t.interp(1, 5.0), 9.0);
-        t.extrapolation = 1;
-        assert_eq!(t.interp(1, 4.0), 14.0);
-        t.smoothness = 1;
-        assert_eq!(t.interp(1, 1.5), 1.0);
-        assert_eq!(t.slope(1, 1.5), 0.0);
-        // Periodic with a shift: period 3, so x = 4.5 + 1 maps to 1.5 + 1 = 2.5.
-        let mut p = Table::linear(4, 2, data.clone(), 2);
-        p.shift = 1.0;
-        assert_eq!(p.interp(1, 5.5), p.interp(1, 2.5));
-        assert_eq!(p.next_event(4.2), 5.0);
-        assert_eq!(p.next_event(6.5), 7.0);
-        // Cubic Hermite passes through the points and has a continuous slope.
-        let mut c = Table::linear(4, 2, data, 0);
-        c.make_cubic(false);
-        for (x, y) in [(0.0, 0.0), (1.0, 1.0), (2.0, 4.0), (3.0, 9.0)] {
-            assert!((c.interp(1, x) - y).abs() < 1e-12);
-        }
-        assert!((c.slope(1, 1.0 - 1e-9) - c.slope(1, 1.0 + 1e-9)).abs() < 1e-6);
-        let h = 1e-6;
-        let fd = (c.interp(1, 1.3 + h) - c.interp(1, 1.3 - h)) / (2.0 * h);
-        assert!((fd - c.slope(1, 1.3)).abs() < 1e-6);
-        // Start time: zero output and the first event at the start.
-        let mut s = Table::linear(2, 2, vec![0.0, 1.0, 1.0, 1.0], 0);
-        s.start = 0.5;
-        assert_eq!(s.interp(1, 0.2), 0.0);
-        assert_eq!(s.next_event(0.2), 0.5);
-        assert_eq!(s.interp(Table::NEXT_EVENT as usize, 0.7), 1.0);
     }
 }

@@ -16,6 +16,7 @@ thiserror = { workspace = true }
 rustc-hash = { workspace = true }
 indexmap = { workspace = true }
 anyhow = { workspace = true }
+miniz_oxide = "0.8"
 
 [features]
 # FMU export (`fmu::write_fmu`): adds the zip writer.

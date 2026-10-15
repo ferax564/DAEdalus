@@ -95,6 +95,32 @@ fn check(got: &[Vec<f64>], want: &[Vec<f64>], tol: f64) {
 }
 
 #[test]
+fn cubic_table_second_derivative() {
+    // der(x3) = s'' - x3 with s = T(x1) (Akima table), der(x1) = x2 and
+    // der(x2) = u - x1: s'' = T''(x1) x2^2 + T'(x1) (u - x1), so the exact Jacobian
+    // needs the third derivative of the table (the tangent of its second derivative).
+    // (index reduction may pick s and ds as states in place of x1 and x2)
+    let ex = lin("Lin.CubicTable", None, JacobianMethod::Exact);
+    let fd = lin("Lin.CubicTable", None, JacobianMethod::CentralDifference);
+    let states: Vec<&str> = ex.states.iter().map(|s| s.as_str()).collect();
+    assert_eq!(states.len(), 3, "{states:?}");
+    let (a, b, c) = reorder(&ex, &states);
+    let (fa, fb, fc) = reorder(&fd, &states);
+    check(&a, &fa, 1e-6);
+    check(&b, &fb, 1e-6);
+    check(&c, &fc, 1e-6);
+    check(&ex.d, &fd.d, 1e-6);
+    // the row of der(x3) depends on the first two states through T'''
+    let r = idx(&ex.states, "x3");
+    assert!(
+        a[r].iter()
+            .enumerate()
+            .any(|(j, v)| j != r && v.abs() > 1e-3),
+        "{a:?}"
+    );
+}
+
+#[test]
 fn mass_spring_damper() {
     for method in [JacobianMethod::Exact, JacobianMethod::CentralDifference] {
         let l = lin("Lin.MassSpringDamper", None, method);

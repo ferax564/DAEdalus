@@ -135,6 +135,14 @@ fn clocked_partitions() {
 }
 
 #[test]
+fn break_under_time_varying_condition() {
+    let r = run("break.mo", "B.Test", 1.0, Method::Bdf);
+    for (t, y) in [(0.1, 0.0), (0.3, 1.0), (0.6, 3.0), (0.8, 6.0), (1.0, 10.0)] {
+        assert_eq!(r.at("y", t).unwrap(), y, "t = {t}");
+    }
+}
+
+#[test]
 fn return_and_break_under_runtime_conditions() {
     let r = run("functions_control.mo", "FnTest", 1.0, Method::Bdf);
     // firstIdx({time > 0.3, time > 0.6, true}): 3 before 0.3, then 1
@@ -154,7 +162,15 @@ fn return_and_break_under_runtime_conditions() {
 #[test]
 fn function_arguments_and_partial_application() {
     let r = run("function_args.mo", "FunctionArgs", 1.0, Method::Bdf);
-    assert!(close(r.final_value("fixedRoot").unwrap(), 2f64.sqrt(), 1e-9));
+    assert!(close(
+        r.final_value("fixedRoot").unwrap(),
+        2f64.sqrt(),
+        1e-9
+    ));
     assert!(close(r.at("movingRoot", 0.5).unwrap(), 1.5f64.sqrt(), 1e-9));
-    assert!(close(r.final_value("movingRoot").unwrap(), 2f64.sqrt(), 1e-9));
+    assert!(close(
+        r.final_value("movingRoot").unwrap(),
+        2f64.sqrt(),
+        1e-9
+    ));
 }

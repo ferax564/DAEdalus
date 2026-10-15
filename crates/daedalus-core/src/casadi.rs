@@ -25,7 +25,7 @@
 
 use crate::backend::{Block, System, eval};
 use crate::codegen;
-use crate::expr::{Arena, ExprId, Node, VarId, fn1_name, fn2_name};
+use crate::expr::{Arena, ExprId, Node, VarId, fn1_name, fn2_name, tkind};
 use crate::flat::VarKind;
 use crate::sim::{SimOptions, Simulation};
 use anyhow::{Result, bail};
@@ -94,7 +94,7 @@ impl Nodes<'_> {
                     None => bail!("der() of a variable without a derivative variable"),
                 },
                 Node::Time => json!(["time"]),
-                Node::Initial => json!(["const", 0.0]),
+                Node::Initial | Node::Terminal => json!(["const", 0.0]),
                 Node::Neg(a) => json!(["neg", k(a)]),
                 Node::Add(a, b) => json!(["add", k(a), k(b)]),
                 Node::Sub(a, b) => json!(["sub", k(a), k(b)]),
@@ -109,8 +109,19 @@ impl Nodes<'_> {
                     json!(["cmp", rel.op.symbol(), k(rel.lhs), k(rel.rhs)])
                 }
                 Node::If(c, a, b) => json!(["if", k(c), k(a), k(b)]),
-                Node::Interp(t, c, a) => json!(["interp", t, c, k(a)]),
-                Node::InterpDer(t, c, a) => json!(["interp_der", t, c, k(a)]),
+                // A 1-D table lookup by the column's view; without events, time tables
+                // are looked up without their event intervals.
+                Node::Interp(vk, a, _) => {
+                    let (t, c) = self.arena.views[(vk >> tkind::BITS) as usize];
+                    let op = match vk & 3 {
+                        tkind::VALUE => "interp",
+                        tkind::D1 => "interp_der",
+                        tkind::D2 => "interp_der2",
+                        _ => bail!("table time events are not supported by the CasADi export"),
+                    };
+                    json!([op, t, c, k(a)])
+                }
+                Node::Interp2(..) => bail!("2-D tables are not supported by the CasADi export"),
                 Node::Delay(..) => bail!("delay() is not supported by the CasADi export"),
                 Node::Call(..) | Node::CallD(..) | Node::Local(_) => {
                     bail!("functions with while-loops are not supported by the CasADi export")

@@ -5,7 +5,7 @@
 //! same code runs natively and in WebAssembly without allocation in the hot loop.
 
 use crate::backend::{AliasKind, Block, System};
-use crate::expr::{Arena, Cmp, ExprId, Fn1, Fn2, Node, Table, VarId, eval_f1, eval_f2};
+use crate::expr::{Arena, Cmp, ExprId, Fn1, Fn2, Node, Table, Table2, VarId, eval_f1, eval_f2};
 use crate::flat::{VarKind, Variable, WhenAction};
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -27,15 +27,20 @@ pub enum Ins {
     Cmp(Cmp, Slot, Slot, Slot),
     /// `d = if c != 0 { a } else { b }`
     Select(Slot, Slot, Slot, Slot),
-    /// `d = table[t].interp(col, x)`
-    Interp(Slot, u32, u32, Slot),
-    InterpDer(Slot, u32, u32, Slot),
+    /// `d = tables[t].eval(kind, col, x, ne)` with `(t, col) = views[vk >> 2]`, `kind = vk & 3`
+    Interp(Slot, u32, Slot, Slot),
+    /// `d = tables2[tk >> 5].eval(tk & 31, u1, u2)` (value or partial derivative, see
+    /// [`crate::table2::kind`])
+    Interp2(Slot, u32, Slot, Slot),
     /// `d = history[k](time - r[delay])`
     Delay(Slot, u32, Slot),
     /// `d = output out of the loop program run at call site s`
     Call(Slot, u32, u32),
     /// `d = d output / d argument` of call site `s`, `(out << 16) | arg`
     CallD(Slot, u32, u32),
+    /// Execute the impure external function of call site `s` (an effect of a fired
+    /// when-clause); later [`Ins::Call`]s of the site read its results.
+    Exec(u32),
     /// Solve Newton block `i` in place.
     Newton(u32),
     /// Skip the next `n` instructions when `c == 0`.
@@ -54,6 +59,8 @@ pub struct ProgCode {
     pub cond_slot: Slot,
     pub next: Vec<Ins>,
     pub next_slots: Vec<Slot>,
+    /// A native external function instead of a loop.
+    pub native: Option<crate::external::NativeCall>,
 }
 
 /// A call of a loop program: the registers (of the calling tape) holding its arguments.
@@ -96,6 +103,10 @@ pub struct WhenCode {
     /// Branches whose condition contains `initial()`: they fire at initialization even
     /// when another part of the condition (`{time >= t_next, initial()}`) is already true.
     pub at_initial: Vec<bool>,
+    /// Per branch: code run once when the branch fires, before its actions are read:
+    /// the effects (impure external calls) in order, then the values of actions that
+    /// read their results.
+    pub effects: Vec<Vec<Ins>>,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -113,6 +124,7 @@ pub struct Layout {
     pub pre0: usize,
     pub time: usize,
     pub initial: usize,
+    pub terminal: usize,
     pub rel0: usize,
     pub n_rel: usize,
     pub n_regs: usize,
@@ -126,6 +138,9 @@ pub struct Model {
     pub layout: Layout,
     pub consts: Vec<(Slot, f64)>,
     pub tables: Vec<Table>,
+    /// (table, column) of the [`Ins::Interp`] views.
+    pub views: Vec<(u32, u32)>,
+    pub tables2: Vec<Table2>,
     pub newton: Vec<NewtonBlock>,
     /// Parameter bindings in dependency order, one segment per parameter so that
     /// individual parameters can be overridden without recompiling.
@@ -187,11 +202,27 @@ struct Emitter<'a> {
     sites: Vec<SiteCode>,
     /// Whether an expression contains a function call (worth branching around).
     has_call: FxHashMap<ExprId, bool>,
+    has_impure: FxHashMap<ExprId, bool>,
     /// Nodes memoised inside the branches being emitted (forgotten when a branch ends).
     branch_log: Vec<Vec<ExprId>>,
     /// Result slots of branched `if` expressions (written in two places).
     branched: FxHashSet<Slot>,
     site_of: FxHashMap<(u32, Vec<Slot>), u32>,
+}
+
+impl Model {
+    /// Evaluate a 1-D table lookup ([`Ins::Interp`]).
+    #[inline]
+    pub fn lookup(&self, vk: u32, x: f64, ne: f64) -> f64 {
+        let (t, c) = self.views[(vk >> 2) as usize];
+        let tb = &self.tables[t as usize];
+        tb.eval(
+            vk & 3,
+            c as usize,
+            x,
+            if tb.time { ne } else { f64::INFINITY },
+        )
+    }
 }
 
 impl Emitter<'_> {
@@ -263,6 +294,54 @@ impl Emitter<'_> {
         }
     }
 
+    /// Several `if c then a_i else b_i` with one condition and function calls in their
+    /// branches: one pair of branches computes them all, so what they share is computed
+    /// once (the outputs of one call taken under an algorithm `if`).
+    fn emit_branched_multi(
+        &mut self,
+        c: ExprId,
+        ids: &[ExprId],
+        memo: &mut FxHashMap<ExprId, Slot>,
+        out: &mut Vec<Ins>,
+    ) {
+        let sc = self.emit(c, memo, out);
+        let ds: Vec<Slot> = ids.iter().map(|_| self.temp()).collect();
+        let jz = out.len();
+        out.push(Ins::Jz(sc, 0));
+        self.emit_sides(ids, &ds, true, memo, out);
+        let jmp = out.len();
+        out.push(Ins::Jmp(0));
+        out[jz] = Ins::Jz(sc, (out.len() - jz - 1) as u32);
+        self.emit_sides(ids, &ds, false, memo, out);
+        out[jmp] = Ins::Jmp((out.len() - jmp - 1) as u32);
+        for (&id, &d) in ids.iter().zip(&ds) {
+            self.branched.insert(d);
+            self.remember(memo, id, d);
+        }
+    }
+
+    /// One branch of [`Emitter::emit_branched_multi`]: `d_i := a_i` (or `b_i`).
+    fn emit_sides(
+        &mut self,
+        ids: &[ExprId],
+        ds: &[Slot],
+        then: bool,
+        memo: &mut FxHashMap<ExprId, Slot>,
+        out: &mut Vec<Ins>,
+    ) {
+        self.branch_log.push(Vec::new());
+        for (&id, &d) in ids.iter().zip(ds) {
+            let Node::If(_, a, b) = self.arena.node(id) else {
+                unreachable!("not an if-expression")
+            };
+            let s = self.emit(if then { a } else { b }, memo, out);
+            out.push(Ins::Copy(d, s));
+        }
+        for x in self.branch_log.pop().unwrap() {
+            memo.remove(&x);
+        }
+    }
+
     /// `if c then a else b` with a function call in a branch: only the taken branch runs.
     fn emit_branched(
         &mut self,
@@ -304,6 +383,68 @@ impl Emitter<'_> {
         s
     }
 
+    fn contains_impure(&mut self, root: ExprId) -> bool {
+        if !self.contains_call(root) {
+            return false;
+        }
+        if let Some(&b) = self.has_impure.get(&root) {
+            return b;
+        }
+        let mut stack = vec![(root, false)];
+        let mut ch = Vec::new();
+        while let Some((id, expanded)) = stack.pop() {
+            if self.has_impure.contains_key(&id) {
+                continue;
+            }
+            ch.clear();
+            self.arena.children(id, &mut ch);
+            if !expanded {
+                stack.push((id, true));
+                for &c in &ch {
+                    if !self.has_impure.contains_key(&c) {
+                        stack.push((c, false));
+                    }
+                }
+                continue;
+            }
+            let own = match self.arena.node(id) {
+                Node::Call(c, _) => {
+                    self.arena.progs[self.arena.calls[c as usize].prog as usize].is_impure()
+                }
+                _ => false,
+            };
+            let b = own || ch.iter().any(|c| self.has_impure[c]);
+            self.has_impure.insert(id, b);
+        }
+        self.has_impure[&root]
+    }
+
+    /// Emit an effect: execute the impure call `call` when `cond` holds. The arguments
+    /// are computed unconditionally, so that the actions reading the results find the
+    /// same call site.
+    fn emit_effect(
+        &mut self,
+        cond: ExprId,
+        call: ExprId,
+        memo: &mut FxHashMap<ExprId, Slot>,
+        out: &mut Vec<Ins>,
+    ) {
+        let Node::Call(c, _) = self.arena.node(call) else {
+            return;
+        };
+        let args: Vec<ExprId> = self.arena.calls[c as usize].args.clone();
+        let slots: Vec<Slot> = args.iter().map(|&a| self.emit(a, memo, out)).collect();
+        let site = self.site(c, slots);
+        if self.arena.as_const(cond) == Some(0.0) {
+            return;
+        }
+        if cond != Arena::ONE {
+            let sc = self.emit(cond, memo, out);
+            out.push(Ins::Jz(sc, 1));
+        }
+        out.push(Ins::Exec(site));
+    }
+
     /// Emit code computing `root`; returns its slot. `memo` caches already computed nodes.
     fn emit(
         &mut self,
@@ -324,6 +465,7 @@ impl Emitter<'_> {
                 Node::Pre(v) => Some((self.layout.pre0 + v as usize) as Slot),
                 Node::Time => Some(self.layout.time as Slot),
                 Node::Initial => Some(self.layout.initial as Slot),
+                Node::Terminal => Some(self.layout.terminal as Slot),
                 Node::Der(v) => panic!("unexpected der({v}) in code generation"),
                 Node::Rel(r) if !self.raw_rel => Some((self.layout.rel0 + r as usize) as Slot),
                 _ => None,
@@ -373,8 +515,8 @@ impl Emitter<'_> {
                 Node::Cmp(op, ..) => Ins::Cmp(op, d, s[0], s[1]),
                 Node::Rel(r) => Ins::Cmp(self.arena.relations[r as usize].op, d, s[0], s[1]),
                 Node::If(..) => Ins::Select(d, s[0], s[1], s[2]),
-                Node::Interp(t, c, _) => Ins::Interp(d, t, c, s[0]),
-                Node::InterpDer(t, c, _) => Ins::InterpDer(d, t, c, s[0]),
+                Node::Interp(vk, ..) => Ins::Interp(d, vk, s[0], s[1]),
+                Node::Interp2(tk, ..) => Ins::Interp2(d, tk, s[0], s[1]),
                 Node::Delay(k, _) => Ins::Delay(d, k, s[0]),
                 Node::Call(c, out) => Ins::Call(d, self.site(c, s), out),
                 Node::CallD(c, k) => Ins::CallD(d, self.site(c, s), k),
@@ -432,11 +574,11 @@ fn retarget(ins: &mut Ins, from: Slot, to: Slot) -> bool {
         | Ins::Cmp(_, d, ..)
         | Ins::Select(d, ..)
         | Ins::Interp(d, ..)
-        | Ins::InterpDer(d, ..)
+        | Ins::Interp2(d, ..)
         | Ins::Delay(d, ..)
         | Ins::Call(d, ..)
         | Ins::CallD(d, ..) => d,
-        Ins::Newton(_) | Ins::Jz(..) | Ins::Jmp(_) => return false,
+        Ins::Newton(_) | Ins::Exec(_) | Ins::Jz(..) | Ins::Jmp(_) => return false,
     };
     if *d == from {
         *d = to;
@@ -539,6 +681,7 @@ fn compile_blocks(
                             Ins::Select(..)
                                 | Ins::Jz(..)
                                 | Ins::Jmp(_)
+                                | Ins::Exec(_)
                                 | Ins::Cmp(..)
                                 | Ins::Call(..)
                                 | Ins::CallD(..)
@@ -575,11 +718,24 @@ fn compile_blocks(
 fn compile_prog(arena: &mut Arena, p: usize, sites: &mut Vec<SiteCode>) -> ProgCode {
     let prog = arena.progs[p].clone();
     let n = prog.n;
+    if let Some(nc) = prog.native {
+        return ProgCode {
+            n,
+            n_regs: 0,
+            consts: Vec::new(),
+            cond: Vec::new(),
+            cond_slot: 0,
+            next: Vec::new(),
+            next_slots: Vec::new(),
+            native: Some(nc),
+        };
+    }
     let layout = Layout {
         nv: n,
         pre0: n,
         time: n,
         initial: n,
+        terminal: n,
         rel0: n,
         n_rel: 0,
         n_regs: 0,
@@ -593,6 +749,7 @@ fn compile_prog(arena: &mut Arena, p: usize, sites: &mut Vec<SiteCode>) -> ProgC
         raw_rel: true,
         sites: std::mem::take(sites),
         has_call: FxHashMap::default(),
+        has_impure: FxHashMap::default(),
         branch_log: Vec::new(),
         branched: FxHashSet::default(),
         site_of: FxHashMap::default(),
@@ -615,6 +772,7 @@ fn compile_prog(arena: &mut Arena, p: usize, sites: &mut Vec<SiteCode>) -> ProgC
         cond_slot,
         next,
         next_slots,
+        native: None,
     }
 }
 
@@ -627,11 +785,14 @@ pub fn compile(mut sys: System) -> Model {
         pre0: nv,
         time: 2 * nv,
         initial: 2 * nv + 1,
-        rel0: 2 * nv + 2,
+        terminal: 2 * nv + 2,
+        rel0: 2 * nv + 3,
         n_rel,
         n_regs: 0,
     };
     let tables = sys.arena.tables.clone();
+    let views = sys.arena.views.clone();
+    let tables2 = sys.arena.tables2.clone();
     let mut sites = Vec::new();
     let progs: Vec<ProgCode> = (0..sys.arena.progs.len())
         .map(|p| compile_prog(&mut sys.arena, p, &mut sites))
@@ -645,6 +806,7 @@ pub fn compile(mut sys: System) -> Model {
         raw_rel: true,
         sites,
         has_call: FxHashMap::default(),
+        has_impure: FxHashMap::default(),
         branch_log: Vec::new(),
         branched: FxHashSet::default(),
         site_of: FxHashMap::default(),
@@ -743,33 +905,76 @@ pub fn compile(mut sys: System) -> Model {
             let mut actions = Vec::new();
             let mut at_initial = Vec::new();
             let mut chained = Vec::new();
+            let mut effects = Vec::new();
             for (c, acts) in &wc.branches {
                 at_initial.push(em.arena.mentions_initial(*c));
                 conds.push(em.emit(*c, &mut memo, &mut when_prog));
                 let (order, chain) = order_actions(em.arena, acts);
                 chained.push(chain);
+                // Impure external calls run once when the branch fires: first the
+                // effects in order, then the actions reading their results.
+                let mut eprog = Vec::new();
+                let mut ememo = None;
+                for a in acts {
+                    if let WhenAction::Effect(cnd, call) = a {
+                        let m = ememo.get_or_insert_with(|| memo.clone());
+                        em.emit_effect(*cnd, *call, m, &mut eprog);
+                    }
+                }
+                // Values under one condition with calls in their branches share them.
+                let mut groups: Vec<(ExprId, Vec<ExprId>)> = Vec::new();
+                for a in acts {
+                    let (WhenAction::Assign(_, e) | WhenAction::Reinit(_, e)) = a else {
+                        continue;
+                    };
+                    let e = *e;
+                    if let Node::If(c, x, y) = em.arena.node(e)
+                        && !memo.contains_key(&e)
+                        && (em.contains_call(x) || em.contains_call(y))
+                        && !em.contains_impure(e)
+                    {
+                        match groups.iter_mut().find(|g| g.0 == c) {
+                            Some(g) => {
+                                if !g.1.contains(&e) {
+                                    g.1.push(e)
+                                }
+                            }
+                            None => groups.push((c, vec![e])),
+                        }
+                    }
+                }
+                for (c, es) in &groups {
+                    if es.len() > 1 {
+                        em.emit_branched_multi(*c, es, &mut memo, &mut when_prog);
+                    }
+                }
                 let mut list = Vec::new();
                 for a in order.into_iter().map(|k| &acts[k]) {
+                    let mut value = |em: &mut Emitter, e: ExprId| {
+                        if em.contains_impure(e) {
+                            let m = ememo.get_or_insert_with(|| memo.clone());
+                            em.emit(e, m, &mut eprog)
+                        } else {
+                            em.emit(e, &mut memo, &mut when_prog)
+                        }
+                    };
                     list.push(match a {
-                        WhenAction::Assign(v, e) => {
-                            Action::Assign(*v, em.emit(*e, &mut memo, &mut when_prog))
-                        }
-                        WhenAction::Reinit(v, e) => {
-                            Action::Reinit(*v, em.emit(*e, &mut memo, &mut when_prog))
-                        }
+                        WhenAction::Assign(v, e) => Action::Assign(*v, value(&mut em, *e)),
+                        WhenAction::Reinit(v, e) => Action::Reinit(*v, value(&mut em, *e)),
                         WhenAction::Terminate(m) => Action::Terminate(m.clone()),
-                        WhenAction::Assert(e, m) => {
-                            Action::Assert(em.emit(*e, &mut memo, &mut when_prog), m.clone())
-                        }
+                        WhenAction::Assert(e, m) => Action::Assert(value(&mut em, *e), m.clone()),
+                        WhenAction::Effect(..) => continue,
                     });
                 }
                 actions.push(list);
+                effects.push(eprog);
             }
             whens.push(WhenCode {
                 conds,
                 actions,
                 chained,
                 at_initial,
+                effects,
             });
         }
     }
@@ -806,6 +1011,8 @@ pub fn compile(mut sys: System) -> Model {
         layout,
         consts,
         tables,
+        views,
+        tables2,
         newton,
         params,
         free_params,
@@ -998,6 +1205,8 @@ pub struct LoopState {
     tcache: Vec<TangentEntry>,
     /// Per loop program: value and tangent registers for forward-mode runs.
     tregs: Vec<(Vec<f64>, Vec<f64>)>,
+    /// State of the impure external functions (random generators, printed lines).
+    pub ext: crate::external::ExtState,
 }
 
 #[derive(Clone, Default)]
@@ -1012,6 +1221,19 @@ struct TangentEntry {
 /// Output `out` of call site `site`, whose arguments are in the caller's registers `r`.
 fn site_value(m: &Model, ls: &mut LoopState, site: usize, out: usize, r: &[f64]) -> f64 {
     let sc = &m.sites[site];
+    if let Some(nc) = &m.progs[sc.prog as usize].native
+        && nc.f.impure()
+    {
+        // The results of the last execution by an effect ([`Ins::Exec`]) of a fired
+        // when-clause; a call site no effect executes runs at every evaluation.
+        if ls.cache[site].2 {
+            return ls.cache[site].1.get(out).copied().unwrap_or(f64::NAN);
+        }
+        let args: Vec<f64> = sc.args.iter().map(|&s| r[s as usize]).collect();
+        let mut o = Vec::new();
+        run_native(nc, &args, &mut o, &mut ls.ext);
+        return o.get(out).copied().unwrap_or(f64::NAN);
+    }
     {
         let (a, st, ok) = &ls.cache[site];
         if *ok
@@ -1037,6 +1259,13 @@ fn site_value(m: &Model, ls: &mut LoopState, site: usize, out: usize, r: &[f64])
 fn site_partial(m: &Model, ls: &mut LoopState, site: usize, k: u32, r: &[f64]) -> f64 {
     let (out, arg) = ((k >> 16) as usize, (k & 0xffff) as usize);
     let sc = &m.sites[site];
+    if m.progs[sc.prog as usize]
+        .native
+        .as_ref()
+        .is_some_and(|c| c.f.impure())
+    {
+        return 0.0;
+    }
     let mut d = std::mem::take(&mut ls.dcache[site]);
     if d.0.len() != sc.args.len() || sc.args.iter().zip(&d.0).any(|(&s, &x)| r[s as usize] != x) {
         d.0.clear();
@@ -1069,6 +1298,13 @@ fn site_tangent(
     dr: &[f64],
 ) -> (f64, f64) {
     let sc = &m.sites[site];
+    if m.progs[sc.prog as usize]
+        .native
+        .as_ref()
+        .is_some_and(|c| c.f.impure())
+    {
+        return (site_value(m, ls, site, out, r), 0.0);
+    }
     {
         let e = &ls.tcache[site];
         if e.ok
@@ -1123,6 +1359,24 @@ fn run_loop_tangent(
     dout: &mut Vec<f64>,
 ) {
     let pc = &m.progs[p];
+    if let Some(nc) = &pc.native {
+        // Directional derivative by a forward difference (none for impure functions).
+        run_native(nc, args, out, &mut ls.ext);
+        dout.clear();
+        dout.resize(out.len(), 0.0);
+        if !nc.f.impure() && dargs.iter().any(|&d| d != 0.0) {
+            let norm = args.iter().fold(1.0f64, |a, &x| a.max(x.abs()));
+            let dn = dargs.iter().fold(0.0f64, |a, &x| a.max(x.abs()));
+            let h = f64::EPSILON.sqrt() * norm / dn;
+            let ap: Vec<f64> = args.iter().zip(dargs).map(|(&a, &d)| a + h * d).collect();
+            let mut o2 = Vec::new();
+            run_native(nc, &ap, &mut o2, &mut ls.ext);
+            for (k, d) in dout.iter_mut().enumerate() {
+                *d = (o2[k] - out[k]) / h;
+            }
+        }
+        return;
+    }
     let (mut r, mut dr) = std::mem::take(&mut ls.tregs[p]);
     if r.len() != pc.n_regs {
         r = vec![0.0; pc.n_regs];
@@ -1279,15 +1533,42 @@ fn run_sub_tangent(m: &Model, ls: &mut LoopState, prog: &[Ins], r: &mut [f64], d
                 r[d as usize] = r[k as usize];
                 dr[d as usize] = dr[k as usize];
             }
-            Ins::Interp(d, t, c, x) => {
-                let tb = &m.tables[t as usize];
-                let xv = r[x as usize];
-                dr[d as usize] = tb.slope(c as usize, xv) * dr[x as usize];
-                r[d as usize] = tb.interp(c as usize, xv);
+            Ins::Interp(d, vk, x, ne) => {
+                let (xv, nv) = (r[x as usize], r[ne as usize]);
+                // d(lookup of kind k)/dx is the lookup of kind k + 1 (the third
+                // derivative for k = 2, piecewise constant for the cubic splines);
+                // the next time event does not depend on x.
+                dr[d as usize] = match vk & 3 {
+                    3 => 0.0,
+                    k => {
+                        let tb = &m.tables[m.views[(vk >> 2) as usize].0 as usize];
+                        let ne = if tb.time { nv } else { f64::INFINITY };
+                        let c = m.views[(vk >> 2) as usize].1 as usize;
+                        tb.eval(k + 1, c, xv, ne) * dr[x as usize]
+                    }
+                };
+                r[d as usize] = m.lookup(vk, xv, nv);
             }
-            Ins::InterpDer(d, t, c, x) => {
-                r[d as usize] = m.tables[t as usize].slope(c as usize, r[x as usize]);
-                dr[d as usize] = 0.0;
+            Ins::Interp2(d, tk, a, b) => {
+                let tb = &m.tables2[(tk >> 5) as usize];
+                let (k, u1, u2) = (tk & 31, r[a as usize], r[b as usize]);
+                let (du1, du2) = (dr[a as usize], dr[b as usize]);
+                // one-sided on grid lines, as the symbolic derivative (see `Arena::forward_diff`)
+                let sides = if k & 7 == 0 {
+                    crate::table2::kind::sides(du1, du2)
+                } else {
+                    0
+                };
+                let mut dv = 0.0;
+                for (dim, du) in [(0, du1), (1, du2)] {
+                    if du != 0.0
+                        && let Some(pk) = crate::table2::kind::partial(k | sides, dim)
+                    {
+                        dv += tb.eval(pk, u1, u2) * du;
+                    }
+                }
+                dr[d as usize] = dv;
+                r[d as usize] = tb.eval(k, u1, u2);
             }
             Ins::Call(d, site, out) => {
                 let (v, dv) = site_tangent(m, ls, site as usize, out as usize, r, dr);
@@ -1303,13 +1584,45 @@ fn run_sub_tangent(m: &Model, ls: &mut LoopState, prog: &[Ins], r: &mut [f64], d
                 dr[d as usize] = 0.0;
             }
             Ins::Newton(_) => {}
+            Ins::Exec(site) => exec_site(m, ls, site as usize, r),
         }
+    }
+}
+
+/// Execute the impure external function of call site `site` and keep its results for
+/// the [`Ins::Call`]s that read them.
+fn exec_site(m: &Model, ls: &mut LoopState, site: usize, r: &[f64]) {
+    let sc = &m.sites[site];
+    let Some(nc) = &m.progs[sc.prog as usize].native else {
+        return;
+    };
+    let args: Vec<f64> = sc.args.iter().map(|&s| r[s as usize]).collect();
+    let mut o = std::mem::take(&mut ls.cache[site].1);
+    run_native(nc, &args, &mut o, &mut ls.ext);
+    ls.cache[site] = (args, o, true);
+}
+
+/// Evaluate a native external function; an error is logged and gives NaN results.
+fn run_native(
+    nc: &crate::external::NativeCall,
+    args: &[f64],
+    out: &mut Vec<f64>,
+    st: &mut crate::external::ExtState,
+) {
+    if let Err(e) = crate::external::eval(nc, args, out, st) {
+        st.log.push(format!("error in {}: {e}", nc.f.name()));
+        out.clear();
+        out.resize(nc.n_out, f64::NAN);
     }
 }
 
 /// Run loop program `p` from state `args`; the final state goes to `out`.
 fn run_loop(m: &Model, ls: &mut LoopState, p: usize, args: &[f64], out: &mut Vec<f64>) {
     let pc = &m.progs[p];
+    if let Some(nc) = &pc.native {
+        run_native(nc, args, out, &mut ls.ext);
+        return;
+    }
     let mut r = std::mem::take(&mut ls.regs[p]);
     if r.len() != pc.n_regs {
         r = vec![0.0; pc.n_regs];
@@ -1369,11 +1682,12 @@ fn run_sub(m: &Model, ls: &mut LoopState, prog: &[Ins], r: &mut [f64]) {
                     r[b as usize]
                 }
             }
-            Ins::Interp(d, t, c, x) => {
-                r[d as usize] = m.tables[t as usize].interp(c as usize, r[x as usize])
+            Ins::Interp(d, vk, x, ne) => {
+                r[d as usize] = m.lookup(vk, r[x as usize], r[ne as usize])
             }
-            Ins::InterpDer(d, t, c, x) => {
-                r[d as usize] = m.tables[t as usize].slope(c as usize, r[x as usize])
+            Ins::Interp2(d, tk, a, b) => {
+                r[d as usize] =
+                    m.tables2[(tk >> 5) as usize].eval(tk & 31, r[a as usize], r[b as usize])
             }
             Ins::Call(d, site, out) => {
                 r[d as usize] = site_value(m, ls, site as usize, out as usize, r)
@@ -1381,6 +1695,7 @@ fn run_sub(m: &Model, ls: &mut LoopState, prog: &[Ins], r: &mut [f64]) {
             Ins::CallD(d, site, k) => r[d as usize] = site_partial(m, ls, site as usize, k, r),
             Ins::Delay(d, ..) => r[d as usize] = f64::NAN,
             Ins::Newton(_) => {}
+            Ins::Exec(site) => exec_site(m, ls, site as usize, r),
         }
     }
 }
@@ -1427,6 +1742,7 @@ impl<'m> Runtime<'m> {
                 dcache: vec![Default::default(); m.sites.len()],
                 tcache: vec![Default::default(); m.sites.len()],
                 tregs: vec![Default::default(); m.progs.len()],
+                ext: Default::default(),
             },
             newton_stats: NewtonStats::default(),
             work: Vec::new(),
@@ -1446,7 +1762,6 @@ impl<'m> Runtime<'m> {
 
     #[inline]
     pub fn run(&mut self, prog: &[Ins]) {
-        let tables = &self.m.tables;
         let mut pc = 0;
         while pc < prog.len() {
             let ins = &prog[pc];
@@ -1479,11 +1794,15 @@ impl<'m> Runtime<'m> {
                         r[b as usize]
                     }
                 }
-                Ins::Interp(d, t, c, x) => {
-                    r[d as usize] = tables[t as usize].interp(c as usize, r[x as usize])
+                Ins::Interp(d, vk, x, ne) => {
+                    r[d as usize] = self.m.lookup(vk, r[x as usize], r[ne as usize])
                 }
-                Ins::InterpDer(d, t, c, x) => {
-                    r[d as usize] = tables[t as usize].slope(c as usize, r[x as usize])
+                Ins::Interp2(d, tk, a, b) => {
+                    r[d as usize] = self.m.tables2[(tk >> 5) as usize].eval(
+                        tk & 31,
+                        r[a as usize],
+                        r[b as usize],
+                    )
                 }
                 Ins::Delay(d, k, ds) => {
                     let dl = r[ds as usize];
@@ -1512,6 +1831,7 @@ impl<'m> Runtime<'m> {
                     self.r[d as usize] = v;
                 }
                 Ins::Newton(i) => self.newton(i as usize),
+                Ins::Exec(site) => exec_site(self.m, &mut self.loops, site as usize, &self.r),
             }
         }
     }
@@ -2088,6 +2408,10 @@ fn when_dependencies(sys: &System) -> (Vec<usize>, Vec<Vec<usize>>) {
                     WhenAction::Assign(_, e)
                     | WhenAction::Reinit(_, e)
                     | WhenAction::Assert(e, _) => es.push(*e),
+                    WhenAction::Effect(c, e) => {
+                        es.push(*c);
+                        es.push(*e);
+                    }
                     WhenAction::Terminate(_) => {}
                 }
             }
@@ -2155,7 +2479,10 @@ fn order_actions(arena: &Arena, acts: &[WhenAction]) -> (Vec<usize>, bool) {
     let mut chained = false;
     for (k, a) in acts.iter().enumerate() {
         let e = match a {
-            WhenAction::Assign(_, e) | WhenAction::Reinit(_, e) | WhenAction::Assert(e, _) => *e,
+            WhenAction::Assign(_, e)
+            | WhenAction::Reinit(_, e)
+            | WhenAction::Assert(e, _)
+            | WhenAction::Effect(_, e) => *e,
             WhenAction::Terminate(_) => continue,
         };
         arena.visit_leaves(e, &mut |n| {
