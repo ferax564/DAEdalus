@@ -917,6 +917,16 @@ fn trig_defined(w: &Work) -> FxHashSet<VarId> {
             let Node::Var(v) = w.arena.node(a) else {
                 continue;
             };
+            // `-sin(gamma)`, `k*cos(gamma)` count too.
+            let mut b = b;
+            loop {
+                match w.arena.node(b) {
+                    Node::Neg(x) => b = x,
+                    Node::Mul(x, y) if matches!(w.arena.node(x), Node::Const(_)) => b = y,
+                    Node::Mul(x, y) if matches!(w.arena.node(y), Node::Const(_)) => b = x,
+                    _ => break,
+                }
+            }
             let Node::F1(Fn1::Sin | Fn1::Cos, x) = w.arena.node(b) else {
                 continue;
             };
