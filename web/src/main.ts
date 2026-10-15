@@ -482,9 +482,14 @@ function renderVariables() {
             inp.readOnly = true;
             inp.classList.add("ro");
             inp.title = `${inp.value}\nComputed from other parameters`;
+          } else if (current && summaryPath !== current.path) {
+            // A previous model's result: Enter would re-simulate the open model instead.
+            inp.readOnly = true;
+            inp.classList.add("ro");
+            inp.title = `${inp.value}\nParameter of ${summaryPath}`;
           }
           inp.onkeydown = (e) => {
-            if (e.key === "Enter") {
+            if (e.key === "Enter" && !inp.readOnly) {
               const x = parseFloat(inp.value);
               if (isFinite(x)) {
                 overrides.set(k.full, x);

@@ -946,7 +946,7 @@ impl<'m> Simulation<'m> {
             self.rt.rhs(o.stop_time, &xs, &mut xi);
             self.rt.eval_zc();
             let due = (0..n_rel).any(|i| {
-                (m.sample_rels.contains(&i) || m.rel_text[i].starts_with("time "))
+                (m.sample_rels.contains(&i) || mentions_time(&m.rel_text[i]))
                     && self.rt.r[m.zc_raw[i] as usize] != self.rt.r[m.layout.rel0 + i]
             });
             if due {
@@ -1061,4 +1061,14 @@ impl Simulation<'_> {
 /// Convenience: simulate a compiled model with options.
 pub fn simulate(m: &Model, opts: SimOptions) -> Result<(Results, SimStats), SimError> {
     Simulation::new(m, opts).run()
+}
+
+/// Whether a relation's text reads `time` as a whole word, on either side (`time >= T`,
+/// `1 <= time`), as opposed to a name that only contains it (`timer.y`, `t.time0`).
+fn mentions_time(text: &str) -> bool {
+    let ident = |c: char| c.is_alphanumeric() || c == '_' || c == '.';
+    text.match_indices("time").any(|(i, _)| {
+        !text[..i].chars().next_back().is_some_and(ident)
+            && !text[i + 4..].chars().next().is_some_and(ident)
+    })
 }
