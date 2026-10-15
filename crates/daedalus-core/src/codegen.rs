@@ -74,6 +74,9 @@ pub struct NewtonBlock {
     pub jac: Vec<Ins>,
     pub jac_slots: Vec<Slot>,
     pub linear: bool,
+    /// Linear, and its code has no branches, selects or calls: a Newton step from a
+    /// solution reproduces it exactly.
+    pub plain_linear: bool,
     pub names: Vec<String>,
     /// Constant `min`/`max` bounds of the tears (Newton steps are clipped to them).
     pub bounds: Vec<(f64, f64)>,
@@ -527,7 +530,20 @@ fn compile_blocks(
                         (lo, hi)
                     })
                     .collect();
+                let plain_linear = *linear
+                    && !body.iter().chain(jac.iter()).any(|i| {
+                        matches!(
+                            i,
+                            Ins::Select(..)
+                                | Ins::Jz(..)
+                                | Ins::Jmp(_)
+                                | Ins::Cmp(..)
+                                | Ins::Call(..)
+                                | Ins::CallD(..)
+                        )
+                    });
                 newton.push(NewtonBlock {
+                    plain_linear,
                     bounds,
                     tears: tears.clone(),
                     body,
@@ -1571,11 +1587,11 @@ impl<'m> Runtime<'m> {
             // are also small relative to how strongly the tears move them: an absolute
             // test alone misreads rows with tiny coefficients (`iS + Ccs*der(vcs)`,
             // Ccs ~ 1e-12) as solved and returns stale tears, which blanks those entries
-            // of the integrator's finite-difference Jacobian. Only for linear blocks, where
-            // an extra step from a solution is exact: in a switching block the solution can
+            // of the integrator's finite-difference Jacobian. Only for plain linear blocks,
+            // where an extra step from a solution is exact: in a switching block it can
             // sit on a relation's boundary (`i = v*Goff` against `abs(i) <= abs(v)*Goff`),
             // and re-stepping it moves the mode with the rounding.
-            let fresh_ok = it > 0 || !b.linear || {
+            let fresh_ok = it > 0 || !b.plain_linear || {
                 let rw = &self.row_w[bi];
                 rw.len() == n
                     && b.residuals
@@ -1630,7 +1646,7 @@ impl<'m> Runtime<'m> {
                 for i in 0..n {
                     let mut r = 0.0f64;
                     for j in 0..n {
-                        r = r.max((jm[i * n + j] * nom[j].max(1e-300)).abs());
+                        r = r.max((jm[i * n + j] * nom[j].max(1e-10)).abs());
                     }
                     rw.push(if r > 0.0 && r.is_finite() {
                         1.0 / r
