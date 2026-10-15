@@ -92,6 +92,7 @@ rim and disc about the wheel's y axis, so the tread shows the wheel rolling.</p>
     extends MB.Interfaces.PartialVisualizer;
     parameter Boolean animation=true;
     parameter MB.Types.Color color={200,25,35} "Paint";
+    parameter MB.Types.Color accentColor={235,235,240} "Livery accent (nose tip, endplates, details)";
   protected
     MB.Visualizers.Advanced.Shape main(shapeType="modelica://MultiBodyVehicle/Resources/Shapes/body_main.stl", r=frame_a.r_0, R=frame_a.R,
       lengthDirection={1,0,0}, widthDirection={0,1,0}, length=1, width=1, height=1, extra=0,
@@ -99,6 +100,9 @@ rim and disc about the wheel's y axis, so the tread shows the wheel rolling.</p>
     MB.Visualizers.Advanced.Shape dark(shapeType="modelica://MultiBodyVehicle/Resources/Shapes/body_dark.stl", r=frame_a.r_0, R=frame_a.R,
       lengthDirection={1,0,0}, widthDirection={0,1,0}, length=1, width=1, height=1, extra=0,
       color={28,28,32}, specularCoefficient=0.4) if world.enableAnimation and animation;
+    MB.Visualizers.Advanced.Shape accent(shapeType="modelica://MultiBodyVehicle/Resources/Shapes/body_accent.stl", r=frame_a.r_0, R=frame_a.R,
+      lengthDirection={1,0,0}, widthDirection={0,1,0}, length=1, width=1, height=1, extra=0,
+      color=accentColor, specularCoefficient=0.7) if world.enableAnimation and animation;
     MB.Visualizers.Advanced.Shape helmet(shapeType="sphere", r=frame_a.r_0, R=frame_a.R, r_shape={-0.6,0,0.22},
       lengthDirection={-1,0,0}, widthDirection={0,1,0}, length=0.25, width=0.24, height=0.25,
       color={250,200,0}, specularCoefficient=0.9) if world.enableAnimation and animation;
