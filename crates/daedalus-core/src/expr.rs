@@ -156,6 +156,10 @@ pub enum Node {
     Initial,
     /// Synchronous operator with up to two operands (unused operands are `ZERO`).
     Clk(ClkOp, ExprId, ExprId),
+    /// `delay(x, d)`: the value of the hidden variable [`Arena::delays`]`[k]` at
+    /// `time - d`, read from a history buffer. The delayed variable is deliberately not a
+    /// child: the delay breaks the algebraic dependency on its argument.
+    Delay(u32, ExprId),
 }
 
 /// An event-generating relation `lhs op rhs`.
@@ -459,6 +463,8 @@ pub struct Arena {
     pub relations: Vec<Relation>,
     rel_intern: FxHashMap<Relation, u32>,
     pub tables: Vec<Table>,
+    /// Delayed variables of the [`Node::Delay`] nodes.
+    pub delays: Vec<VarId>,
 }
 
 #[inline]
@@ -769,6 +775,13 @@ impl Arena {
         self.intern_node(Node::InterpDer(table, col, x))
     }
 
+    /// `delay(x, d)` of the variable `x`; every call creates a new history buffer.
+    pub fn delay(&mut self, x: VarId, d: ExprId) -> ExprId {
+        let k = self.delays.len() as u32;
+        self.delays.push(x);
+        self.intern_node(Node::Delay(k, d))
+    }
+
     /// Children of a node, in evaluation order.
     pub fn children(&self, id: ExprId, out: &mut Vec<ExprId>) {
         match self.node(id) {
@@ -783,9 +796,11 @@ impl Arena {
                 out.push(rel.lhs);
                 out.push(rel.rhs);
             }
-            Node::Neg(a) | Node::F1(_, a) | Node::Interp(_, _, a) | Node::InterpDer(_, _, a) => {
-                out.push(a)
-            }
+            Node::Neg(a)
+            | Node::F1(_, a)
+            | Node::Interp(_, _, a)
+            | Node::InterpDer(_, _, a)
+            | Node::Delay(_, a) => out.push(a),
             Node::Add(a, b)
             | Node::Sub(a, b)
             | Node::Mul(a, b)
@@ -836,6 +851,7 @@ impl Arena {
             Node::Cmp(op, ..) => self.cmp(op, ch[0], ch[1]),
             Node::If(..) => self.if_(ch[0], ch[1], ch[2]),
             Node::Clk(op, ..) => self.clk(op, ch[0], ch[1]),
+            Node::Delay(k, _) => self.intern_node(Node::Delay(k, ch[0])),
         }
     }
 
@@ -936,6 +952,8 @@ impl Arena {
             self.children(id, &mut ch);
             if ch.is_empty() {
                 f(self.node(id));
+            } else if matches!(self.node(id), Node::Delay(..)) {
+                f(Node::Time);
             }
             stack.extend(ch.iter().copied());
         }
@@ -971,6 +989,7 @@ impl Arena {
             let n = self.node(id);
             match n {
                 Node::Var(_) | Node::Der(_) | Node::Pre(_) | Node::Time => f(n),
+                Node::Delay(..) => f(Node::Time),
                 _ => {}
             }
             ch.clear();
@@ -1132,7 +1151,8 @@ impl Arena {
                     let s = self.interp_der(t, c, x);
                     self.mul(s, dx)
                 }
-                Node::InterpDer(..) => Self::ZERO,
+                // the history does not depend on the current values
+                Node::InterpDer(..) | Node::Delay(..) => Self::ZERO,
                 _ => unreachable!(),
             };
             memo.insert(id, r);
@@ -1312,6 +1332,11 @@ impl Arena {
             Node::InterpDer(t, c, x) => {
                 let _ = write!(s, "interpolateSlope(table{t}, {c}, ");
                 self.render_into(x, name, s, 0);
+                s.push(')');
+            }
+            Node::Delay(k, d) => {
+                let _ = write!(s, "delay({}, ", name(self.delays[k as usize]));
+                self.render_into(d, name, s, 0);
                 s.push(')');
             }
             Node::Clk(op, a, b) => {

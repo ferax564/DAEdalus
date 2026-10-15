@@ -432,6 +432,45 @@ pub fn compile(flat: FlatModel, opts: &Options) -> Result<System> {
     {
         // purely discrete / parametric model is fine
     }
+    // Variables read through pre() outside when-clauses (`y = pre(aux)` in the Digital
+    // gates): the event iteration also runs until they settle.
+    {
+        let mut roots: Vec<ExprId> = w.eqs.iter().flat_map(|e| [e.lhs, e.rhs]).collect();
+        for wc in &w.whens {
+            for (c, acts) in &wc.branches {
+                roots.push(*c);
+                for a in acts {
+                    match a {
+                        WhenAction::Assign(_, e)
+                        | WhenAction::Reinit(_, e)
+                        | WhenAction::Assert(e, _) => roots.push(*e),
+                        WhenAction::Terminate(_) => {}
+                    }
+                }
+            }
+        }
+        let mut pre_read = FxHashSet::default();
+        for r in roots {
+            w.arena.visit_leaves(r, &mut |n| {
+                if let Node::Pre(v) = n {
+                    pre_read.insert(v);
+                }
+            });
+        }
+        let known: FxHashSet<VarId> = discretes.iter().copied().collect();
+        let mut extra: Vec<VarId> = pre_read
+            .into_iter()
+            .filter(|v| !known.contains(v) && !state_set.contains(v))
+            .filter(|&v| {
+                !matches!(
+                    w.vars[v as usize].kind,
+                    VarKind::Parameter | VarKind::Constant
+                )
+            })
+            .collect();
+        discretes.append(&mut extra);
+        discretes.sort();
+    }
     let der_of = w.der_of.clone();
     Ok(System {
         name,

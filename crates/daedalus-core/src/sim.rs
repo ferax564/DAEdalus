@@ -212,6 +212,8 @@ pub struct Simulation<'m> {
     terminated: Option<String>,
     log: Vec<String>,
     pub stats: SimStats,
+    /// Pending time events: jumps of delayed signals coming out of `delay()`.
+    delay_events: Vec<f64>,
 }
 
 #[derive(Debug)]
@@ -238,6 +240,25 @@ impl<'m> Simulation<'m> {
             terminated: None,
             log: Vec::new(),
             stats: SimStats::default(),
+            delay_events: Vec::new(),
+        }
+    }
+
+    /// Record the delayed variables at the current solution point.
+    fn record_delays(&mut self) {
+        if self.rt.m.delays.is_empty() {
+            return;
+        }
+        let mut jumps = Vec::new();
+        self.rt.record_delays(&mut jumps);
+        let t = self.rt.time();
+        for te in jumps {
+            if te > t {
+                let i = self.delay_events.partition_point(|&x| x < te);
+                if self.delay_events.get(i) != Some(&te) {
+                    self.delay_events.insert(i, te);
+                }
+            }
         }
     }
 
@@ -416,6 +437,21 @@ impl<'m> Simulation<'m> {
         // Event iteration at the start time (handles sample() at t0 and initial() clauses).
         self.event_iteration()?;
         self.check_newton("initialization")?;
+        if !m.delays.is_empty() {
+            // delay(x, d) = x(start) until start + d: settle the delays on the initial values
+            self.rt.run(&m.ode);
+            for _ in 0..2 {
+                for b in &mut self.rt.delays {
+                    b.t.clear();
+                    b.v.clear();
+                }
+                self.record_delays();
+                self.rt.run(&m.ode);
+                self.event_iteration()?;
+                self.check_newton("initialization")?;
+            }
+            self.delay_events.clear();
+        }
         Ok(())
     }
 
@@ -468,11 +504,18 @@ impl<'m> Simulation<'m> {
         } else {
             span / o.intervals.max(1) as f64
         };
-        let max_step = if o.max_step > 0.0 {
+        let mut max_step = if o.max_step > 0.0 {
             o.max_step
         } else {
             span.max(1e-12)
         };
+        // Steps no longer than the shortest delay: delayed values come from the history,
+        // never from the step being taken.
+        for b in &self.rt.delays {
+            if b.d > 0.0 && b.d < max_step {
+                max_step = b.d;
+            }
+        }
         let rtol = o.tolerance;
         let atol = o.tolerance;
         let mut solver: Box<dyn Integrator> = match o.method {
@@ -520,7 +563,11 @@ impl<'m> Simulation<'m> {
                     o.max_wall_time, t
                 ));
             }
-            let tn = solver.step(&mut self.rt, o.stop_time)?;
+            let t_lim = match self.delay_events.first() {
+                Some(&te) if te < o.stop_time => te,
+                _ => o.stop_time,
+            };
+            let tn = solver.step(&mut self.rt, t_lim)?;
             let tp = solver.t_prev();
             self.rt.error = None;
             // Event detection at the end of the step.
@@ -554,6 +601,18 @@ impl<'m> Simulation<'m> {
                     event_t = Some(best);
                 }
             }
+            let mut time_event = false;
+            if event_t.is_none()
+                && let Some(&te) = self.delay_events.first()
+                && tn >= te * (1.0 - 1e-14) - 1e-300
+            {
+                event_t = Some(tn);
+                time_event = true;
+            }
+            if let Some(te) = event_t {
+                let k = self.delay_events.partition_point(|&x| x <= te);
+                self.delay_events.drain(..k);
+            }
             let t_end = event_t.unwrap_or(tn);
             // Output points inside the step (before the event).
             while next_out(k_out) <= t_end * (1.0 + 1e-14) + 1e-300
@@ -566,6 +625,7 @@ impl<'m> Simulation<'m> {
                 solver.interpolate(to, &mut xi);
                 self.rt.rhs(to, &xi, &mut x);
                 rec.record(&mut self.rt);
+                self.record_delays();
                 self.check_asserts()?;
                 k_out += 1;
             }
@@ -594,14 +654,18 @@ impl<'m> Simulation<'m> {
                 }
                 last_event = te;
                 self.stats.events += 1;
-                self.stats.state_events += 1;
+                if !time_event {
+                    self.stats.state_events += 1;
+                }
                 solver.interpolate(te, &mut xi);
                 self.rt.rhs(te, &xi, &mut x);
                 if o.store_events {
                     rec.record(&mut self.rt);
                 }
+                self.record_delays();
                 self.event_iteration()?;
                 self.check_newton("event")?;
+                self.record_delays();
                 if o.store_events {
                     rec.record(&mut self.rt);
                 }
@@ -617,6 +681,11 @@ impl<'m> Simulation<'m> {
                 solver.reset(&mut self.rt, t, &xi);
             } else {
                 t = tn;
+                if !m.delays.is_empty() {
+                    let xs = solver.x().to_vec();
+                    self.rt.rhs(tn, &xs, &mut xi);
+                    self.record_delays();
+                }
                 if (tn - o.stop_time).abs() <= 1e-12 * o.stop_time.abs().max(1.0)
                     && rec
                         .res

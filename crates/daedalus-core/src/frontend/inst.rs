@@ -1374,6 +1374,20 @@ impl<'a, 't> Flattener<'a, 't> {
 
     /// Evaluate an expression that must be known at translation time.
     pub fn eval_structural(&mut self, e: &'a E, scope: &Scope) -> Result<f64> {
+        // `Real x[E]` / `x[Boolean]`: a dimension given by an enumeration or Boolean type.
+        if let E::ComponentReference(cr) = e
+            && cr.parts.iter().all(|p| p.subs.is_none())
+        {
+            let parts: Vec<&str> = cr.parts.iter().map(|p| &*p.ident.text).collect();
+            if parts == ["Boolean"] {
+                return Ok(2.0);
+            }
+            if let Some(c) = self.lookup_class(&scope.env, &parts)
+                && let Some(n) = self.enum_size(c)
+            {
+                return Ok(n as f64);
+            }
+        }
         let v = self.translate(e, scope, &mut Ctx::default())?;
         let x = v.scalar()?;
         self.eval_param_expr(x).ok_or_else(|| {
@@ -3743,6 +3757,58 @@ impl<'a, 't> Flattener<'a, 't> {
         }
     }
 
+    /// `a[i, j]` with run-time scalar subscripts on a fully indexed array: a balanced
+    /// selection tree over the flat index (e.g. the Digital logic tables indexed by
+    /// discrete enumeration values).
+    fn dynamic_index(
+        &mut self,
+        dims: &[usize],
+        el: &[ExprId],
+        subs: &'a [ast::Subscript],
+        scope: &Scope,
+        ctx: &mut Ctx,
+    ) -> Result<Option<ExprId>> {
+        if subs.len() != dims.len() || el.is_empty() {
+            return Ok(None);
+        }
+        let mut lin = Arena::ZERO;
+        let mut stride = 1usize;
+        for k in (0..subs.len()).rev() {
+            let ast::Subscript::Expression(e) = &subs[k] else {
+                return Ok(None);
+            };
+            let saved = ctx.end_value;
+            ctx.end_value = Some(dims[k]);
+            let v = self.translate(e, scope, ctx);
+            ctx.end_value = saved;
+            let Ok(x) = v?.scalar() else {
+                return Ok(None);
+            };
+            let a = &mut self.model.arena;
+            let one = a.constant(1.0);
+            let i0 = a.sub(x, one);
+            let st = a.constant(stride as f64);
+            let term = a.mul(i0, st);
+            lin = a.add(lin, term);
+            stride *= dims[k];
+        }
+        fn tree(a: &mut Arena, lin: ExprId, el: &[ExprId], lo: usize) -> ExprId {
+            if el.len() == 1 {
+                return el[0];
+            }
+            let mid = el.len() / 2;
+            let l = tree(a, lin, &el[..mid], lo);
+            let r = tree(a, lin, &el[mid..], lo + mid);
+            if l == r {
+                return l;
+            }
+            let th = a.constant((lo + mid) as f64 - 0.5);
+            let c = a.cmp(Cmp::Lt, lin, th);
+            a.if_(c, l, r)
+        }
+        Ok(Some(tree(&mut self.model.arena, lin, el, 0)))
+    }
+
     fn eval_subscripts(
         &mut self,
         subs: &'a [ast::Subscript],
@@ -3799,7 +3865,15 @@ impl<'a, 't> Flattener<'a, 't> {
     ) -> Result<Val> {
         match b {
             Val::A(dims, el) => {
-                let sel = self.eval_subscripts(subs, &dims, scope, ctx)?;
+                let sel = match self.eval_subscripts(subs, &dims, scope, ctx) {
+                    Ok(sel) => sel,
+                    Err(err) => {
+                        return match self.dynamic_index(&dims, &el, subs, scope, ctx)? {
+                            Some(e) => Ok(Val::S(e)),
+                            None => Err(err),
+                        };
+                    }
+                };
                 let (nd, idx) = select_indices(&dims, &sel);
                 Ok(mk_arr(nd, idx.into_iter().map(|i| el[i]).collect()))
             }
@@ -3960,7 +4034,15 @@ impl<'a, 't> Flattener<'a, 't> {
                         .with_context(|| format!("in reference '{cr}'"))?;
                 }
                 if let Some(subs) = &p.subs {
-                    cur = self.subscript_comp(cur, subs, scope, ctx)?;
+                    cur = match self.subscript_comp(cur.clone(), subs, scope, ctx) {
+                        Ok(c) => c,
+                        // run-time subscripts on the last part: index the value instead
+                        Err(err) if i + 1 == cr.parts.len() => {
+                            let v = self.comp_to_val(&cur)?;
+                            return self.index_val(v, subs, scope, ctx).map_err(|_| err);
+                        }
+                        Err(err) => return Err(err),
+                    };
                 }
             }
             return self.comp_to_val(&cur);
@@ -4088,6 +4170,17 @@ impl<'a, 't> Flattener<'a, 't> {
             Some(s) => self.index_val(v, s, scope, ctx),
             None => Ok(v),
         }
+    }
+
+    fn enum_size(&self, cls: ClassId) -> Option<usize> {
+        let def = self.tree.def(cls)?;
+        if !def.enum_literals.is_empty() {
+            return Some(def.enum_literals.len());
+        }
+        self.tree
+            .bases(cls)
+            .into_iter()
+            .find_map(|b| self.enum_size(b))
     }
 
     fn enum_literal(&self, cls: ClassId, name: &str) -> Option<f64> {
@@ -4386,10 +4479,43 @@ impl<'a, 't> Flattener<'a, 't> {
                 );
             }
             "delay" => {
-                self.model
-                    .warnings
-                    .push("delay() is approximated by its undelayed argument".into());
-                return Ok(arg!(0));
+                let x = arg!(0);
+                let d = arg!(1).scalar()?;
+                if ctx.in_function {
+                    self.model.warnings.push(
+                        "delay() in a function is approximated by its undelayed argument".into(),
+                    );
+                    return Ok(x);
+                }
+                let (dims, xs) = x.elems()?;
+                let mut out = Vec::with_capacity(xs.len());
+                for xe in xs {
+                    if self.model.arena.as_const(xe).is_some() {
+                        out.push(xe);
+                        continue;
+                    }
+                    // the delayed signal becomes a hidden variable, so that the history
+                    // buffer records it
+                    let k = self.model.arena.delays.len();
+                    let mut v =
+                        Variable::new(format!("$delay{k}"), VarKind::Continuous, VarType::Real);
+                    v.generated = true;
+                    v.is_protected = true;
+                    let id = self.model.add_var(v);
+                    let lhs = self.model.arena.var(id);
+                    let origin = self.model.origin(format!("delay({})", self.model.show(xe)));
+                    self.model.equations.push(Equation {
+                        lhs,
+                        rhs: xe,
+                        origin,
+                    });
+                    out.push(self.model.arena.delay(id, d));
+                }
+                return Ok(if dims.is_empty() {
+                    Val::S(out[0])
+                } else {
+                    Val::A(dims, out)
+                });
             }
             "sample" => {
                 let start = arg!(0).scalar()?;

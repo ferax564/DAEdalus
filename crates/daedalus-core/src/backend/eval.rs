@@ -67,6 +67,8 @@ pub fn eval(a: &Arena, root: ExprId, vals: &Values, memo: &mut FxHashMap<ExprId,
             }
             Node::Interp(t, c, _) => a.tables[t as usize].interp(c as usize, g(0)),
             Node::InterpDer(t, c, _) => a.tables[t as usize].slope(c as usize, g(0)),
+            // no history here: the undelayed value
+            Node::Delay(k, _) => (vals.var)(a.delays[k as usize]),
             _ => unreachable!(),
         };
         memo.insert(id, r);

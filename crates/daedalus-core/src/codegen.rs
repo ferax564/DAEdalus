@@ -30,6 +30,8 @@ pub enum Ins {
     /// `d = table[t].interp(col, x)`
     Interp(Slot, u32, u32, Slot),
     InterpDer(Slot, u32, u32, Slot),
+    /// `d = history[k](time - r[delay])`
+    Delay(Slot, u32, Slot),
     /// Solve Newton block `i` in place.
     Newton(u32),
 }
@@ -121,6 +123,8 @@ pub struct Model {
     pub discretes: Vec<Slot>,
     /// `(v, p)`: after initialization `pre(v)` takes the value of `p`.
     pub pre_init: Vec<(VarId, VarId)>,
+    /// Delayed variable of each `delay()` history buffer.
+    pub delays: Vec<VarId>,
     pub param_vars: Vec<VarId>,
     pub inputs: Vec<VarId>,
     /// For each state derivative, the states it structurally depends on.
@@ -223,6 +227,7 @@ impl Emitter<'_> {
                 Node::If(..) => Ins::Select(d, s[0], s[1], s[2]),
                 Node::Interp(t, c, _) => Ins::Interp(d, t, c, s[0]),
                 Node::InterpDer(t, c, _) => Ins::InterpDer(d, t, c, s[0]),
+                Node::Delay(k, _) => Ins::Delay(d, k, s[0]),
                 other => unreachable!("node {other:?} in code generation"),
             };
             out.push(ins);
@@ -276,7 +281,8 @@ fn retarget(ins: &mut Ins, from: Slot, to: Slot) -> bool {
         | Ins::Cmp(_, d, ..)
         | Ins::Select(d, ..)
         | Ins::Interp(d, ..)
-        | Ins::InterpDer(d, ..) => d,
+        | Ins::InterpDer(d, ..)
+        | Ins::Delay(d, ..) => d,
         Ins::Newton(_) => return false,
     };
     if *d == from {
@@ -573,6 +579,7 @@ pub fn compile(mut sys: System) -> Model {
         derivs: sys.state_derivs.clone(),
         discretes: sys.discretes.clone(),
         pre_init: sys.pre_init.clone(),
+        delays: sys.arena.delays.clone(),
         param_vars: sys.params.clone(),
         inputs: sys.inputs.clone(),
         jac_pattern,
@@ -667,9 +674,61 @@ pub struct NewtonError {
     pub residual: f64,
 }
 
+/// History of one `delay()` argument: accepted solution points, with both the left and
+/// the right value at events.
+#[derive(Clone, Debug, Default)]
+pub struct DelayBuf {
+    pub t: Vec<f64>,
+    pub v: Vec<f64>,
+    /// Delay time at the last evaluation, and the largest one seen.
+    pub d: f64,
+    pub d_max: f64,
+}
+
+impl DelayBuf {
+    /// Value at `tq` (linear between recorded points, constant outside them).
+    pub fn at(&self, tq: f64) -> Option<f64> {
+        let n = self.t.len();
+        if n == 0 {
+            return None;
+        }
+        let i = self.t.partition_point(|&t| t <= tq);
+        if i == 0 {
+            return Some(self.v[0]);
+        }
+        if i == n {
+            return Some(self.v[n - 1]);
+        }
+        let (t0, t1) = (self.t[i - 1], self.t[i]);
+        let w = (tq - t0) / (t1 - t0);
+        Some(self.v[i - 1] + w * (self.v[i] - self.v[i - 1]))
+    }
+
+    /// Append a point; drops points no delay can reach any more.
+    pub fn push(&mut self, t: f64, v: f64) {
+        if let (Some(&lt), Some(&lv)) = (self.t.last(), self.v.last())
+            && lt == t
+            && (lv == v || (lv.is_nan() && v.is_nan()))
+        {
+            return;
+        }
+        self.t.push(t);
+        self.v.push(v);
+        if self.t.len() > 8192 {
+            let cutoff = t - 2.0 * self.d_max.max(0.0);
+            let j = self.t.partition_point(|&x| x < cutoff);
+            if j > 4096 {
+                self.t.drain(..j - 1);
+                self.v.drain(..j - 1);
+            }
+        }
+    }
+}
+
 pub struct Runtime<'m> {
     pub m: &'m Model,
     pub r: Vec<f64>,
+    pub delays: Vec<DelayBuf>,
     pub newton_stats: NewtonStats,
     work: Vec<f64>,
     piv: Vec<usize>,
@@ -685,6 +744,7 @@ impl<'m> Runtime<'m> {
         Runtime {
             m,
             r,
+            delays: vec![DelayBuf::default(); m.delays.len()],
             newton_stats: NewtonStats::default(),
             work: Vec::new(),
             piv: Vec::new(),
@@ -724,7 +784,39 @@ impl<'m> Runtime<'m> {
                 Ins::InterpDer(d, t, c, x) => {
                     r[d as usize] = tables[t as usize].slope(c as usize, r[x as usize])
                 }
+                Ins::Delay(d, k, ds) => {
+                    let dl = r[ds as usize];
+                    let b = &mut self.delays[k as usize];
+                    b.d = dl;
+                    if dl > b.d_max {
+                        b.d_max = dl;
+                    }
+                    let tq = r[self.m.layout.time] - dl;
+                    r[d as usize] = b.at(tq).unwrap_or(r[self.m.delays[k as usize] as usize]);
+                }
                 Ins::Newton(i) => self.newton(i as usize),
+            }
+        }
+    }
+
+    /// Record the current values of the delayed variables (after a solution of the model
+    /// at the current time). Returns the times at which a recorded jump comes out of a
+    /// delay, which must become time events.
+    pub fn record_delays(&mut self, jumps: &mut Vec<f64>) {
+        if self.m.delays.is_empty() {
+            return;
+        }
+        let m = self.m;
+        self.run(&m.outputs);
+        let t = self.r[m.layout.time];
+        for (k, &x) in m.delays.iter().enumerate() {
+            let v = self.r[x as usize];
+            let b = &mut self.delays[k];
+            let jump =
+                matches!((b.t.last(), b.v.last()), (Some(&lt), Some(&lv)) if lt == t && lv != v);
+            b.push(t, v);
+            if jump && b.d > 0.0 {
+                jumps.push(t + b.d);
             }
         }
     }
@@ -745,6 +837,7 @@ impl<'m> Runtime<'m> {
         work.resize(n * n + 3 * n, 0.0);
         let mut best = f64::INFINITY;
         let mut weights: Vec<f64> = Vec::with_capacity(n);
+        let mut best_x: Vec<f64> = Vec::new();
         // A linear block normally converges in one step; if it does not (an ill-conditioned
         // or switching system), it continues as a damped Newton iteration.
         let max_iter = 50;
@@ -767,7 +860,11 @@ impl<'m> Runtime<'m> {
             if !norm.is_finite() && it > 0 {
                 break;
             }
-            best = best.min(norm);
+            if norm < best {
+                best = norm;
+                best_x.clear();
+                best_x.extend(b.tears.iter().map(|&t| self.r[t as usize]));
+            }
             self.run(&b.jac);
             self.newton_stats.iterations += 1;
             // Assemble J and -F.
@@ -837,7 +934,15 @@ impl<'m> Runtime<'m> {
                     .zip(weights.iter())
                     .map(|(&s, w)| (self.r[s as usize] * w).abs())
                     .fold(0.0, f64::max);
-                if nn.is_finite() && nn < wnorm0 * (1.0 - 1e-4 * lambda) + 1e-300 {
+                let nu = b
+                    .residuals
+                    .iter()
+                    .map(|&s| self.r[s as usize].abs())
+                    .fold(0.0, f64::max);
+                // either measure decreasing is progress
+                if (nn.is_finite() && nn < wnorm0 * (1.0 - 1e-4 * lambda) + 1e-300)
+                    || (nu.is_finite() && nu < norm * (1.0 - 1e-4 * lambda) + 1e-300)
+                {
                     break;
                 }
                 lambda *= 0.5;
@@ -851,11 +956,19 @@ impl<'m> Runtime<'m> {
             }
         }
         self.run(&b.body);
-        let norm = b
+        let mut norm = b
             .residuals
             .iter()
             .map(|&s| self.r[s as usize].abs())
             .fold(0.0, f64::max);
+        if !(norm <= best) && best_x.len() == n {
+            // the iteration wandered off: keep the best point it visited
+            for (i, &t) in b.tears.iter().enumerate() {
+                self.r[t as usize] = best_x[i];
+            }
+            self.run(&b.body);
+            norm = best;
+        }
         let scale = b
             .tears
             .iter()
