@@ -5439,7 +5439,9 @@ impl<'a, 't> Flattener<'a, 't> {
                 .into_iter()
                 .next()
                 .ok_or_else(|| anyhow!("vectorized call of a function without outputs"))?;
-            out.push(first.scalar()?);
+            // record or array results are left to the general call path
+            let Val::S(x) = first else { return Ok(None) };
+            out.push(x);
         }
         Ok(Some(Val::A(dims, out)))
     }

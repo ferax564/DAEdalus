@@ -1611,9 +1611,6 @@ impl<'m> Runtime<'m> {
                 for p in 0..n {
                     jm[p * n + p] += mu;
                 }
-                if std::env::var_os("DAEDALUS_NEWTON_DEBUG").is_some() {
-                    eprintln!("newton {bi} it {it} norm {norm:.3e}: singular jacobian");
-                }
                 if !crate::linalg::lu_factor(jm, n, piv) {
                     // perturb the tears slightly and retry
                     for &t in &b.tears {
@@ -1692,17 +1689,6 @@ impl<'m> Runtime<'m> {
                     break;
                 }
                 lambda *= 0.5;
-            }
-            if std::env::var_os("DAEDALUS_NEWTON_DEBUG").is_some() {
-                eprintln!(
-                    "newton {} it {} norm {:.3e} lambda {} x {:?} dx {:?}",
-                    bi,
-                    it,
-                    norm,
-                    lambda,
-                    &old[..n],
-                    &rhs[..n]
-                );
             }
             let step = (0..n)
                 .map(|i| (lambda * rhs[i]).abs() / (1.0 + old[i].abs()))

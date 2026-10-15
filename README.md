@@ -24,9 +24,10 @@ environment for the Modelica language. It is built for speed and scale:
 
 All compilation runs in a Web Worker.
 
-- **Modelica Standard Library.** 261 of the 534 MSL 4.x example models
-  translate and simulate, including MultiBody, the QuasiStatic machines and
-  `CombiTable`-driven models.
+- **Modelica Standard Library.** 441 of the 534 MSL 4.x example models
+  (83%) translate and simulate, including MultiBody, the QuasiStatic machines,
+  `Modelica.Media` (IF97 water, R134a, ideal-gas mixtures, moist air) and
+  `Modelica.Fluid` systems.
 
 > Status: under active development. See [docs/architecture.md](docs/architecture.md),
 > [docs/examples.md](docs/examples.md) and [docs/roadmap.md](docs/roadmap.md).

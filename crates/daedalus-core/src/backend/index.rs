@@ -8,7 +8,7 @@
 
 use super::graph::{NONE, augment, augment_traced};
 use super::{Eq, Work, eval};
-use crate::expr::{Arena, ExprId, Node, VarId};
+use crate::expr::{Arena, ExprId, Fn1, Node, VarId};
 use crate::flat::{StateSelect, VarKind, VarType, Variable, WhenAction};
 use anyhow::{Result, bail};
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -587,7 +587,7 @@ fn perturb(v: VarId) -> f64 {
 }
 
 /// Preference for a derivative variable to become a dummy (higher = more willing).
-fn dummy_preference(w: &Work, z: VarId) -> i64 {
+fn dummy_preference(w: &Work, trig: &FxHashSet<VarId>, z: VarId) -> i64 {
     // Making `z` a dummy derivative removes its base from the state vector.
     let base = w.base_of[z as usize].unwrap();
     let var = &w.vars[base as usize];
@@ -608,6 +608,9 @@ fn dummy_preference(w: &Work, z: VarId) -> i64 {
     s += 100 * order;
     if var.generated {
         s += 50;
+    }
+    if trig.contains(&base) {
+        s += 1000;
     }
     if var.fixed == Some(true) {
         s -= 20;
@@ -650,6 +653,7 @@ pub fn select_states(w: &mut Work) -> Result<Vec<VarId>> {
             }
         }
         let max_c = chains.iter().map(|c| c.len() - 1).max().unwrap();
+        let trig = trig_defined(w);
         // Candidates for step 1: highest derivatives that are derivative variables.
         let mut candidates: Option<Vec<VarId>> = None;
         for k in 1..=max_c {
@@ -685,8 +689,8 @@ pub fn select_states(w: &mut Work) -> Result<Vec<VarId>> {
             };
             // Order columns by preference (most willing to become dummy first).
             let mut cols = cols;
-            cols.sort_by_key(|&z| -dummy_preference(w, z));
-            let tiers: Vec<i64> = cols.iter().map(|&z| dummy_tier(w, z)).collect();
+            cols.sort_by_key(|&z| -dummy_preference(w, &trig, z));
+            let tiers: Vec<i64> = cols.iter().map(|&z| dummy_tier(w, &trig, z)).collect();
             // Jacobian H = dg/dz evaluated numerically, stored sparsely: only columns that
             // occur in an equation can have a nonzero derivative.
             let col_of: FxHashMap<VarId, usize> =
@@ -888,15 +892,49 @@ fn select_columns_sparse(h: &[Vec<(usize, f64)>], ncols: usize, need: usize) -> 
 }
 
 /// Coarse preference tier (stateSelect of the base variable); pivoting happens within a tier.
-fn dummy_tier(w: &Work, z: VarId) -> i64 {
+fn dummy_tier(w: &Work, trig: &FxHashSet<VarId>, z: VarId) -> i64 {
     let base = w.base_of[z as usize].unwrap();
-    match w.vars[base as usize].state_select {
+    let t = match w.vars[base as usize].state_select {
         StateSelect::Never => 4,
         StateSelect::Avoid => 3,
         StateSelect::Default => 2,
         StateSelect::Prefer => 1,
         StateSelect::Always => 0,
+    };
+    2 * t + i64::from(trig.contains(&base))
+}
+
+/// Unknowns defined as the sine or cosine of another unknown (`rotator.im = sin(gamma)`).
+/// As states they lose the angle at the turning points (`gamma` is not determined by
+/// `sin(gamma)` at `pi/2`), so the angle is preferred within the same stateSelect tier.
+fn trig_defined(w: &Work) -> FxHashSet<VarId> {
+    let mut out = FxHashSet::default();
+    for eq in &w.eqs {
+        if eq.parent.is_some() {
+            continue;
+        }
+        for (a, b) in [(eq.lhs, eq.rhs), (eq.rhs, eq.lhs)] {
+            let Node::Var(v) = w.arena.node(a) else {
+                continue;
+            };
+            let Node::F1(Fn1::Sin | Fn1::Cos, x) = w.arena.node(b) else {
+                continue;
+            };
+            let mut other = false;
+            w.arena.visit_leaves(x, &mut |n| {
+                if let Node::Var(y) = n
+                    && y != v
+                    && w.unknown[y as usize]
+                {
+                    other = true;
+                }
+            });
+            if other {
+                out.insert(v);
+            }
+        }
     }
+    out
 }
 
 /// Column selection by Gram-Schmidt with column pivoting: columns are taken tier by tier

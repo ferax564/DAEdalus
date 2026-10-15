@@ -302,6 +302,10 @@ fn tear(w: &mut Work, eqs: &[Eq], vars: &[VarId], tearing: bool, pt: &[f64]) -> 
     let mut tears: Vec<VarId> = Vec::new();
     // Cache of failed solve attempts: (eq, var).
     let mut unsolvable: FxHashSet<(usize, VarId)> = FxHashSet::default();
+    // Guess point updated with the inner assignments as they are chosen, so a pivot that
+    // vanishes for the propagated values (`dp` from `W = dp*V/eta` with `V` computed as
+    // zero from a zero start flow) is rejected even when `V`'s own start is non-zero.
+    let mut pt = pt.to_vec();
     loop {
         // Propagate: repeatedly solve equations with one remaining unknown, safest first.
         loop {
@@ -322,7 +326,7 @@ fn tear(w: &mut Work, eqs: &[Eq], vars: &[VarId], tearing: bool, pt: &[f64]) -> 
                 // unrotated frame) stays a residual for the Newton/linear solve.
                 let sc = w
                     .solve_class(&eqs[i], v)
-                    .filter(|&(_, c)| c == 0 || w.coefficient_nonzero(&eqs[i], v, pt));
+                    .filter(|&(_, c)| c == 0 || w.coefficient_nonzero(&eqs[i], v, &pt));
                 match sc {
                     Some((x, c)) => {
                         if best.is_none_or(|b| c < b.3) {
@@ -338,6 +342,10 @@ fn tear(w: &mut Work, eqs: &[Eq], vars: &[VarId], tearing: bool, pt: &[f64]) -> 
                 }
             }
             let Some((i, v, x, _)) = best else { break };
+            let y = eval_at(w, x, &pt);
+            if y.is_finite() {
+                pt[v as usize] = y;
+            }
             inner.push((v, x));
             known.insert(v);
             used[i] = true;
