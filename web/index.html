@@ -23,8 +23,15 @@
         <label>Intervals <input id="set-n" type="number" min="1" placeholder="auto" /></label>
         <label>Tol <input id="set-tol" type="text" placeholder="auto" size="6" /></label>
         <label>Method
-          <select id="set-method"><option value="">auto</option><option value="Bdf">BDF</option><option value="Dopri5">Dopri5</option><option value="Rk4">RK4</option><option value="Euler">Euler</option></select>
+          <select id="set-method">
+            <option value="">model default</option>
+            <optgroup label="Stiff"><option value="Bdf">BDF</option><option value="Radau">Radau IIA</option><option value="Esdirk">ESDIRK</option></optgroup>
+            <optgroup label="Switching"><option value="Auto">Auto (Dopri5/BDF)</option></optgroup>
+            <optgroup label="Non-stiff"><option value="Dopri5">Dopri5</option></optgroup>
+            <optgroup label="Fixed step"><option value="Rk4">RK4</option><option value="Euler">Euler</option></optgroup>
+          </select>
         </label>
+        <button id="solver-hint" class="solver-hint hidden" type="button"></button>
         <button id="btn-sim" class="primary" title="Translate and simulate (Ctrl+Enter)">▶ Simulate</button>
         <a id="docs-link" href="docs/" target="_blank" rel="noopener" title="Documentation, examples and feature guides">Docs</a>
       </div>

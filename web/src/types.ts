@@ -86,7 +86,17 @@ export interface SimSummary {
   /** Time spent parsing the library files the model needs (on first use). */
   load_ms?: number;
   stats: {
-    solver: { steps: number; rejected: number; newton_failures: number; rhs_evals: number; jac_evals: number };
+    solver: {
+      steps: number;
+      rejected: number;
+      newton_failures: number;
+      rhs_evals: number;
+      jac_evals: number;
+      tangent_evals?: number;
+      stiff_steps?: number;
+      switches?: number;
+    };
+    method?: string;
     events: number;
     states: number;
     init_ms: number;

@@ -12,6 +12,11 @@
 **Simulation**
 - Tape code generation.
 - Solvers: BDF with dense and sparse LU, Dopri5, RK4 and Euler.
+- Solver suite ([solvers.md](solvers.md)): Radau IIA (order 5) and ESDIRK4(3)6L
+  with dense output, `auto` Dopri5/BDF switching with Hairer's stiffness test,
+  exact colored state Jacobians from tape tangents (`--jacobian fd` for
+  differences), `__Dymola_Algorithm` mapped to the closest method, and a
+  grouped method select with a stiff-solver recommendation in the workbench.
 - Events, `when`, `reinit` and `terminate`.
 - Results as Dymola `.mat` or CSV.
 

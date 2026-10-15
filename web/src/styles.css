@@ -256,3 +256,6 @@ canvas.plot { position: absolute; inset: 0; display: block; }
 .anim-slider { flex: 1 1 200px; min-width: 120px; }
 .anim-time { font-family: var(--mono); min-width: 96px; }
 .anim-info { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; max-width: 100%; }
+/* Solver recommendation chip next to the method select (solver-hint.ts). */
+.solver-hint { border: 1px solid var(--warn); color: var(--warn); background: transparent; border-radius: 10px; padding: 1px 8px; font-size: 12px; cursor: pointer; }
+.solver-hint:hover { background: var(--grid); }

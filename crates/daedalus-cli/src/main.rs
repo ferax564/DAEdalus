@@ -54,7 +54,9 @@ OPTIONS:
   --interval DT           output interval
   -n, --intervals N       number of output intervals (default 500)
   --tol TOL               relative tolerance (default 1e-6)
-  --method M              bdf | dopri5 | rk4 | euler
+  --method M              bdf | radau | esdirk | auto | dopri5 | rk4 | euler
+                          (default: the experiment's __Dymola_Algorithm, else
+                          bdf; auto switches between dopri5 and bdf)
   --step H                fixed step size
   --store-events E        rows at events: all | none | N (default: about
                           50 million values, at least the output points)
@@ -68,7 +70,9 @@ OPTIONS:
   --format F              linearize: text | json | mo (default text; mo writes
                           model linearized_model, to linearized_model.mo
                           unless -o is given)
-  --jacobian J            linearize: exact | fd (central differences)
+  --jacobian J            linearize: exact | fd (central differences);
+                          simulate: state Jacobian of bdf/radau/esdirk/auto,
+                          exact (default) | fd (forward differences)
   --fmi-lib FILE          fmu: the FMI runtime library (default: next to this
                           executable, or $DAEDALUS_FMI_LIB)
   --timeout S             per-model time limit for test-library (default 60)
@@ -171,6 +175,7 @@ fn run() -> anyhow::Result<()> {
     let mut no_jacobian = false;
     let mut profile: Option<Option<String>> = None;
     let mut print_events = false;
+    let mut set_jac = false;
     let mut i = 1;
     let next = |i: &mut usize| -> anyhow::Result<String> {
         *i += 1;
@@ -257,7 +262,11 @@ fn run() -> anyhow::Result<()> {
             }
             "--events" => print_events = true,
             "--jacobian" => {
-                jac_method = match next(&mut i)?.as_str() {
+                let j = next(&mut i)?;
+                so.jacobian = daedalus_core::sim::JacobianMode::parse(&j)
+                    .ok_or_else(|| anyhow::anyhow!("unknown jacobian method '{j}' (exact | fd)"))?;
+                set_jac = true;
+                jac_method = match j.as_str() {
                     "exact" => daedalus_core::linearize::JacobianMethod::Exact,
                     "fd" | "cd" | "central" => {
                         daedalus_core::linearize::JacobianMethod::CentralDifference
@@ -402,6 +411,9 @@ fn run() -> anyhow::Result<()> {
             if set_method {
                 o.method = so.method;
             }
+            if set_jac {
+                o.jacobian = so.jacobian;
+            }
             if so.interval > 0.0 {
                 o.interval = so.interval;
             } else if set_intervals {
@@ -413,6 +425,7 @@ fn run() -> anyhow::Result<()> {
             o.store_events = so.store_events;
             o.max_event_rows = so.max_event_rows;
             o.params = so.params.clone();
+            let o_method = o.method;
             o.profile = profile.is_some() || print_events;
             let (r, prof) = daedalus_core::sim::simulate_profiled(&m, o);
             if let Some(p) = &prof {
@@ -451,6 +464,15 @@ fn run() -> anyhow::Result<()> {
                 stats.solver.jac_evals,
                 stats.events
             );
+            if stats.solver.tangent_evals > 0 || stats.solver.switches > 0 {
+                eprintln!(
+                    "solver {}: {} exact Jacobian passes ({} colors), {} method switches",
+                    o_method.name(),
+                    stats.solver.tangent_evals,
+                    stats.jacobian_colors,
+                    stats.solver.switches
+                );
+            }
             match &output {
                 Some(out) => write_result(&res, out, vars.as_deref())?,
                 None => {
@@ -674,6 +696,16 @@ fn run() -> anyhow::Result<()> {
             if !opts.tearing {
                 child_args.push("--no-tearing".into());
             }
+            if set_method {
+                child_args.extend(["--method".into(), so.method.name().into()]);
+            }
+            if set_jac {
+                let j = match so.jacobian {
+                    daedalus_core::sim::JacobianMode::Exact => "exact",
+                    daedalus_core::sim::JacobianMode::Fd => "fd",
+                };
+                child_args.extend(["--jacobian".into(), j.into()]);
+            }
             test_library(&lib, &model, &child_args, jobs, timeout)
         }
         "probe" => {
@@ -691,12 +723,21 @@ fn run() -> anyhow::Result<()> {
             };
             let mut o = SimOptions::from_model(&m);
             o.max_wall_time = timeout * 0.8;
+            if set_method {
+                o.method = so.method;
+            }
+            if set_jac {
+                o.jacobian = so.jacobian;
+            }
             match daedalus_core::sim::simulate(&m, o) {
                 Ok((_, st)) => println!(
-                    "OK {} states, {} steps, {:.0} ms",
+                    "OK {} states, {} steps, {:.0} ms, {} rejected, {} f-evals, {} jacobians",
                     m.states.len(),
                     st.solver.steps,
-                    t.elapsed().as_secs_f64() * 1000.0
+                    t.elapsed().as_secs_f64() * 1000.0,
+                    st.solver.rejected,
+                    st.solver.rhs_evals,
+                    st.solver.jac_evals
                 ),
                 Err(e) => println!("ERR simulate: {}", e.message.lines().next().unwrap_or("")),
             }
