@@ -60,11 +60,35 @@ passing them as extra sources or with `-L DIR`.
 cd web
 npm ci
 npm run wasm     # builds crates/daedalus-wasm and runs wasm-bindgen 0.2.129
+npm run msl      # packs the Modelica Standard Library 4.1.0 into public/msl/
 npm run dev      # http://localhost:5173
 ```
 
-The page loads the bundled `Daedalus` library. Other `.mo` files can be opened
-from disk.
+The page loads the bundled `Daedalus` library and the Modelica Standard Library
+4.1.0 (`Modelica`, `ModelicaServices`, `Complex`). Other `.mo` files can be
+opened from disk.
+
+The MSL sources are not in this repository. `web/scripts/fetch-msl.mjs`
+downloads the v4.1.0 release from GitHub and packs its `.mo` and
+`package.order` files into `web/public/msl/msl-4.1.0.<hash>.json.gz`
+(about 2.6 MB; 14.8 MB unpacked). It also writes `manifest.json`, which names
+that bundle, and a copy of the BSD-3-Clause license. To work offline, pass a
+local checkout instead:
+
+```sh
+node scripts/fetch-msl.mjs /path/to/ModelicaStandardLibrary   # or MSL_DIR=/path/to/... npm run msl
+```
+
+The script does nothing when `public/msl` already holds that version. Pass
+`--force` to rebuild the bundle. Without a bundle, the workbench runs with the
+Daedalus library only.
+
+The worker downloads the bundle after the Daedalus library is loaded and
+unpacks it with `DecompressionStream`. It then registers every file without
+parsing it. A light token scan outlines each file, so the package browser can
+list the whole library within seconds. A class is parsed when it is opened,
+checked or simulated, together with the classes it needs (the same on-demand
+closure the CLI uses, see `crates/daedalus-core/src/frontend/lazy.rs`).
 
 The `Dockerfile` at the repository root builds the workbench (Rust to
 WebAssembly, then Vite) and serves the static bundle with nginx on port 80:
