@@ -60,6 +60,11 @@ OPTIONS:
   --fmi-lib FILE          fmu: the FMI runtime library (default: next to this
                           executable, or $DAEDALUS_FMI_LIB)
   --timeout S             per-model time limit for test-library (default 60)
+  --profile [FILE.json]   simulate: record a performance profile (step sizes,
+                          states limiting the step, time per block, event log,
+                          chattering) and print its summary; with a .json file
+                          also write the full profile there
+  --events                simulate: print the event log (implies profiling)
 ";
 
 fn main() -> ExitCode {
@@ -97,6 +102,8 @@ fn run() -> anyhow::Result<()> {
     let mut format = String::from("text");
     let mut fmi_lib: Option<std::path::PathBuf> = None;
     let mut jac_method = daedalus_core::linearize::JacobianMethod::Exact;
+    let mut profile: Option<Option<String>> = None;
+    let mut print_events = false;
     let mut i = 1;
     let next = |i: &mut usize| -> anyhow::Result<String> {
         *i += 1;
@@ -160,6 +167,15 @@ fn run() -> anyhow::Result<()> {
             "--timeout" => timeout = next(&mut i)?.parse()?,
             "--fmi-lib" => fmi_lib = Some(next(&mut i)?.into()),
             "--at" => lin_at = Some(next(&mut i)?.parse()?),
+            "--profile" => {
+                // The report file is optional: only a following `.json` argument is one.
+                let file = args.get(i + 1).filter(|f| f.ends_with(".json")).cloned();
+                if file.is_some() {
+                    i += 1;
+                }
+                profile = Some(file);
+            }
+            "--events" => print_events = true,
             "--format" => format = next(&mut i)?,
             "--jacobian" => {
                 jac_method = match next(&mut i)?.as_str() {
@@ -318,7 +334,21 @@ fn run() -> anyhow::Result<()> {
             o.store_events = so.store_events;
             o.max_event_rows = so.max_event_rows;
             o.params = so.params.clone();
-            let (res, stats) = match daedalus_core::sim::simulate(&m, o) {
+            o.profile = profile.is_some() || print_events;
+            let (r, prof) = daedalus_core::sim::simulate_profiled(&m, o);
+            if let Some(p) = &prof {
+                if print_events {
+                    print!("{}", p.event_log_text());
+                }
+                if profile.is_some() {
+                    print!("{}", p.summary_text());
+                }
+                if let Some(Some(file)) = &profile {
+                    std::fs::write(file, serde_json::to_string(p)?)?;
+                    eprintln!("profile written to {file}");
+                }
+            }
+            let (res, stats) = match r {
                 Ok(r) => r,
                 Err(e) => {
                     if let (Some(out), Some(p)) = (&output, &e.partial) {
