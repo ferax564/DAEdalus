@@ -13,6 +13,24 @@ The aim is the same physics and the same kind of result plot, not identical
 numbers. Every example has a regression test in
 `crates/daedalus-core/tests/library.rs`, and CI simulates them all.
 
+Every example also has a 3-D animation, as Dymola gives 1-D libraries: open it
+in the workbench, **Simulate**, and switch to **Animation**. The shapes come
+from `Daedalus.Visualizers`, which has the result variables of MultiBody's
+`Advanced.Shape` without needing the Modelica Standard Library, bound to the
+example's positions, angles and speeds. They draw only and change no result.
+- QuarterCar and OptimalControl.ActiveSuspension: road pad, tyre, coil spring,
+  damper and body for each lane, with the actuator force as an arrow.
+- LandingGear: a wing segment, the oleo strut stroking and the twin wheels on
+  the runway, one lane per sink rate.
+- AileronActuator and OptimalControl.AileronServo: the wing, the aileron
+  turning on its hinge, the control horn and the actuator rod; SpeedVsLoad
+  shows the load pushed along the bench.
+- TorqueConverter.StallTest: engine, the converter turning with the crankshaft,
+  the held turbine and brake, and an engine-speed gauge.
+- TorqueConverter.Launch and VehicleEfficiency: saloon cars (meshes in
+  `Resources/Shapes`, made by `generate.py` there) driving side by side, one
+  per variant, with the wheels turning. Long drive cycles replay at 10 to 100x.
+
 Run any one of them with:
 
 ```sh

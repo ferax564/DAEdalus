@@ -34,6 +34,8 @@ package OptimalControl "Plant models for optimal control, MPC and moving horizon
     Rot.Components.Fixed hinge;
     output Real delta_deg = aileron.phi*180/3.141592653589793 "Aileron deflection";
     Real P_hyd(unit="W") = (hyd.P.p - hyd.T.p)*abs(act.cylinder.port_A.q) "Hydraulic power drawn (approximate)";
+    Daedalus.Visualizers.World world "Animation: z up";
+    Daedalus.Visualizers.Aileron vis(phi=aileron.phi, r_horn=r_horn) "3-D animation (draws only)";
   equation
     act.u = u;
     connect(hyd.P, act.P);
@@ -71,6 +73,9 @@ control problem can choose it. <code>python/examples/ocp_aileron.py</code> finds
     Units.Acceleration a_body = body.a "Vertical body acceleration (ride comfort)";
     Units.Length travel = spring.s_rel - 0.3 "Suspension travel from the static position";
     Units.Force F_tyre = -tyre.f "Tyre load (road holding)";
+    Daedalus.Visualizers.World world "Animation: z up";
+    Daedalus.Visualizers.QuarterCar vis(R_tyre=0.3, z_road=road.s, z_wheel=wheel.s, z_body=body.s, F_act=F_act)
+      "3-D animation, with the actuator force as a green (push) or red (pull) bar";
   equation
     F_act = actuator.F;
     connect(bump.y, road.s_ref);
@@ -93,6 +98,8 @@ force.</p></html>"));
   model CoastDownTest "Coast-down from 130 km/h in neutral, for estimating the road load from speed readings"
     extends Daedalus.Icons.Example;
     V.Chassis.VehicleBody body(m=1650, Cd=0.29, A_front=2.3, crr=0.009, v_start=130/3.6);
+    Daedalus.Visualizers.World world "Animation: z up";
+    Daedalus.Visualizers.Car vis(x=body.s) "3-D animation (draws only)";
     output Real v_kmh(unit="km/h") = body.v*3.6 "Measured speed";
     annotation (experiment(StopTime=240, Interval=1), Documentation(info="<html>
 <p><code>VehicleEfficiency.CoastDown</code> without the stop at 15 km/h. Only the speed is measured.

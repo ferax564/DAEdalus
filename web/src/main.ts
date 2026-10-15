@@ -5,7 +5,7 @@ import type { ClassEntry, ClassInfo, ComponentInfo, SimSettings, SimSummary, Var
 import { DiagramView, type ViewKind } from "./diagram";
 import { TextView } from "./editor";
 import { PlotWindow, displayUnit, interp } from "./plot";
-import { bundledLibrary, readPicked, type Picked } from "./library";
+import { bundledLibrary, bundledResources, readPicked, type Picked } from "./library";
 import { drawIcon, newCtx, SVG_NS, systemExtent, IDENTITY, el } from "./graphics";
 import type { Animation3D, AnimData } from "./anim3d";
 
@@ -736,7 +736,7 @@ async function start() {
   // for automated checks
   const w = window as unknown as { daedalus: Record<string, unknown> };
   w.daedalus = { api, simulate, openClass, plot, timings, anim: () => anim, animData: () => animData, setSimView, togglePlot: (n: string) => togglePlot(n, summary!.vars.find((v) => v.name === n)!) };
-  await load(bundledLibrary(), "Daedalus library");
+  await load(bundledLibrary(), "Daedalus library", await bundledResources());
   const msl = loadMsl();
   w.daedalus.msl = msl;
   if (hash && isMsl(hash)) {

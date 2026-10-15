@@ -653,7 +653,7 @@ export class Animation3D {
       </span>
       <input type="range" min="0" max="1000" value="0" class="anim-slider" />
       <span class="anim-time">t = 0 s</span>
-      <label>Speed <select class="anim-speed"><option>0.1</option><option>0.25</option><option>0.5</option><option selected>1</option><option>2</option><option>5</option></select>×</label>
+      <label>Speed <select class="anim-speed"><option>0.1</option><option>0.25</option><option>0.5</option><option selected>1</option><option>2</option><option>5</option><option>10</option><option>20</option><option>50</option><option>100</option></select>×</label>
       <span class="seg anim-views" title="Camera direction">
         <button data-v="iso" title="Three-quarter view">Iso</button><button data-v="front" title="From the front (+x)">Front</button><button data-v="side" title="From the side (−y)">Side</button><button data-v="rear" title="From behind (−x)">Rear</button><button data-v="top" title="From above">Top</button>
       </span>
@@ -782,10 +782,11 @@ export class Animation3D {
     const span = tt.length ? tt[tt.length - 1] - tt[0] : 0;
     this.t = tt[0] ?? 0;
     // A slow-motion default for short transients, real time otherwise.
-    this.speedSel.value = span > 0 && span < 1 ? "0.1" : "1";
+    // short runs slow down; long drive cycles speed up so a replay lasts about a minute at most
+    this.speedSel.value = span > 0 && span < 1 ? "0.1" : span > 600 ? "100" : span > 300 ? "20" : span > 60 ? "10" : "1";
     this.buildTrack();
     if (!this.floorUser) {
-      this.floorMode = this.travel > 5 ? "asphalt" : "grid";
+      this.floorMode = this.travel > 5 && this.roams() ? "asphalt" : "grid";
       this.floorSel.value = this.floorMode;
     }
     this.place(this.t);
@@ -920,12 +921,22 @@ export class Animation3D {
     return [new THREE.Vector3(l(k.c, 3, 0), l(k.c, 3, 1), l(k.c, 3, 2)), l(k.yaw, 1, 0)];
   }
 
+  /** Whether the moving parts travel further than the scene is big (a car on a road), rather
+   *  than turning or stroking in place (a rig, a test bench). */
+  private roams() {
+    this.root.updateMatrixWorld(true);
+    const all = new THREE.Box3();
+    for (const { m } of this.meshes) if (m.visible) all.expandByObject(m);
+    return !all.isEmpty() && this.travel > all.getSize(new THREE.Vector3()).length() * 0.5;
+  }
+
   /** Bounding box of what the camera should frame. */
   private frameBox() {
     this.root.updateMatrixWorld(true);
     const box = new THREE.Box3();
+    const roams = this.roams();
     const anyMoving = this.meshes.some((x) => x.moving);
-    for (const { m, moving } of this.meshes) if (m.visible && (moving || this.followMode === "off" || !anyMoving)) box.expandByObject(m);
+    for (const { m, moving } of this.meshes) if (m.visible && (moving || this.followMode === "off" || !anyMoving || !roams)) box.expandByObject(m);
     if (box.isEmpty()) for (const { m } of this.meshes) if (m.visible) box.expandByObject(m);
     if (box.isEmpty()) box.setFromCenterAndSize(new THREE.Vector3(), new THREE.Vector3(1, 1, 1));
     return box;

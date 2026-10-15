@@ -18,6 +18,9 @@ package VehicleEfficiency "EV drive-cycle energy studies (after Claytex VeSyMA a
     parameter Units.Angle psi_wind=0;
     parameter Real ratio=9.0 "Reduction gear";
     V.DriveCycles.DriveCycle driveCycle(table=cycle, repetitions=repetitions);
+    parameter Real lane=0 "Lane in the 3-D animation" annotation (Dialog(tab="Animation"));
+    parameter Real paint[3]={30, 90, 170} annotation (Dialog(tab="Animation"));
+    Daedalus.Visualizers.Car vis(x=body.s, y0=lane, color=paint) "3-D animation (draws only)";
     V.Drivers.Driver driver;
     Daedalus.Blocks.Math.Gain torqueRequest(k=motor.tau_max);
     V.Powertrain.ElectricMachine motor(tau_max=350, P_max=150e3);
@@ -51,10 +54,11 @@ package VehicleEfficiency "EV drive-cycle energy studies (after Claytex VeSyMA a
   model NEDCSensitivity "Baseline, 2 % grade, 25 mph crosswind at 30 deg and a roof box over repeated NEDC"
     extends Daedalus.Icons.Example;
     parameter Integer repetitions=11 "About 118 km";
-    ElectricVehicle baseline(repetitions=repetitions);
-    ElectricVehicle uphill(repetitions=repetitions, grade=0.02);
-    ElectricVehicle crosswind(repetitions=repetitions, v_wind=25*0.44704, psi_wind=30*3.141592653589793/180);
-    ElectricVehicle roofBox(repetitions=repetitions, m_payload=50, dCdA=0.12);
+    Daedalus.Visualizers.World world "Animation: z up";
+    ElectricVehicle baseline(repetitions=repetitions, lane=5.25);
+    ElectricVehicle uphill(repetitions=repetitions, grade=0.02, lane=1.75, paint={200, 40, 40});
+    ElectricVehicle crosswind(repetitions=repetitions, lane=-1.75, paint={40, 150, 80}, v_wind=25*0.44704, psi_wind=30*3.141592653589793/180);
+    ElectricVehicle roofBox(repetitions=repetitions, lane=-5.25, paint={230, 180, 0}, m_payload=50, dCdA=0.12);
     Real delta_uphill(unit="%") = (uphill.meter.Wh_per_km/baseline.meter.Wh_per_km - 1)*100 "Consumption change [%]";
     Real delta_crosswind(unit="%") = (crosswind.meter.Wh_per_km/baseline.meter.Wh_per_km - 1)*100 "Consumption change [%]";
     Real delta_roofBox(unit="%") = (roofBox.meter.Wh_per_km/baseline.meter.Wh_per_km - 1)*100 "Consumption change [%]";
@@ -74,6 +78,8 @@ loss model, 9:1 reduction, 75 kWh pack. The NEDC table is the regulation's segme
   model CoastDown "Coast-down from 130 km/h in neutral; the result is fitted to F = F0 + F1*v + F2*v^2"
     extends Daedalus.Icons.Example;
     V.Chassis.VehicleBody body(m=1650, Cd=0.29, A_front=2.3, crr=0.009, v_start=130/3.6);
+    Daedalus.Visualizers.World world "Animation: z up";
+    Daedalus.Visualizers.Car vis(x=body.s) "3-D animation (draws only)";
     Real v_kmh(unit="km/h") = body.v*3.6;
     Units.Force F_decel = -(body.m + body.J_wheels/body.R_wheel^2)*body.a "Road load from the deceleration";
   equation
@@ -92,7 +98,9 @@ coefficients feed <code>UDDSEnergy</code>.</p></html>"));
 
   model UDDSEnergy "UDDS energy with the physical body versus fitted road-load coefficients"
     extends Daedalus.Icons.Example;
-    ElectricVehicle physical(cycle=V.DriveCycles.UDDS);
+    Daedalus.Visualizers.World world "Animation: z up";
+    ElectricVehicle physical(cycle=V.DriveCycles.UDDS, lane=1.75);
+    Daedalus.Visualizers.Car fittedVis(x=fitted.s, y0=-1.75, color={200, 40, 40}) "3-D animation of the fitted road-load car";
     V.DriveCycles.DriveCycle driveCycle(table=V.DriveCycles.UDDS);
     V.Drivers.Driver driver;
     Daedalus.Blocks.Math.Gain torqueRequest(k=motor.tau_max);
