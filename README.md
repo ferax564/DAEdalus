@@ -49,7 +49,37 @@ cargo build --release
 
 # Run every model with an experiment annotation, each in its own process
 ./target/release/daedalus test-library library/Daedalus -m Daedalus
+
+# Linear state-space model der(x) = A x + B u, y = C x + D u around the initial
+# point (or after simulating to --at T); --format text | json | mo
+./target/release/daedalus linearize model.mo -m MyModel --at 1.5 --format mo -o linearized_model.mo
 ```
+
+`linearize` takes `u` from the model's top-level Real inputs (held at their start
+values, 0 without one, while simulating to `--at`) and `y` from its top-level Real
+outputs, like Dymola's `linearizeModel` and OpenModelica's `linearize`. The
+matrices are exact: a forward-mode run of the compiled tape per state and input,
+with algebraic loops differentiated implicitly through their symbolic Jacobians
+(`--jacobian fd` uses central differences instead). `--format mo` writes the model
+`linearized_model` in the form OpenModelica writes it.
+
+```sh
+# FMI 2.0 FMU (Model Exchange and Co-Simulation) for linux64
+cargo build --release -p daedalus-cli -p daedalus-fmi
+./target/release/daedalus fmu library/Daedalus -m Daedalus.Examples.TorqueConverter.StallTest -o StallTest.fmu
+# validate with FMPy and compare its ME and CS runs with `daedalus simulate`
+./target/release/daedalus simulate library/Daedalus -m Daedalus.Examples.TorqueConverter.StallTest -o ref.csv --vars rpm_engine
+python3 tools/fmu_check.py StallTest.fmu ref.csv rpm_engine
+```
+
+`daedalus fmu` writes `modelDescription.xml` (parameters, inputs, outputs, states,
+derivatives and every other variable, with the ModelStructure), the compiled model
+in `resources/model.bin`, and the model-independent FMI runtime
+`libdaedalus_fmi.so` (crate `daedalus-fmi`, found next to the `daedalus` executable,
+or via `--fmi-lib` / `DAEDALUS_FMI_LIB`) as `binaries/linux64/<id>.so`.
+Co-Simulation steps with the model's own BDF/Dopri5 solver and event handling;
+Model Exchange exposes the states, derivatives and one event indicator per
+relation. FMU state get/set and directional derivatives are not provided.
 
 Other source directories, such as the Modelica Standard Library, are loaded by
 passing them as extra sources or with `-L DIR`.
@@ -133,9 +163,10 @@ of the EV model, which take 109k steps.
 | `crates/daedalus-core` | Frontend (Rumoca parser, instantiation, flattening, class inspection), backend, codegen, solvers, result files |
 | `crates/daedalus-cli` | `daedalus` command line tool |
 | `crates/daedalus-wasm` | WebAssembly bindings used by the workbench |
+| `crates/daedalus-fmi` | FMI 2.0 runtime (`fmi2*` C functions) of exported FMUs |
 | `library/Daedalus` | Component library (Blocks, Mechanics, Hydraulics, Vehicle) and the examples |
 | `web` | Browser workbench (TypeScript, Vite, CodeMirror) |
-| `tools` | Benchmark generator, coast-down fit |
+| `tools` | Benchmark generator, coast-down fit, FMU check (FMPy) |
 
 Modelica is a registered trademark of the Modelica Association. DAEdalus is not
 affiliated with or endorsed by the Modelica Association.

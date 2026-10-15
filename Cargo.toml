@@ -1,6 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["crates/daedalus-core", "crates/daedalus-cli", "crates/daedalus-wasm"]
+members = [
+    "crates/daedalus-core",
+    "crates/daedalus-cli",
+    "crates/daedalus-wasm",
+    "crates/daedalus-fmi",
+]
 
 [workspace.package]
 version = "0.1.0"
