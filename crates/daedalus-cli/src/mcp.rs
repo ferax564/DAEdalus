@@ -119,6 +119,19 @@ fn tools() -> Vec<Tool> {
             description: "The flat model (all components expanded) as Modelica-like text.",
             schema: || model_schema(json!({"max_lines": {"type": "integer"}})),
         },
+        Tool {
+            name: "generate_embedded_c",
+            description: "Generate portable, allocation-free C99 for a model with top-level inputs and outputs (typically a controller block) that advances it by a fixed step: for microcontrollers such as Arduino (AVR) or ESP32. Returns the interface (inputs, outputs, RAM per instance), the header and the source. `daedalus codegen-c --hil` also writes firmware for closed-loop tests on emulated boards.",
+            schema: || {
+                model_schema(json!({
+                    "step": {"type": "number", "description": "Fixed step / sample time in seconds"},
+                    "real": {"type": "string", "enum": ["float", "double"], "description": "Arithmetic type (default float)"},
+                    "integrator": {"type": "string", "enum": ["rk4", "euler"], "description": "For continuous states (default rk4)"},
+                    "parameters": {"type": "object", "additionalProperties": {"type": "number"}, "description": "Parameter values baked into the code"},
+                    "max_lines": {"type": "integer", "description": "Lines of the C source to return (default 400)"}
+                }))
+            },
+        },
     ]
 }
 
@@ -363,6 +376,55 @@ impl Server {
                 )
                 .map_err(|e| anyhow::anyhow!(e))?;
                 Ok(lin.report())
+            }
+            "generate_embedded_c" => {
+                let model = model()?;
+                let m = self.translate(&model)?;
+                let mut o = daedalus_core::embedded::Options {
+                    step: n("step").ok_or_else(|| anyhow::anyhow!("missing step"))?,
+                    ..Default::default()
+                };
+                if let Some(r) = s("real") {
+                    o.real = daedalus_core::embedded::RealType::parse(&r)
+                        .ok_or_else(|| anyhow::anyhow!("unknown real type '{r}'"))?;
+                }
+                if let Some(i) = s("integrator") {
+                    o.integrator = daedalus_core::embedded::Integrator::parse(&i)
+                        .ok_or_else(|| anyhow::anyhow!("unknown integrator '{i}'"))?;
+                }
+                if let Some(Value::Object(p)) = a.get("parameters") {
+                    for (k, v) in p {
+                        let v = v
+                            .as_f64()
+                            .ok_or_else(|| anyhow::anyhow!("parameter {k}: not a number"))?;
+                        o.params.push((k.clone(), v));
+                    }
+                }
+                let g = daedalus_core::embedded::generate(&m, &o)?;
+                let man = &g.manifest;
+                let max = a.get("max_lines").and_then(Value::as_u64).unwrap_or(400) as usize;
+                let mut out = format!(
+                    "{}: {} inputs, {} outputs, {} states, {} algebraic loops, {} bytes of RAM per instance ({}), step {} s\n",
+                    man.prefix,
+                    man.inputs.len(),
+                    man.outputs.len(),
+                    man.n_states,
+                    man.n_newton,
+                    man.instance_bytes,
+                    o.real.c_name(),
+                    man.step
+                );
+                out += &format!("\n--- {} ---\n{}", g.header_name(), g.header);
+                let lines: Vec<&str> = g.source.lines().collect();
+                out += &format!("\n--- {} ({} lines) ---\n", g.source_name(), lines.len());
+                for l in lines.iter().take(max) {
+                    out += l;
+                    out.push('\n');
+                }
+                if lines.len() > max {
+                    out += &format!("... {} more lines\n", lines.len() - max);
+                }
+                Ok(out)
             }
             "model_structure" => {
                 let model = model()?;

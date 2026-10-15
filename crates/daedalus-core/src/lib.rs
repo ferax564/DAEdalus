@@ -11,6 +11,8 @@ pub mod diff;
 pub mod edit;
 pub mod debug;
 pub mod doe;
+pub mod embedded;
+pub mod embedded_hil;
 pub mod expr;
 pub mod external;
 pub mod external_component;

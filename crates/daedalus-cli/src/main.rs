@@ -4,6 +4,7 @@ use daedalus_core::backend::Options;
 use daedalus_core::frontend::Library;
 use daedalus_core::sim::{Method, SimOptions};
 mod analysis;
+mod embedded;
 mod fmu;
 mod fmu_import;
 mod manage;
@@ -56,6 +57,12 @@ COMMANDS:
   export-ssp  write a model composed of FMU components as an .ssp (-o);
               `simulate` also runs an .fmu or .ssp directly (Co-Simulation
               components step at --comm-step, default span/500)
+  codegen-c   embedded C code for microcontrollers: fixed-step, allocation-free
+              C99 of the model (a controller with top-level inputs and outputs)
+              in -o DIR (default <prefix>/); see EMBEDDED OPTIONS
+  hil         close the loop between a plant (bench) model simulated here and
+              generated controller code running on the host, on an emulated
+              Arduino or ESP32, or on a real board over its serial port
   mcp         serve the libraries to an AI assistant over the Model Context
               Protocol (stdio): browse, edit, check, simulate, linearize.
               `daedalus mcp [sources...] [-L DIR] [--workspace DIR]`
@@ -170,6 +177,23 @@ SWEEP OPTIONS:
   --retranslate           translate every run again (default only for
                           non-free, Integer and Boolean parameters)
 
+EMBEDDED OPTIONS (codegen-c, hil; see docs/embedded.md):
+  --step H                codegen-c: the fixed step (sample time) in seconds
+  --real float|double     codegen-c: arithmetic type (default float)
+  --integrator rk4|euler  codegen-c: for continuous states (default rk4)
+  --prefix NAME           codegen-c: C identifier prefix (default: model name)
+  --hil                   codegen-c: also write the processor-in-the-loop shells
+                          (host, ATmega328P/Arduino Uno, ESP32, Arduino sketch)
+  -p NAME=VALUE           codegen-c: parameter value baked into the code
+  --controller FILE.json  hil: the manifest written by codegen-c
+  --exec CMD              hil: run the controller as a program on stdin/stdout
+                          (host build, simavr_bridge, qemu-system-xtensa ...)
+  --tcp HOST:PORT         hil: reach it over TCP (QEMU -serial tcp::PORT,server)
+  --serial DEV [--baud N] hil: a real board on a serial port (default 115200)
+  --map PORT=VAR          hil: wire a controller port to another bench variable
+                          (default: same names); --vars records bench variables
+  --stop T, -o FILE.csv   hil: stop time and result file
+
 ANALYSIS COMMANDS (text summary on stdout; -o FILE.json or FILE.csv writes data):
   sensitivity  local sensitivities dy/dp along the trajectory:
                  --params a,b --outputs x,y [--sens-method auto|exact|fd]
@@ -260,6 +284,7 @@ fn run() -> anyhow::Result<()> {
         return mcp::run(&args[1..]);
     }
     let (args, an) = analysis::take_args(args)?;
+    let (args, emb) = embedded::take_args(args)?;
     let mut sources: Vec<String> = Vec::new();
     let mut libs: Vec<String> = Vec::new();
     let mut model = None;
@@ -1059,6 +1084,31 @@ fn run() -> anyhow::Result<()> {
                 None => print!("{text}"),
             }
             Ok(())
+        }
+        "codegen-c" => {
+            let m = with_all_files(&mut lib, |l| daedalus_core::translate(l, &model, &opts))?;
+            for w in &m.warnings {
+                eprintln!("warning: {w}");
+            }
+            embedded::codegen(&m, &so, &emb, output.as_deref())
+        }
+        "hil" => {
+            let m = with_all_files(&mut lib, |l| daedalus_core::translate(l, &model, &opts))?;
+            for w in &m.warnings {
+                eprintln!("warning: {w}");
+            }
+            let mut so = so.clone();
+            if !set_tol {
+                so.tolerance = 1e-6;
+            }
+            embedded::hil(
+                &m,
+                &so,
+                set_stop,
+                &emb,
+                vars.as_deref().unwrap_or(&[]),
+                output.as_deref(),
+            )
         }
         "fmu" => {
             let m = with_all_files(&mut lib, |l| daedalus_core::translate(l, &model, &opts))?;
