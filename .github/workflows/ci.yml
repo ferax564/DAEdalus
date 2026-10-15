@@ -22,10 +22,27 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Test
         run: cargo test --release --workspace
-      - name: Build CLI
-        run: cargo build --release -p daedalus-cli
+      - name: Build CLI and FMI runtime
+        run: cargo build --release -p daedalus-cli -p daedalus-fmi
       - name: Simulate every Daedalus example
         run: ./target/release/daedalus test-library library/Daedalus -m Daedalus
+      - name: Linearize (OpenModelica-style linearized_model)
+        run: |
+          ./target/release/daedalus linearize crates/daedalus-core/tests/models/linearize.mo \
+            -m Lin.Pendulum --at 1 --format mo -o /tmp/linearized_model.mo
+          ./target/release/daedalus check /tmp/linearized_model.mo -m linearized_model
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Export an FMU and validate it with FMPy (Model Exchange and Co-Simulation)
+        run: |
+          python3 -m pip install --quiet fmpy
+          M=Daedalus.Examples.TorqueConverter.StallTest
+          ./target/release/daedalus fmu library/Daedalus -m $M -o /tmp/StallTest.fmu
+          ./target/release/daedalus simulate library/Daedalus -m $M -o /tmp/StallTest.csv \
+            --vars rpm_engine,rpm_stall_theory
+          python3 -m fmpy.cli validate /tmp/StallTest.fmu
+          python3 tools/fmu_check.py /tmp/StallTest.fmu /tmp/StallTest.csv rpm_engine,rpm_stall_theory
       - name: Scalability smoke test (2000-mass chain)
         run: |
           python3 tools/gen_chain.py 2000 > /tmp/chain.mo
@@ -68,6 +85,13 @@ jobs:
       - name: Install
         working-directory: web
         run: npm ci
+      - uses: actions/cache@v4
+        with:
+          path: web/public/msl
+          key: msl-4.1.0-${{ hashFiles('web/scripts/fetch-msl.mjs') }}
+      - name: Fetch and pack the Modelica Standard Library
+        working-directory: web
+        run: npm run msl
       - name: Build WebAssembly module
         working-directory: web
         run: npm run wasm

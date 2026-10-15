@@ -52,7 +52,37 @@ cargo build --release
 
 # Export the index-reduced DAE for CasADi (optimal control, MPC, estimation)
 ./target/release/daedalus export-casadi library/Daedalus -m Daedalus.Examples.OptimalControl.AileronServo -o servo.json
+
+# Linear state-space model der(x) = A x + B u, y = C x + D u around the initial
+# point (or after simulating to --at T); --format text | json | mo
+./target/release/daedalus linearize model.mo -m MyModel --at 1.5 --format mo -o linearized_model.mo
 ```
+
+`linearize` takes `u` from the model's top-level Real inputs (held at their start
+values, 0 without one, while simulating to `--at`) and `y` from its top-level Real
+outputs, like Dymola's `linearizeModel` and OpenModelica's `linearize`. The
+matrices are exact: a forward-mode run of the compiled tape per state and input,
+with algebraic loops differentiated implicitly through their symbolic Jacobians
+(`--jacobian fd` uses central differences instead). `--format mo` writes the model
+`linearized_model` in the form OpenModelica writes it.
+
+```sh
+# FMI 2.0 FMU (Model Exchange and Co-Simulation) for linux64
+cargo build --release -p daedalus-cli -p daedalus-fmi
+./target/release/daedalus fmu library/Daedalus -m Daedalus.Examples.TorqueConverter.StallTest -o StallTest.fmu
+# validate with FMPy and compare its ME and CS runs with `daedalus simulate`
+./target/release/daedalus simulate library/Daedalus -m Daedalus.Examples.TorqueConverter.StallTest -o ref.csv --vars rpm_engine
+python3 tools/fmu_check.py StallTest.fmu ref.csv rpm_engine
+```
+
+`daedalus fmu` writes `modelDescription.xml` (parameters, inputs, outputs, states,
+derivatives and every other variable, with the ModelStructure), the compiled model
+in `resources/model.bin`, and the model-independent FMI runtime
+`libdaedalus_fmi.so` (crate `daedalus-fmi`, found next to the `daedalus` executable,
+or via `--fmi-lib` / `DAEDALUS_FMI_LIB`) as `binaries/linux64/<id>.so`.
+Co-Simulation steps with the model's own BDF/Dopri5 solver and event handling;
+Model Exchange exposes the states, derivatives and one event indicator per
+relation. FMU state get/set and directional derivatives are not provided.
 
 Other source directories, such as the Modelica Standard Library, are loaded by
 passing them as extra sources or with `-L DIR`.
@@ -63,11 +93,35 @@ passing them as extra sources or with `-L DIR`.
 cd web
 npm ci
 npm run wasm     # builds crates/daedalus-wasm and runs wasm-bindgen 0.2.129
+npm run msl      # packs the Modelica Standard Library 4.1.0 into public/msl/
 npm run dev      # http://localhost:5173
 ```
 
-The page loads the bundled `Daedalus` library. Other `.mo` files can be opened
-from disk.
+The page loads the bundled `Daedalus` library and the Modelica Standard Library
+4.1.0 (`Modelica`, `ModelicaServices`, `Complex`). Other `.mo` files can be
+opened from disk.
+
+The MSL sources are not in this repository. `web/scripts/fetch-msl.mjs`
+downloads the v4.1.0 release from GitHub and packs its `.mo` and
+`package.order` files into `web/public/msl/msl-4.1.0.<hash>.json.gz`
+(about 2.6 MB; 14.8 MB unpacked). It also writes `manifest.json`, which names
+that bundle, and a copy of the BSD-3-Clause license. To work offline, pass a
+local checkout instead:
+
+```sh
+node scripts/fetch-msl.mjs /path/to/ModelicaStandardLibrary   # or MSL_DIR=/path/to/... npm run msl
+```
+
+The script does nothing when `public/msl` already holds that version. Pass
+`--force` to rebuild the bundle. Without a bundle, the workbench runs with the
+Daedalus library only.
+
+The worker downloads the bundle after the Daedalus library is loaded and
+unpacks it with `DecompressionStream`. It then registers every file without
+parsing it. A light token scan outlines each file, so the package browser can
+list the whole library within seconds. A class is parsed when it is opened,
+checked or simulated, together with the classes it needs (the same on-demand
+closure the CLI uses, see `crates/daedalus-core/src/frontend/lazy.rs`).
 
 The `Dockerfile` at the repository root builds the workbench (Rust to
 WebAssembly, then Vite) and serves the static bundle with nginx on port 80:
@@ -133,10 +187,11 @@ of the EV model, which take 109k steps.
 | `crates/daedalus-core` | Frontend (Rumoca parser, instantiation, flattening, class inspection), backend, codegen, solvers, result files |
 | `crates/daedalus-cli` | `daedalus` command line tool |
 | `crates/daedalus-wasm` | WebAssembly bindings used by the workbench |
+| `crates/daedalus-fmi` | FMI 2.0 runtime (`fmi2*` C functions) of exported FMUs |
 | `library/Daedalus` | Component library (Blocks, Mechanics, Hydraulics, Vehicle) and the examples |
 | `web` | Browser workbench (TypeScript, Vite, CodeMirror) |
 | `python` | `daedalus_casadi`: CasADi optimal control, MPC and MHE on exported models |
-| `tools` | Benchmark generator, coast-down fit |
+| `tools` | Benchmark generator, coast-down fit, FMU check (FMPy) |
 
 Modelica is a registered trademark of the Modelica Association. DAEdalus is not
 affiliated with or endorsed by the Modelica Association.

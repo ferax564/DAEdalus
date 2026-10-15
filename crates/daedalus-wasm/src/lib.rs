@@ -4,7 +4,7 @@
 //! crosses the boundary as JSON strings; trajectories cross as `Float64Array`s so a plot of
 //! a million points costs one copy.
 
-use daedalus_core::frontend::{Library, inspect};
+use daedalus_core::frontend::{Library, inspect, lazy};
 use daedalus_core::results::Results;
 use daedalus_core::sim::{SimOptions, simulate};
 use serde::Serialize;
@@ -35,6 +35,8 @@ pub fn version() -> String {
 pub struct Workspace {
     lib: Library,
     results: Option<Results>,
+    /// Classes whose registered library files are parsed already: (class, full).
+    ensured: std::collections::HashSet<(String, bool)>,
 }
 
 fn to_json<T: Serialize>(v: &T) -> String {
@@ -51,6 +53,8 @@ struct SimSummary<'a> {
     log: &'a [String],
     warnings: Vec<String>,
     translate_ms: f64,
+    /// Time spent parsing the registered library files the model needs.
+    load_ms: f64,
     stats: Option<daedalus_core::sim::SimStats>,
     model_stats: Option<daedalus_core::backend::Stats>,
     experiment: Option<serde_json::Value>,
@@ -79,12 +83,64 @@ impl Workspace {
     /// Add or replace a source file; returns a JSON array of parse errors.
     #[wasm_bindgen(js_name = setDocument)]
     pub fn set_document(&mut self, uri: &str, text: &str) -> String {
+        self.ensured.clear();
         to_json(&self.lib.set_document(uri, text))
     }
 
     #[wasm_bindgen(js_name = removeDocument)]
     pub fn remove_document(&mut self, uri: &str) {
+        self.ensured.clear();
         self.lib.remove_document(uri);
+    }
+
+    /// Register a file of a library without parsing it. `rel` is its path below the
+    /// directory holding the library's top package (`Modelica/Blocks/package.mo`), and
+    /// the document is named `prefix + rel`. `.mo` files are outlined for the class tree
+    /// and parsed when a class needs them; `package.order` files order the browser.
+    #[wasm_bindgen(js_name = addLibraryFile)]
+    pub fn add_library_file(&mut self, prefix: &str, rel: &str, text: &str) {
+        self.ensured.clear();
+        if let Some(dir) = rel.strip_suffix("package.order") {
+            let class = lazy::class_for_path(&format!("{dir}package.mo"));
+            self.lib.add_package_order(&class, text);
+        } else if rel.ends_with(".mo") {
+            let class = lazy::class_for_path(rel);
+            self.lib
+                .add_lazy_text(&format!("{prefix}{rel}"), &class, text);
+        }
+    }
+
+    /// JSON `{"files": registered library files, "parsed": how many are parsed}`.
+    #[wasm_bindgen(js_name = libraryStats)]
+    pub fn library_stats(&self) -> String {
+        let parsed = self.lib.lazy.iter().filter(|f| f.loaded).count();
+        to_json(&serde_json::json!({"files": self.lib.lazy.len(), "parsed": parsed}))
+    }
+
+    /// Parse every registered library file (the slow way out when the on-demand
+    /// closure missed a class).
+    #[wasm_bindgen(js_name = loadAll)]
+    pub fn load_all(&mut self) {
+        self.ensured.clear();
+        self.lib.load_all();
+    }
+
+    /// Parse the registered library files a class needs: in full for a model (`full`
+    /// None decides by kind: a package's own body only). Returns the time taken in ms.
+    fn ensure(&mut self, path: &str, full: Option<bool>) -> f64 {
+        if !self.lib.has_pending() {
+            return 0.0;
+        }
+        let t0 = now_ms();
+        let full = full.unwrap_or_else(|| !self.lib.lazy_is_package(path).unwrap_or(false));
+        if self.ensured.contains(&(path.to_string(), full))
+            || (!full && self.ensured.contains(&(path.to_string(), true)))
+        {
+            return 0.0;
+        }
+        self.lib.load_class(path, full);
+        self.ensured.insert((path.to_string(), full));
+        now_ms() - t0
     }
 
     /// JSON: the class tree of everything loaded.
@@ -95,7 +151,8 @@ impl Workspace {
 
     /// JSON: graphics, components, connections and documentation of one class (or null).
     #[wasm_bindgen(js_name = classInfo)]
-    pub fn class_info(&self, path: &str) -> String {
+    pub fn class_info(&mut self, path: &str) -> String {
+        self.ensure(path, None);
         to_json(&inspect::class_info(&self.lib, path))
     }
 
@@ -107,10 +164,12 @@ impl Workspace {
             .iter()
             .find(|d| d.uri == uri)
             .map(|d| d.text.to_string())
+            .or_else(|| self.lib.lazy_text(uri).map(|t| t.to_string()))
     }
 
     /// JSON: translation statistics, or `{"error": ...}`.
-    pub fn check(&self, model: &str) -> String {
+    pub fn check(&mut self, model: &str) -> String {
+        self.ensure(model, Some(true));
         match daedalus_core::translate(&self.lib, model, &Default::default()) {
             Ok(m) => to_json(
                 &serde_json::json!({"ok": true, "stats": m.stats, "warnings": m.warnings, "states": m.states.len()}),
@@ -120,7 +179,8 @@ impl Workspace {
     }
 
     /// The flat model as Modelica-like text.
-    pub fn flatten(&self, model: &str) -> String {
+    pub fn flatten(&mut self, model: &str) -> String {
+        self.ensure(model, Some(true));
         match self.lib.flatten(model) {
             Ok(f) => f.dump(),
             Err(e) => format!("// error: {e:#}"),
@@ -131,6 +191,7 @@ impl Workspace {
     /// from the experiment annotation). Returns a JSON summary; trajectories are fetched
     /// with [`Workspace::values`].
     pub fn simulate(&mut self, model: &str, options: &str) -> String {
+        let load_ms = self.ensure(model, Some(true));
         let t0 = now_ms();
         let m = match daedalus_core::translate(&self.lib, model, &Default::default()) {
             Ok(m) => m,
@@ -202,6 +263,7 @@ impl Workspace {
             log: &r.log,
             warnings: m.warnings.clone(),
             translate_ms,
+            load_ms,
             stats,
             model_stats: Some(m.stats.clone()),
             experiment,
