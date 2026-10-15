@@ -146,6 +146,8 @@ pub enum Val {
     Inst(InstId),
     IA(Vec<usize>, Vec<InstId>),
     Str(String),
+    /// Array of strings (`substanceNames`).
+    SA(Vec<usize>, Vec<String>),
     /// Record value: ordered fields.
     Rec(Vec<(String, Val)>),
     /// Several function outputs (tuple).
@@ -169,6 +171,7 @@ impl Val {
             Val::Inst(_) => "component",
             Val::IA(..) => "component array",
             Val::Str(_) => "string",
+            Val::SA(..) => "string array",
             Val::Rec(_) => "record",
             Val::Tuple(_) => "tuple",
         }
@@ -368,6 +371,28 @@ impl<'a, 't> Flattener<'a, 't> {
             c = self.tree.member_class(c, p)?;
         }
         Some(c)
+    }
+
+    /// The class `name` that the enclosing class of `class` inherits (the base of
+    /// `redeclare model extends name`), skipping `class` itself.
+    fn inherited_class(&self, class: ClassId, name: &str) -> Option<ClassId> {
+        let parent = self.tree.node(class).parent?;
+        let mut stack = self.tree.bases(parent);
+        let mut seen = FxHashSet::default();
+        while let Some(b) = stack.pop() {
+            if !seen.insert(b) {
+                continue;
+            }
+            if let Some(&c) = self.tree.node(b).children.get(name)
+                && c != class
+            {
+                return Some(c);
+            }
+            let mut more = self.tree.bases(b);
+            more.reverse();
+            stack.extend(more);
+        }
+        None
     }
 
     fn lookup_class_name(&self, env: &Env, name: &ast::Name) -> Option<ClassId> {
@@ -836,10 +861,16 @@ impl<'a, 't> Flattener<'a, 't> {
                 }),
                 None => env.clone(),
             };
-            let base = self
+            let mut base = self
                 .lookup_class(&lookup_env, &parts)
                 .or_else(|| self.lookup_class(&env, &parts))
                 .ok_or_else(|| anyhow!("base class '{}' not found", ext.base_name))?;
+            if base == class {
+                // `redeclare model extends X`: the base is the inherited X, not this class.
+                base = self
+                    .inherited_class(class, parts[0])
+                    .ok_or_else(|| anyhow!("base class '{}' not found", ext.base_name))?;
+            }
             let mut em = Mod::default();
             for x in &ext.modifications {
                 self.add_mod_expr(&mut em, &x.expr, x.each, x.final_, x.redeclare, &scope);
@@ -1048,6 +1079,17 @@ impl<'a, 't> Flattener<'a, 't> {
                         if let Some(x) = v {
                             c = Comp::Str(x.into());
                         }
+                    } else if let Some(sc) = tm
+                        .value
+                        .clone()
+                        .or_else(|| tm.sub("start").and_then(|s| s.value.clone()))
+                        && let Ok(Val::SA(d, xs)) = self.translate_scoped(&sc, &mut Ctx::default())
+                        && d.iter().product::<usize>() == count
+                    {
+                        c = Comp::Arr(
+                            dims.clone(),
+                            Rc::new(xs.into_iter().map(|x| Comp::Str(x.into())).collect()),
+                        );
                     }
                     self.insts[inst as usize].comps.insert(name, c);
                     return Ok(());
@@ -3304,6 +3346,25 @@ impl<'a, 't> Flattener<'a, 't> {
     fn array_construct(&mut self, vals: Vec<Val>, kind: ArrayConstructor) -> Result<Val> {
         match kind {
             ArrayConstructor::Array => {
+                if !vals.is_empty() && vals.iter().all(|v| matches!(v, Val::Str(_) | Val::SA(..))) {
+                    let mut inner: Option<Vec<usize>> = None;
+                    let mut out = Vec::new();
+                    for v in &vals {
+                        let (d, e) = match v {
+                            Val::Str(x) => (vec![], vec![x.clone()]),
+                            Val::SA(d, e) => (d.clone(), e.clone()),
+                            _ => unreachable!(),
+                        };
+                        if inner.as_ref().is_some_and(|i| *i != d) {
+                            bail!("array constructor with inconsistent element sizes");
+                        }
+                        inner = Some(d);
+                        out.extend(e);
+                    }
+                    let mut dims = vec![vals.len()];
+                    dims.extend(inner.unwrap_or_default());
+                    return Ok(Val::SA(dims, out));
+                }
                 if vals.iter().all(|v| matches!(v, Val::Inst(_))) && !vals.is_empty() {
                     let v: Vec<InstId> = vals
                         .iter()
@@ -3450,6 +3511,16 @@ impl<'a, 't> Flattener<'a, 't> {
                 let (nd, idx) = select_indices(&dims, &sel);
                 Ok(mk_arr(nd, idx.into_iter().map(|i| el[i]).collect()))
             }
+            Val::SA(dims, el) => {
+                let sel = self.eval_subscripts(subs, &dims, scope, ctx)?;
+                let (nd, idx) = select_indices(&dims, &sel);
+                let v: Vec<String> = idx.into_iter().map(|i| el[i].clone()).collect();
+                if nd.is_empty() {
+                    Ok(Val::Str(v[0].clone()))
+                } else {
+                    Ok(Val::SA(nd, v))
+                }
+            }
             Val::IA(dims, el) => {
                 let sel = self.eval_subscripts(subs, &dims, scope, ctx)?;
                 let (nd, idx) = select_indices(&dims, &sel);
@@ -3507,6 +3578,18 @@ impl<'a, 't> Flattener<'a, 't> {
                         .map(|e| if let Comp::Inst(x) = e { *x } else { 0 })
                         .collect();
                     Ok(Val::IA(dims.clone(), v))
+                } else if !el.is_empty() && el.iter().all(|e| matches!(e, Comp::Str(_))) {
+                    let v = el
+                        .iter()
+                        .map(|e| {
+                            if let Comp::Str(x) = e {
+                                x.to_string()
+                            } else {
+                                String::new()
+                            }
+                        })
+                        .collect();
+                    Ok(Val::SA(dims.clone(), v))
                 } else {
                     // Arrays of arrays (from field access over component arrays): flatten.
                     let mut out = Vec::new();
@@ -3632,18 +3715,22 @@ impl<'a, 't> Flattener<'a, 't> {
         if parts.len() == 1 {
             let mut e: Option<Rc<Env>> = Some(env.clone());
             while let Some(en) = e {
-                if let Some((owner, comp)) = self.tree.find_component(en.class, parts[0])
+                if let Some((owner, comp, modv)) = self.find_constant(en.class, parts[0], 0)
                     && matches!(
                         comp.variability,
                         Variability::Constant(_) | Variability::Parameter(_)
                     )
                 {
-                    let oenv = Rc::new(Env {
-                        class: owner,
-                        overrides: en.overrides.clone(),
-                        parent: en.parent.clone(),
-                    });
-                    let v = self.class_constant(owner, comp, oenv)?;
+                    let oenv = if owner == en.class {
+                        Rc::new(Env {
+                            class: owner,
+                            overrides: en.overrides.clone(),
+                            parent: en.parent.clone(),
+                        })
+                    } else {
+                        self.inherited_env(en.class, owner, en.overrides.clone())
+                    };
+                    let v = self.class_constant_in(en.class, owner, comp, modv, oenv)?;
                     return Ok(Some(self.apply_subs(v, &cr.parts[0], scope, ctx)?));
                 }
                 e = en.parent.clone();
@@ -3670,14 +3757,18 @@ impl<'a, 't> Flattener<'a, 't> {
                     return Ok(Some(Val::S(self.model.arena.constant(v))));
                 }
             }
-            if let Some((owner, comp)) = self.tree.find_component(cls, name) {
+            if let Some((owner, comp, modv)) = self.find_constant(cls, name, 0) {
                 // Respect overrides from the current environment when the class is redeclared.
-                let oenv = Rc::new(Env {
-                    class: owner,
-                    overrides: env.overrides.clone(),
-                    parent: self.env_of(owner).parent.clone(),
-                });
-                let mut v = self.class_constant(owner, comp, oenv)?;
+                let oenv = if owner == cls {
+                    Rc::new(Env {
+                        class: owner,
+                        overrides: env.overrides.clone(),
+                        parent: self.env_of(owner).parent.clone(),
+                    })
+                } else {
+                    self.inherited_env(cls, owner, env.overrides.clone())
+                };
+                let mut v = self.class_constant_in(cls, owner, comp, modv, oenv)?;
                 v = self.apply_subs(v, &cr.parts[k], scope, ctx)?;
                 for p in &cr.parts[k + 1..] {
                     v = self.field(v, &p.ident.text)?;
@@ -3723,6 +3814,104 @@ impl<'a, 't> Flattener<'a, 't> {
             }
         }
         None
+    }
+
+    /// Constant `name` as seen from class `ctx`: its declaration (possibly inherited) and
+    /// the outermost `extends B(name = value)` modifier on the way, with the class
+    /// whose scope the modifier value is written in.
+    fn find_constant(
+        &self,
+        ctx: ClassId,
+        name: &str,
+        depth: usize,
+    ) -> Option<(ClassId, &'a ast::Component, Option<(&'a E, ClassId)>)> {
+        if depth > 40 {
+            return None;
+        }
+        let def = self.tree.def(ctx)?;
+        if let Some(c) = def.components.get(name) {
+            return Some((ctx, c, None));
+        }
+        for (i, b) in self.tree.bases_by_ext(ctx) {
+            if let Some((owner, comp, inner)) = self.find_constant(b, name, depth + 1) {
+                let here = def.extends[i]
+                    .modifications
+                    .iter()
+                    .find_map(|m| match &m.expr {
+                        E::Modification { target, value, .. }
+                            if target.parts.len() == 1 && &*target.parts[0].ident.text == name =>
+                        {
+                            Some((&**value, ctx))
+                        }
+                        _ => None,
+                    });
+                return Some((owner, comp, here.or(inner)));
+            }
+        }
+        None
+    }
+
+    /// Scope for an element `owner` declares but `ctx` inherits: names resolve in `ctx`
+    /// first (its members carry its modifiers and redeclarations), then lexically
+    /// around `owner`.
+    fn inherited_env(
+        &mut self,
+        ctx: ClassId,
+        owner: ClassId,
+        overrides: Rc<FxHashMap<String, ClassId>>,
+    ) -> Rc<Env> {
+        let parent = Some(self.env_of(owner));
+        Rc::new(Env {
+            class: ctx,
+            overrides,
+            parent,
+        })
+    }
+
+    fn class_constant_in(
+        &mut self,
+        ctx: ClassId,
+        owner: ClassId,
+        comp: &'a ast::Component,
+        modv: Option<(&'a E, ClassId)>,
+        env: Rc<Env>,
+    ) -> Result<Val> {
+        if ctx == owner && modv.is_none() {
+            return self.class_constant(owner, comp, env);
+        }
+        let key = (ctx, comp.name.clone());
+        if let Some(v) = self.const_cache.get(&key) {
+            return Ok(v.clone());
+        }
+        if !self.const_in_progress.insert(key.clone()) {
+            bail!("cyclic constant definition '{}'", comp.name);
+        }
+        let r = match modv {
+            Some((value, mc)) => {
+                let menv = self.env_of(mc);
+                let menv = Rc::new(Env {
+                    class: menv.class,
+                    overrides: env.overrides.clone(),
+                    parent: menv.parent.clone(),
+                });
+                self.translate(
+                    value,
+                    &Scope {
+                        inst: None,
+                        env: menv,
+                    },
+                    &mut Ctx::default(),
+                )
+            }
+            None => match &comp.binding {
+                Some(b) => self.translate(b, &Scope { inst: None, env }, &mut Ctx::default()),
+                None => Err(anyhow!("constant '{}' has no value", comp.name)),
+            },
+        };
+        self.const_in_progress.remove(&key);
+        let v = r?;
+        self.const_cache.insert(key, v.clone());
+        Ok(v)
     }
 
     fn class_constant(
@@ -3987,7 +4176,7 @@ impl<'a, 't> Flattener<'a, 't> {
             "size" => {
                 let v = arg!(0);
                 let dims = match &v {
-                    Val::A(d, _) | Val::IA(d, _) => d.clone(),
+                    Val::A(d, _) | Val::IA(d, _) | Val::SA(d, _) => d.clone(),
                     Val::Rec(f) => match f.first() {
                         Some((_, Val::A(d, _) | Val::IA(d, _))) => d.clone(),
                         _ => vec![],
@@ -4009,7 +4198,7 @@ impl<'a, 't> Flattener<'a, 't> {
             "ndims" => {
                 let v = arg!(0);
                 let n = match &v {
-                    Val::A(d, _) | Val::IA(d, _) => d.len(),
+                    Val::A(d, _) | Val::IA(d, _) | Val::SA(d, _) => d.len(),
                     _ => 0,
                 };
                 return Ok(Val::S(self.model.arena.constant(n as f64)));
@@ -4313,7 +4502,42 @@ impl<'a, 't> Flattener<'a, 't> {
         }
         match self.tree.class_type(cls) {
             ClassType::Function => {
-                let outs = self.inline_function(cls, argv, nargv, env.overrides.clone())?;
+                // A function reached through a package that inherits it (`Medium.f`) sees
+                // that package's constants and redeclarations.
+                let via = if parts.len() > 1 {
+                    self.lookup_class(&env, &parts[..parts.len() - 1])
+                } else {
+                    let mut e: Option<&Env> = Some(&env);
+                    let mut found = None;
+                    while let Some(en) = e {
+                        if en.overrides.contains_key(parts[0]) {
+                            break;
+                        }
+                        if self.tree.member_class(en.class, parts[0]) == Some(cls) {
+                            found = Some(en.class);
+                            break;
+                        }
+                        e = en.parent.as_deref();
+                    }
+                    found
+                };
+                let lexical = self.tree.node(cls).parent;
+                let outs = match via {
+                    Some(v)
+                        if Some(v) != lexical && self.tree.class_type(v) == ClassType::Package =>
+                    {
+                        let owner = lexical.unwrap_or(ROOT);
+                        let penv = self.inherited_env(v, owner, env.overrides.clone());
+                        self.inline_function_in(
+                            cls,
+                            argv,
+                            nargv,
+                            env.overrides.clone(),
+                            Some(penv),
+                        )?
+                    }
+                    _ => self.inline_function(cls, argv, nargv, env.overrides.clone())?,
+                };
                 if outs.len() == 1 {
                     Ok(outs.into_iter().next().unwrap())
                 } else {
@@ -4551,6 +4775,41 @@ impl<'a, 't> Flattener<'a, 't> {
         nargv: Vec<(String, Val)>,
         overrides: Rc<FxHashMap<String, ClassId>>,
     ) -> Result<Vec<Val>> {
+        self.inline_function_in(cls, argv, nargv, overrides, None)
+    }
+
+    /// Scope for the elements of function class `owner` (the called function or one it
+    /// extends). Reached through package `via`, names resolve in `via` before `owner`'s
+    /// lexical scope.
+    fn function_owner_env(
+        &mut self,
+        owner: ClassId,
+        via: Option<ClassId>,
+        overrides: &Rc<FxHashMap<String, ClassId>>,
+    ) -> Rc<Env> {
+        match via {
+            Some(v) => {
+                let lexical = self.tree.node(owner).parent.unwrap_or(ROOT);
+                let p = self.inherited_env(v, lexical, overrides.clone());
+                Rc::new(Env {
+                    class: owner,
+                    overrides: overrides.clone(),
+                    parent: Some(p),
+                })
+            }
+            None => self.env_of(owner),
+        }
+    }
+
+    /// Inline a call; `parent` replaces the function's lexical enclosing scope.
+    fn inline_function_in(
+        &mut self,
+        cls: ClassId,
+        argv: Vec<Val>,
+        nargv: Vec<(String, Val)>,
+        overrides: Rc<FxHashMap<String, ClassId>>,
+        parent: Option<Rc<Env>>,
+    ) -> Result<Vec<Val>> {
         self.depth += 1;
         if self.depth > MAX_DEPTH {
             bail!("function inlining depth exceeded (recursive function?)");
@@ -4558,7 +4817,15 @@ impl<'a, 't> Flattener<'a, 't> {
         let fname = self.tree.node(cls).path.clone();
         let mut elems = Vec::new();
         self.function_elements(cls, &mut elems, 0);
-        let env = self.env_with(cls, overrides);
+        let via = parent.as_ref().map(|p| p.class);
+        let env = match parent {
+            Some(p) => Rc::new(Env {
+                class: cls,
+                overrides: overrides.clone(),
+                parent: Some(p),
+            }),
+            None => self.env_with(cls, overrides.clone()),
+        };
         let scope = Scope { inst: None, env };
         let mut ctx = Ctx {
             in_function: true,
@@ -4643,7 +4910,7 @@ impl<'a, 't> Flattener<'a, 't> {
             if matches!(c.causality, Causality::Output(_)) {
                 outputs.push(n.clone());
             }
-            let oenv = self.env_of(*owner);
+            let oenv = self.function_owner_env(*owner, via, &overrides);
             let oscope = Scope {
                 inst: None,
                 env: oenv,
@@ -4701,7 +4968,7 @@ impl<'a, 't> Flattener<'a, 't> {
         self.function_algorithms(cls, &mut algs, 0);
         let mut returned = false;
         for (stmts, owner) in algs {
-            let oenv = self.env_of(owner);
+            let oenv = self.function_owner_env(owner, via, &overrides);
             let oscope = Scope {
                 inst: None,
                 env: oenv,
