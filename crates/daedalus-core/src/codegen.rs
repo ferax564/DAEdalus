@@ -5,7 +5,7 @@
 //! same code runs natively and in WebAssembly without allocation in the hot loop.
 
 use crate::backend::{AliasKind, Block, System};
-use crate::expr::{Arena, Cmp, ExprId, Fn1, Fn2, Node, Table, VarId, eval_f1, eval_f2};
+use crate::expr::{Arena, Cmp, ExprId, Fn1, Fn2, Node, Table, Table2, VarId, eval_f1, eval_f2};
 use crate::flat::{VarKind, Variable, WhenAction};
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -30,6 +30,9 @@ pub enum Ins {
     /// `d = table[t].interp(col, x)`
     Interp(Slot, u32, u32, Slot),
     InterpDer(Slot, u32, u32, Slot),
+    /// `d = tables2[tk >> 5].eval(tk & 31, u1, u2)` (value or partial derivative, see
+    /// [`crate::table2::kind`])
+    Interp2(Slot, u32, Slot, Slot),
     /// `d = history[k](time - r[delay])`
     Delay(Slot, u32, Slot),
     /// `d = output out of the loop program run at call site s`
@@ -124,6 +127,7 @@ pub struct Model {
     pub layout: Layout,
     pub consts: Vec<(Slot, f64)>,
     pub tables: Vec<Table>,
+    pub tables2: Vec<Table2>,
     pub newton: Vec<NewtonBlock>,
     /// Parameter bindings in dependency order, one segment per parameter so that
     /// individual parameters can be overridden without recompiling.
@@ -373,6 +377,7 @@ impl Emitter<'_> {
                 Node::If(..) => Ins::Select(d, s[0], s[1], s[2]),
                 Node::Interp(t, c, _) => Ins::Interp(d, t, c, s[0]),
                 Node::InterpDer(t, c, _) => Ins::InterpDer(d, t, c, s[0]),
+                Node::Interp2(tk, ..) => Ins::Interp2(d, tk, s[0], s[1]),
                 Node::Delay(k, _) => Ins::Delay(d, k, s[0]),
                 Node::Call(c, out) => Ins::Call(d, self.site(c, s), out),
                 Node::CallD(c, k) => Ins::CallD(d, self.site(c, s), k),
@@ -431,6 +436,7 @@ fn retarget(ins: &mut Ins, from: Slot, to: Slot) -> bool {
         | Ins::Select(d, ..)
         | Ins::Interp(d, ..)
         | Ins::InterpDer(d, ..)
+        | Ins::Interp2(d, ..)
         | Ins::Delay(d, ..)
         | Ins::Call(d, ..)
         | Ins::CallD(d, ..) => d,
@@ -622,6 +628,7 @@ pub fn compile(mut sys: System) -> Model {
         n_regs: 0,
     };
     let tables = sys.arena.tables.clone();
+    let tables2 = sys.arena.tables2.clone();
     let mut sites = Vec::new();
     let progs: Vec<ProgCode> = (0..sys.arena.progs.len())
         .map(|p| compile_prog(&mut sys.arena, p, &mut sites))
@@ -796,6 +803,7 @@ pub fn compile(mut sys: System) -> Model {
         layout,
         consts,
         tables,
+        tables2,
         newton,
         params,
         free_params,
@@ -1279,6 +1287,27 @@ fn run_sub_tangent(m: &Model, ls: &mut LoopState, prog: &[Ins], r: &mut [f64], d
                 r[d as usize] = m.tables[t as usize].slope(c as usize, r[x as usize]);
                 dr[d as usize] = 0.0;
             }
+            Ins::Interp2(d, tk, a, b) => {
+                let tb = &m.tables2[(tk >> 5) as usize];
+                let (k, u1, u2) = (tk & 31, r[a as usize], r[b as usize]);
+                let (du1, du2) = (dr[a as usize], dr[b as usize]);
+                // one-sided on grid lines, as the symbolic derivative (see `Arena::forward_diff`)
+                let sides = if k & 7 == 0 {
+                    crate::table2::kind::sides(du1, du2)
+                } else {
+                    0
+                };
+                let mut dv = 0.0;
+                for (dim, du) in [(0, du1), (1, du2)] {
+                    if du != 0.0
+                        && let Some(pk) = crate::table2::kind::partial(k | sides, dim)
+                    {
+                        dv += tb.eval(pk, u1, u2) * du;
+                    }
+                }
+                dr[d as usize] = dv;
+                r[d as usize] = tb.eval(k, u1, u2);
+            }
             Ins::Call(d, site, out) => {
                 let (v, dv) = site_tangent(m, ls, site as usize, out as usize, r, dr);
                 r[d as usize] = v;
@@ -1364,6 +1393,10 @@ fn run_sub(m: &Model, ls: &mut LoopState, prog: &[Ins], r: &mut [f64]) {
             }
             Ins::InterpDer(d, t, c, x) => {
                 r[d as usize] = m.tables[t as usize].slope(c as usize, r[x as usize])
+            }
+            Ins::Interp2(d, tk, a, b) => {
+                r[d as usize] =
+                    m.tables2[(tk >> 5) as usize].eval(tk & 31, r[a as usize], r[b as usize])
             }
             Ins::Call(d, site, out) => {
                 r[d as usize] = site_value(m, ls, site as usize, out as usize, r)
@@ -1468,6 +1501,13 @@ impl<'m> Runtime<'m> {
                 }
                 Ins::InterpDer(d, t, c, x) => {
                     r[d as usize] = tables[t as usize].slope(c as usize, r[x as usize])
+                }
+                Ins::Interp2(d, tk, a, b) => {
+                    r[d as usize] = self.m.tables2[(tk >> 5) as usize].eval(
+                        tk & 31,
+                        r[a as usize],
+                        r[b as usize],
+                    )
                 }
                 Ins::Delay(d, k, ds) => {
                     let dl = r[ds as usize];

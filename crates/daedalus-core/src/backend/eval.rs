@@ -83,6 +83,7 @@ pub fn eval(a: &Arena, root: ExprId, vals: &Values, memo: &mut FxHashMap<ExprId,
             Node::Rel(r) => f64::from(a.relations[r as usize].op.eval(g(0), g(1))),
             Node::Interp(t, c, _) => a.tables[t as usize].interp(c as usize, g(0)),
             Node::InterpDer(t, c, _) => a.tables[t as usize].slope(c as usize, g(0)),
+            Node::Interp2(tk, ..) => a.tables2[(tk >> 5) as usize].eval(tk & 31, g(0), g(1)),
             // no history here: the undelayed value
             Node::Delay(k, _) => (vals.var)(a.delays[k as usize]),
             Node::Call(c, out) => {

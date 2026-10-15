@@ -7,8 +7,9 @@
 
 use super::overconstrained::{OcAnswers, OcLog};
 use super::tree::{ClassId, ClassTree, ROOT, builtin_name};
-use crate::expr::{Arena, Cmp, ExprId, Fn1, Fn2, LoopProg, Node, Table, VarId};
+use crate::expr::{Arena, Cmp, ExprId, Fn1, Fn2, LoopProg, Node, Table, Table2, VarId};
 use crate::flat::*;
+use crate::table2::kind as k2;
 use anyhow::{Context, Result, anyhow, bail};
 use indexmap::IndexMap;
 use rumoca_core::{ArrayConstructor, Causality, ClassType, OpBinary, OpUnary, Variability};
@@ -264,6 +265,10 @@ pub struct Flattener<'a, 't> {
     sample_count: usize,
     /// Native stand-ins for the MSL external table objects: (arena table, `columns`).
     ext_tables: Vec<(u32, Vec<usize>)>,
+    /// Native stand-ins for the MSL 2-D table objects: arena 2-D tables.
+    ext_tables2: Vec<u32>,
+    /// Directory of each loaded top-level package, for `modelica://` resource URIs.
+    pub resource_roots: FxHashMap<String, String>,
     /// Instances of expandable connectors (and connectors nested in them).
     expandable_insts: FxHashSet<InstId>,
     /// Variables declared inside expandable connectors.
@@ -335,6 +340,8 @@ impl<'a, 't> Flattener<'a, 't> {
             binding_mods: FxHashMap::default(),
             sample_count: 0,
             ext_tables: Vec::new(),
+            ext_tables2: Vec::new(),
+            resource_roots: FxHashMap::default(),
             expandable_insts: FxHashSet::default(),
             expandable_vars: Vec::new(),
             when_assigned: FxHashSet::default(),
@@ -6176,12 +6183,33 @@ impl<'a, 't> Flattener<'a, 't> {
                 self.depth += 1;
                 let mut args = Vec::with_capacity(ext.args.len());
                 for a in &ext.args {
-                    args.push(self.translate(a, &scope, &mut ctx)?);
+                    match self.translate(a, &scope, &mut ctx) {
+                        Ok(v) => args.push(v),
+                        // `CombiTable2D_minimumAbscissa(tableID, uMin)`: the output array
+                        // argument has no value yet (and is not needed)
+                        Err(_) if op.ends_with("Abscissa") && !args.is_empty() => {
+                            args.push(Val::S(Arena::ZERO))
+                        }
+                        Err(e) => return Err(e),
+                    }
                 }
                 self.depth -= 1;
                 return self
                     .standard_table(op, args)
                     .with_context(|| format!("in function '{fname}'"));
+            }
+            if cname == "ModelicaInternal_fullPathName" {
+                let a = ext
+                    .args
+                    .first()
+                    .ok_or_else(|| anyhow!("fullPathName: missing argument"))?;
+                self.depth += 1;
+                let v = self.translate(a, &scope, &mut ctx)?;
+                self.depth -= 1;
+                let Val::Str(name) = v else {
+                    bail!("fullPathName: expected a string, found {}", v.kind());
+                };
+                return Ok(vec![Val::Str(self.full_path_name(&name)?)]);
             }
             if let Some(op) = cname.strip_prefix("ModelicaStrings_") {
                 self.depth += 1;
@@ -6335,23 +6363,14 @@ impl<'a, 't> Flattener<'a, 't> {
             .ok_or_else(|| anyhow!("unknown table function '{op}'"))?;
         let time = kind == "CombiTimeTable";
         if kind == "CombiTable2D" {
-            bail!("2-D tables are not supported yet");
+            return self.standard_table2(fun, args);
         }
         let out = match fun {
             "init2" | "init3" => {
                 // (fileName, tableName, table, nrow, ncol, [startTime,] columns, ncols, smoothness,
-                //  extrapolation, [shiftTime, timeEvents,] verboseRead, ...); nrow and ncol follow table
-                let (d, e) = args[2].elems()?;
-                if d.len() != 2 || d[0] == 0 {
-                    bail!("tables read from files are not supported; give the table as a matrix");
-                }
-                let mut data = Vec::with_capacity(e.len());
-                for v in e {
-                    data.push(
-                        self.eval_param_expr(v)
-                            .ok_or_else(|| anyhow!("table data must be constant or parameter"))?,
-                    );
-                }
+                //  extrapolation, [shiftTime, timeEvents,] verboseRead, delimiter, nHeaderLines);
+                // nrow and ncol follow table
+                let (rows, cols, data) = self.table_data(&args, if time { 13 } else { 10 })?;
                 let o = usize::from(time);
                 let (_, ce) = args[5 + o].elems()?;
                 let mut columns = Vec::with_capacity(ce.len());
@@ -6365,8 +6384,8 @@ impl<'a, 't> Flattener<'a, 't> {
                 let smooth = num(self, &args[7 + o], "smoothness")? as u8;
                 let extrap = num(self, &args[8 + o], "extrapolation")? as u8;
                 let mut t = Table::linear(
-                    d[0],
-                    d[1],
+                    rows,
+                    cols,
                     data,
                     match extrap {
                         2 => 1,
@@ -6447,6 +6466,196 @@ impl<'a, 't> Flattener<'a, 't> {
             _ => bail!("table function '{op}' is not supported"),
         };
         Ok(vec![out])
+    }
+
+    /// The matrix of a table object: read from the file when `tableName` and `fileName`
+    /// are given (`delim_at` is the index of the CSV `delimiter` argument, followed by
+    /// `nHeaderLines`), else the `table` argument (as `getTableSource` decides in C).
+    fn table_data(&mut self, args: &[Val], delim_at: usize) -> Result<(usize, usize, Vec<f64>)> {
+        let text = |v: Option<&Val>| match v {
+            Some(Val::Str(s)) => s.clone(),
+            _ => String::new(),
+        };
+        let valid = |s: &str| s != "NoName" && s.chars().any(|c| c != ' ');
+        let (file, name) = (text(args.first()), text(args.get(1)));
+        if valid(&name) {
+            if !valid(&file) {
+                bail!(
+                    "table \"{name}\" without a file name would come from a user-supplied \
+                     usertab C function, which is not supported"
+                );
+            }
+            let delimiter = match args.get(delim_at) {
+                Some(Val::Str(s)) => s.clone(),
+                _ => ",".to_string(),
+            };
+            let header = match args.get(delim_at + 1) {
+                Some(v) => self
+                    .eval_param_expr(v.scalar()?)
+                    .ok_or_else(|| anyhow!("nHeaderLines must be a parameter expression"))?
+                    .max(0.0) as usize,
+                None => 0,
+            };
+            let m = super::tablefile::read_table(&file, &name, &delimiter, header)?;
+            return Ok((m.rows, m.cols, m.data));
+        }
+        if valid(&file) {
+            bail!(
+                "the file name for a table (= \"{file}\") is defined, but not the corresponding table name"
+            );
+        }
+        let (d, e) = args[2].elems()?;
+        if d.len() != 2 || d[0] == 0 {
+            bail!(
+                "the table matrix is empty (give the table, or tableOnFile with a table name and a file name)"
+            );
+        }
+        let mut data = Vec::with_capacity(e.len());
+        for v in e {
+            data.push(
+                self.eval_param_expr(v)
+                    .ok_or_else(|| anyhow!("table data must be constant or parameter"))?,
+            );
+        }
+        Ok((d[0], d[1], data))
+    }
+
+    /// `ModelicaStandardTables_CombiTable2D_*`: lookups become [`Node::Interp2`] nodes.
+    fn standard_table2(&mut self, fun: &str, args: Vec<Val>) -> Result<Vec<Val>> {
+        let num = |f: &mut Self, v: &Val, what: &str| -> Result<f64> {
+            let e = v.scalar()?;
+            f.eval_param_expr(e)
+                .ok_or_else(|| anyhow!("{what} must be a parameter expression"))
+        };
+        let handle = |f: &mut Self, v: &Val| -> Result<u32> {
+            let e = v.scalar()?;
+            if let Node::Var(var) = f.model.arena.node(e) {
+                f.ensure_binding(var).with_context(|| {
+                    format!("in table object '{}'", f.model.vars[var as usize].name)
+                })?;
+            }
+            let k = num(f, v, "table object")? as usize;
+            f.ext_tables2
+                .get(k)
+                .copied()
+                .ok_or_else(|| anyhow!("invalid table object"))
+        };
+        let arg = |i: usize| -> Result<ExprId> {
+            args.get(i)
+                .ok_or_else(|| anyhow!("missing argument {}", i + 1))?
+                .scalar()
+        };
+        let out = match fun {
+            "init2" | "init3" => {
+                // (fileName, tableName, table, nrow, ncol, smoothness, extrapolation,
+                //  verboseRead, delimiter, nHeaderLines)
+                let (rows, cols, data) = self.table_data(&args, 8)?;
+                let smooth = num(self, &args[5], "smoothness")? as u8;
+                let extrap = match args.get(6) {
+                    Some(v) => num(self, v, "extrapolation")? as u8,
+                    None => crate::table2::LAST_TWO_POINTS,
+                };
+                let t = Table2::new(rows, cols, &data, smooth, extrap).map_err(|e| anyhow!(e))?;
+                let id = self.model.arena.add_table2(t);
+                self.ext_tables2.push(id);
+                Val::S(
+                    self.model
+                        .arena
+                        .constant((self.ext_tables2.len() - 1) as f64),
+                )
+            }
+            "getValue" => {
+                let t = handle(self, &args[0])?;
+                Val::S(self.model.arena.interp2(t, k2::VALUE, arg(1)?, arg(2)?))
+            }
+            "getDerValue" => {
+                // (tableID, u1, u2, der_u1, der_u2)
+                let t = handle(self, &args[0])?;
+                let (u1, u2, du1, du2) = (arg(1)?, arg(2)?, arg(3)?, arg(4)?);
+                let a = &mut self.model.arena;
+                let p1 = a.interp2(t, k2::D1, u1, u2);
+                let p2 = a.interp2(t, k2::D2, u1, u2);
+                let t1 = a.mul(p1, du1);
+                let t2 = a.mul(p2, du2);
+                Val::S(a.add(t1, t2))
+            }
+            "getDer2Value" => {
+                // (tableID, u1, u2, der_u1, der_u2, der2_u1, der2_u2)
+                let t = handle(self, &args[0])?;
+                let (u1, u2) = (arg(1)?, arg(2)?);
+                let (d1, d2, dd1, dd2) = (arg(3)?, arg(4)?, arg(5)?, arg(6)?);
+                let a = &mut self.model.arena;
+                let two = a.constant(2.0);
+                let d12 = a.mul(d1, d2);
+                let d12 = a.mul(two, d12);
+                let d11 = a.mul(d1, d1);
+                let d22 = a.mul(d2, d2);
+                let mut acc = Arena::ZERO;
+                for (k, w) in [
+                    (k2::D11, d11),
+                    (k2::D12, d12),
+                    (k2::D22, d22),
+                    (k2::D1, dd1),
+                    (k2::D2, dd2),
+                ] {
+                    let p = a.interp2(t, k, u1, u2);
+                    let term = a.mul(p, w);
+                    acc = a.add(acc, term);
+                }
+                Val::S(acc)
+            }
+            "minimumAbscissa" | "maximumAbscissa" => {
+                let t = handle(self, &args[0])?;
+                let tb = &self.model.arena.tables2[t as usize];
+                let v = if fun.starts_with("min") {
+                    tb.min_abscissa()
+                } else {
+                    tb.max_abscissa()
+                };
+                let a = &mut self.model.arena;
+                Val::A(vec![2], vec![a.constant(v[0]), a.constant(v[1])])
+            }
+            "close" => Val::S(Arena::ZERO),
+            _ => bail!("table function 'CombiTable2D_{fun}' is not supported"),
+        };
+        Ok(vec![out])
+    }
+
+    /// `ModelicaInternal_fullPathName` (behind `Files.loadResource` / `fullPathName`):
+    /// `modelica://Package/path` resolves to the directory of the loaded top-level
+    /// package; other names are file names, made absolute against the current directory.
+    fn full_path_name(&self, name: &str) -> Result<String> {
+        let uri = name
+            .strip_prefix("modelica://")
+            .or_else(|| name.strip_prefix("Modelica://"));
+        if let Some(rest) = uri {
+            let (auth, path) = rest.split_once('/').unwrap_or((rest, ""));
+            let mut parts = auth.split('.');
+            let top = parts.next().unwrap_or("");
+            let root = self.resource_roots.get(top).ok_or_else(|| {
+                anyhow!("cannot resolve \"{name}\": package '{top}' is not loaded from a directory")
+            })?;
+            let mut p = std::path::PathBuf::from(if root.is_empty() { "." } else { root });
+            for sub in parts {
+                p.push(sub);
+            }
+            if !path.is_empty() {
+                p.push(path);
+            }
+            return Ok(p.to_string_lossy().replace('\\', "/"));
+        }
+        let name = name.strip_prefix("file://").unwrap_or(name);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let p = std::path::Path::new(name);
+            if p.is_relative()
+                && !name.is_empty()
+                && let Ok(cwd) = std::env::current_dir()
+            {
+                return Ok(cwd.join(p).to_string_lossy().to_string());
+            }
+        }
+        Ok(name.to_string())
     }
 
     /// `Modelica.Utilities.Strings` on translation-time strings (the `ModelicaStrings` C API).

@@ -9,6 +9,8 @@ use rustc_hash::FxHashMap;
 use std::fmt::Write as _;
 use std::rc::Rc;
 
+pub use crate::table2::Table2;
+
 /// Index of an expression node in the arena.
 pub type ExprId = u32;
 /// Index of a variable in the flat model.
@@ -153,6 +155,9 @@ pub enum Node {
     Interp(u32, u32, ExprId),
     /// Slope of [`Node::Interp`] with respect to x (used by symbolic differentiation).
     InterpDer(u32, u32, ExprId),
+    /// Interpolation in a 2-D table: `(table << 5 | kind, u1, u2)`, where `kind` (see
+    /// [`crate::table2::kind`]) selects the value or a partial derivative up to second order.
+    Interp2(u32, ExprId, ExprId),
     /// Integration-time `initial()` flag (1 during initialization, else 0).
     Initial,
     /// Synchronous operator with up to two operands (unused operands are `ZERO`).
@@ -489,6 +494,8 @@ pub struct Arena {
     pub relations: Vec<Relation>,
     rel_intern: FxHashMap<Relation, u32>,
     pub tables: Vec<Table>,
+    /// 2-D tables of the [`Node::Interp2`] nodes.
+    pub tables2: Vec<Table2>,
     /// Delayed variables of the [`Node::Delay`] nodes.
     pub delays: Vec<VarId>,
     pub progs: Vec<LoopProg>,
@@ -806,6 +813,20 @@ impl Arena {
         self.intern_node(Node::InterpDer(table, col, x))
     }
 
+    pub fn add_table2(&mut self, t: Table2) -> u32 {
+        self.tables2.push(t);
+        (self.tables2.len() - 1) as u32
+    }
+
+    /// Value (`kind == 0`) or partial derivative of 2-D table `table` at `(u1, u2)`.
+    pub fn interp2(&mut self, table: u32, kind: u32, u1: ExprId, u2: ExprId) -> ExprId {
+        if let (Some(a), Some(b)) = (self.as_const(u1), self.as_const(u2)) {
+            let v = self.tables2[table as usize].eval(kind, a, b);
+            return self.constant(v);
+        }
+        self.intern_node(Node::Interp2((table << 5) | kind, u1, u2))
+    }
+
     /// `delay(x, d)` of the variable `x`; every call creates a new history buffer.
     pub fn delay(&mut self, x: VarId, d: ExprId) -> ExprId {
         let k = self.delays.len() as u32;
@@ -888,6 +909,7 @@ impl Arena {
             | Node::Pow(a, b)
             | Node::F2(_, a, b)
             | Node::Cmp(_, a, b)
+            | Node::Interp2(_, a, b)
             | Node::Clk(_, a, b) => {
                 out.push(a);
                 out.push(b);
@@ -931,6 +953,7 @@ impl Arena {
             Node::F1(f, _) => self.f1(f, ch[0]),
             Node::Interp(t, c, _) => self.interp(t, c, ch[0]),
             Node::InterpDer(t, c, _) => self.interp_der(t, c, ch[0]),
+            Node::Interp2(tk, ..) => self.interp2(tk >> 5, tk & 31, ch[0], ch[1]),
             Node::Add(..) => self.add(ch[0], ch[1]),
             Node::Sub(..) => self.sub(ch[0], ch[1]),
             Node::Mul(..) => self.mul(ch[0], ch[1]),
@@ -1245,6 +1268,49 @@ impl Arena {
                     let s = self.interp_der(t, c, x);
                     self.mul(s, dx)
                 }
+                Node::Interp2(tk, u1, u2) => {
+                    // Chain rule with the exact partial derivatives (up to second order;
+                    // third derivatives are taken as zero, like the slope of a 1-D table).
+                    // On a grid line the partials are one-sided, in the direction in
+                    // which the abscissae move (the sign of their derivatives), as the C
+                    // `getDerValue` does; derivatives of those keep their sides.
+                    use crate::table2::kind as k2;
+                    let (t, k) = (tk >> k2::BITS, tk & ((1 << k2::BITS) - 1));
+                    let (du1, du2) = (d(0), d(1));
+                    let first = k & 7 == k2::VALUE;
+                    let l1 = if first {
+                        self.cmp(Cmp::Lt, du1, Self::ZERO)
+                    } else {
+                        Self::ZERO
+                    };
+                    let l2 = if first {
+                        self.cmp(Cmp::Lt, du2, Self::ZERO)
+                    } else {
+                        Self::ZERO
+                    };
+                    let mut r = Self::ZERO;
+                    for (dim, du) in [(0, du1), (1, du2)] {
+                        if self.is_zero(du) {
+                            continue;
+                        }
+                        let Some(pk) = k2::partial(k, dim) else {
+                            continue;
+                        };
+                        let p = if first {
+                            let at = |a: &mut Self, s: u32| a.interp2(t, pk | s, u1, u2);
+                            let (rr, lr) = (at(self, 0), at(self, k2::LEFT1));
+                            let (rl, ll) = (at(self, k2::LEFT2), at(self, k2::LEFT1 | k2::LEFT2));
+                            let right1 = self.if_(l2, rl, rr);
+                            let left1 = self.if_(l2, ll, lr);
+                            self.if_(l1, left1, right1)
+                        } else {
+                            self.interp2(t, pk, u1, u2)
+                        };
+                        let term = self.mul(p, du);
+                        r = self.add(r, term);
+                    }
+                    r
+                }
                 // the history does not depend on the current values
                 Node::InterpDer(..) | Node::Delay(..) => Self::ZERO,
                 Node::Call(c, out) => {
@@ -1451,6 +1517,14 @@ impl Arena {
             Node::InterpDer(t, c, x) => {
                 let _ = write!(s, "interpolateSlope(table{t}, {c}, ");
                 self.render_into(x, name, s, 0);
+                s.push(')');
+            }
+            Node::Interp2(tk, a, b) => {
+                let f = ["", "_d1", "_d2", "_d11", "_d12", "_d22"][(tk & 7).min(5) as usize];
+                let _ = write!(s, "interpolate2D{f}(table2D{}, ", tk >> 5);
+                self.render_into(a, name, s, 0);
+                s.push_str(", ");
+                self.render_into(b, name, s, 0);
                 s.push(')');
             }
             Node::Local(k) => {

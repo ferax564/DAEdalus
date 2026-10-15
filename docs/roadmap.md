@@ -57,7 +57,9 @@ failures, which are the next work items:
 | ~5 | Initialization of nonlinear systems (R134a two-volume system, op-amp circuits, rolling wheel) |
 | 3 | Synchronous `Clock` partitions |
 
-`CombiTable2D` is not supported yet.
+`CombiTable2D` (bilinear, constant and bivariate Akima) and tables read from
+text, CSV and MATLAB v4/v6/v7 files are supported; tables supplied through a
+`usertab` C function and MATLAB v7.3 (HDF5) files are not.
 
 ### Performance
 
