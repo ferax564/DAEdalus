@@ -143,6 +143,11 @@ pub struct Model {
     pub sample_rels: Vec<usize>,
     pub when_prog: Vec<Ins>,
     pub whens: Vec<WhenCode>,
+    /// When-clauses in data-dependency order: a clause reading (directly or through
+    /// algebraic equations) a variable another clause assigns comes after it.
+    pub when_order: Vec<usize>,
+    /// Per clause, the clauses whose assignments it reads.
+    pub when_deps: Vec<Vec<usize>>,
     /// Computes eliminated alias variables.
     pub outputs: Vec<Ins>,
     pub asserts_prog: Vec<Ins>,
@@ -590,6 +595,7 @@ fn compile_prog(arena: &mut Arena, p: usize, sites: &mut Vec<SiteCode>) -> ProgC
 pub fn compile(mut sys: System) -> Model {
     let nv = sys.vars.len();
     let n_rel = sys.arena.relations.len();
+    let (when_order, when_deps) = when_dependencies(&sys);
     let layout = Layout {
         nv,
         pre0: nv,
@@ -788,6 +794,8 @@ pub fn compile(mut sys: System) -> Model {
         sample_rels,
         when_prog,
         whens,
+        when_order,
+        when_deps,
         outputs,
         asserts_prog,
         asserts,
@@ -1360,6 +1368,11 @@ pub struct Runtime<'m> {
     work: Vec<f64>,
     jsave: Vec<f64>,
     weights: Vec<f64>,
+    /// Per Newton block: residual row weights from its last Jacobian,
+    /// `1 / max_j |J_ij| * nominal_j`, with the tears' largest magnitude seen so far as
+    /// their nominal size (a tear passing through zero must not inflate the weight).
+    row_w: Vec<Vec<f64>>,
+    tear_nom: Vec<Vec<f64>>,
     best_x: Vec<f64>,
     entry: Vec<f64>,
     piv: Vec<usize>,
@@ -1389,6 +1402,8 @@ impl<'m> Runtime<'m> {
             work: Vec::new(),
             jsave: Vec::new(),
             weights: Vec::new(),
+            row_w: vec![Vec::new(); m.newton.len()],
+            tear_nom: vec![Vec::new(); m.newton.len()],
             best_x: Vec::new(),
             entry: Vec::new(),
             piv: Vec::new(),
@@ -1552,7 +1567,23 @@ impl<'m> Runtime<'m> {
                 .map(|&s| self.r[s as usize].abs())
                 .fold(1.0, f64::max);
             let linear = b.linear && it < 3;
-            if norm <= 1e-12 * scale || (it > 0 && linear && norm <= 1e-9 * scale) {
+            // The starting guess (the last solution) is accepted only when its residuals
+            // are also small relative to how strongly the tears move them: an absolute
+            // test alone misreads rows with tiny coefficients (`iS + Ccs*der(vcs)`,
+            // Ccs ~ 1e-12) as solved and returns stale tears, which blanks those entries
+            // of the integrator's finite-difference Jacobian. Only for linear blocks, where
+            // an extra step from a solution is exact: in a switching block the solution can
+            // sit on a relation's boundary (`i = v*Goff` against `abs(i) <= abs(v)*Goff`),
+            // and re-stepping it moves the mode with the rounding.
+            let fresh_ok = it > 0 || !b.linear || {
+                let rw = &self.row_w[bi];
+                rw.len() == n
+                    && b.residuals
+                        .iter()
+                        .zip(rw)
+                        .all(|(&s, w)| (self.r[s as usize] * w).abs() <= 1e-10)
+            };
+            if (norm <= 1e-12 * scale && fresh_ok) || (it > 0 && linear && norm <= 1e-9 * scale) {
                 return;
             }
             if !norm.is_finite() && it > 0 {
@@ -1587,6 +1618,26 @@ impl<'m> Runtime<'m> {
                 } else {
                     1.0
                 });
+            }
+            {
+                let nom = &mut self.tear_nom[bi];
+                nom.resize(n, 0.0);
+                for (j, &t) in b.tears.iter().enumerate() {
+                    nom[j] = nom[j].max(self.r[t as usize].abs());
+                }
+                let rw = &mut self.row_w[bi];
+                rw.clear();
+                for i in 0..n {
+                    let mut r = 0.0f64;
+                    for j in 0..n {
+                        r = r.max((jm[i * n + j] * nom[j].max(1e-300)).abs());
+                    }
+                    rw.push(if r > 0.0 && r.is_finite() {
+                        1.0 / r
+                    } else {
+                        0.0
+                    });
+                }
             }
             let wnorm0 = b
                 .residuals
@@ -1813,6 +1864,106 @@ impl<'m> Runtime<'m> {
         }
         changed
     }
+}
+
+/// Data dependencies between when-clauses (see `Model::when_order`). Simultaneous
+/// when-equations see each other's new values: an AD converter's output read by a DA
+/// converter triggered by the same clock edge is the value converted at that edge.
+fn when_dependencies(sys: &System) -> (Vec<usize>, Vec<Vec<usize>>) {
+    let nw = sys.whens.len();
+    let identity = || ((0..nw).collect(), vec![Vec::new(); nw]);
+    if nw < 2 {
+        return identity();
+    }
+    // Variables each algebraic block variable reads.
+    let mut reads_of: FxHashMap<VarId, Vec<VarId>> = FxHashMap::default();
+    for b in &sys.blocks {
+        match b {
+            Block::Assign { var, expr } => {
+                reads_of.insert(*var, sys.arena.vars_in(&[*expr]).into_iter().collect());
+            }
+            Block::Solve {
+                tears,
+                inner,
+                residuals,
+                ..
+            } => {
+                let mut es: Vec<ExprId> = inner.iter().map(|(_, e)| *e).collect();
+                es.extend(residuals.iter().copied());
+                let r: Vec<VarId> = sys.arena.vars_in(&es).into_iter().collect();
+                for &t in tears.iter().chain(inner.iter().map(|(v, _)| v)) {
+                    reads_of.insert(t, r.clone());
+                }
+            }
+        }
+    }
+    let mut writer: FxHashMap<VarId, Vec<usize>> = FxHashMap::default();
+    for (wi, wc) in sys.whens.iter().enumerate() {
+        for (_, acts) in &wc.branches {
+            for a in acts {
+                if let WhenAction::Assign(v, _) | WhenAction::Reinit(v, _) = a {
+                    writer.entry(*v).or_default().push(wi);
+                }
+            }
+        }
+    }
+    let mut deps: Vec<Vec<usize>> = vec![Vec::new(); nw];
+    for (wj, wc) in sys.whens.iter().enumerate() {
+        let mut es = Vec::new();
+        for (_, acts) in &wc.branches {
+            for a in acts {
+                match a {
+                    WhenAction::Assign(_, e)
+                    | WhenAction::Reinit(_, e)
+                    | WhenAction::Assert(e, _) => es.push(*e),
+                    WhenAction::Terminate(_) => {}
+                }
+            }
+        }
+        let mut stack: Vec<VarId> = sys.arena.vars_in(&es).into_iter().collect();
+        let mut seen: FxHashSet<VarId> = stack.iter().copied().collect();
+        while let Some(v) = stack.pop() {
+            if let Some(ws) = writer.get(&v) {
+                for &wi in ws {
+                    if wi != wj && !deps[wj].contains(&wi) {
+                        deps[wj].push(wi);
+                    }
+                }
+            }
+            if let Some(rs) = reads_of.get(&v) {
+                for &r in rs {
+                    if seen.insert(r) {
+                        stack.push(r);
+                    }
+                }
+            }
+        }
+    }
+    if deps.iter().all(|d| d.is_empty()) {
+        return identity();
+    }
+    // Kahn's algorithm, stable by clause index; clauses on a cycle keep their order.
+    let mut indeg: Vec<usize> = deps.iter().map(|d| d.len()).collect();
+    let mut users: Vec<Vec<usize>> = vec![Vec::new(); nw];
+    for (j, d) in deps.iter().enumerate() {
+        for &i in d {
+            users[i].push(j);
+        }
+    }
+    let mut done = vec![false; nw];
+    let mut order = Vec::with_capacity(nw);
+    loop {
+        let Some(k) = (0..nw).find(|&k| !done[k] && indeg[k] == 0) else {
+            break;
+        };
+        done[k] = true;
+        order.push(k);
+        for &u in &users[k] {
+            indeg[u] -= 1;
+        }
+    }
+    order.extend((0..nw).filter(|&k| !done[k]));
+    (order, deps)
 }
 
 /// Order the actions of one when-branch so that an assignment comes before the actions

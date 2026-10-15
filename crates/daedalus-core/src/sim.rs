@@ -316,10 +316,22 @@ impl<'m> Simulation<'m> {
         // Evaluate all new values first (simultaneous semantics), then assign.
         let mut updates: Vec<(usize, f64)> = Vec::new();
         let mut any = false;
-        for (wi, w) in m.whens.iter().enumerate() {
+        let mut fired: Vec<usize> = Vec::new();
+        for &wi in &m.when_order {
+            let w = &m.whens[wi];
             for (bi, acts) in w.actions.iter().enumerate() {
                 if conds[wi][bi] && !prev[wi][bi] {
                     any = true;
+                    // A clause reading what an earlier clause of this event assigned sees
+                    // the new value (when-equations are solved together).
+                    if !updates.is_empty() && m.when_deps[wi].iter().any(|d| fired.contains(d)) {
+                        for (v, x) in updates.drain(..) {
+                            self.rt.r[v] = x;
+                        }
+                        self.rt.run(&m.ode);
+                        self.rt.run(&m.when_prog);
+                    }
+                    fired.push(wi);
                     let chained = w.chained[bi];
                     for (k, a) in acts.iter().enumerate() {
                         match a {
