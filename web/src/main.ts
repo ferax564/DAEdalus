@@ -76,6 +76,7 @@ function logLink(msg: string, cls: string, label: string, action: () => void) {
 async function openDebugger(model: string, simulation: boolean) {
   if (current?.path !== model) await openClass(model);
   view = "structure";
+  if (mode !== "modeling") setMode("modeling");
   setActive($("view-tabs"), "data-view", view);
   for (const id of ["view-graphic", "view-text", "view-doc", "view-flat"]) $(id).classList.add("hidden");
   $("view-structure").classList.remove("hidden");
@@ -91,6 +92,7 @@ async function openLocation(file: string, line: number) {
   }
   if (holder !== current) await openClass(holder.path);
   view = "text";
+  if (mode !== "modeling") setMode("modeling");
   await showView();
   let t = docs.get(file);
   if (t === undefined) {
