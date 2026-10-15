@@ -1295,10 +1295,17 @@ fn run_sub_tangent(m: &Model, ls: &mut LoopState, prog: &[Ins], r: &mut [f64], d
             }
             Ins::Interp(d, vk, x, ne) => {
                 let (xv, nv) = (r[x as usize], r[ne as usize]);
-                dr[d as usize] = if vk & 3 < 2 {
-                    m.lookup(vk + 1, xv, nv) * dr[x as usize]
-                } else {
-                    0.0
+                // d(lookup of kind k)/dx is the lookup of kind k + 1 (the third
+                // derivative for k = 2, piecewise constant for the cubic splines);
+                // the next time event does not depend on x.
+                dr[d as usize] = match vk & 3 {
+                    3 => 0.0,
+                    k => {
+                        let tb = &m.tables[m.views[(vk >> 2) as usize].0 as usize];
+                        let ne = if tb.time { nv } else { f64::INFINITY };
+                        let c = m.views[(vk >> 2) as usize].1 as usize;
+                        tb.eval(k + 1, c, xv, ne) * dr[x as usize]
+                    }
                 };
                 r[d as usize] = m.lookup(vk, xv, nv);
             }

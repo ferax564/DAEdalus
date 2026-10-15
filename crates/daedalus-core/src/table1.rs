@@ -25,6 +25,9 @@ pub mod kind {
     pub const NEXT_EVENT: u32 = 3;
     /// Bits of the kind in a lookup's `view << BITS | kind` field.
     pub const BITS: u32 = 2;
+    /// Third derivative (piecewise constant for the cubic splines): only for
+    /// [`super::Table::eval`] (the tangent of a [`D2`] lookup), not a node kind.
+    pub const D3: u32 = 4;
 }
 
 /// Constant interpolation table (rows of `[x, y1, y2, ...]`).
@@ -355,7 +358,8 @@ impl Table {
                 match kind {
                     kind::VALUE => y0 + ((c0 * v + c1) * v + c2) * v,
                     kind::D1 => (3.0 * c0 * v + 2.0 * c1) * v + c2,
-                    _ => 6.0 * c0 * v + 2.0 * c1,
+                    kind::D2 => 6.0 * c0 * v + 2.0 * c1,
+                    _ => 6.0 * c0,
                 }
             }
             _ => {
@@ -381,7 +385,7 @@ impl Table {
                 _ => 0.0,
             };
         }
-        if kind == kind::D2 {
+        if kind >= kind::D2 {
             return 0.0;
         }
         if self.smoothness == 2 {
@@ -490,6 +494,11 @@ mod tests {
         assert!((fd - c.slope(1, 1.3)).abs() < 1e-6);
         let fd2 = (c.slope(1, 1.3 + h) - c.slope(1, 1.3 - h)) / (2.0 * h);
         assert!((fd2 - c.eval(kind::D2, 1, 1.3, f64::INFINITY)).abs() < 1e-5);
+        let fd3 = (c.eval(kind::D2, 1, 1.3 + h, f64::INFINITY)
+            - c.eval(kind::D2, 1, 1.3 - h, f64::INFINITY))
+            / (2.0 * h);
+        assert!((fd3 - c.eval(kind::D3, 1, 1.3, f64::INFINITY)).abs() < 1e-5);
+        assert_eq!(c.eval(kind::D3, 1, 4.0, f64::INFINITY), 0.0);
         // Start time: zero output and the first event at the start.
         let mut s = Table::linear(2, 2, vec![0.0, 1.0, 1.0, 1.0], 0);
         s.start = 0.5;
