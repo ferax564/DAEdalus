@@ -375,27 +375,43 @@ impl Qoi {
         if let QoiKind::At(tq) = self.kind {
             return interp(t, y, tq);
         }
-        let (a, b) = self.window.unwrap_or((f64::NEG_INFINITY, f64::INFINITY));
-        let idx: Vec<usize> = (0..t.len()).filter(|&i| t[i] >= a && t[i] <= b).collect();
-        if idx.is_empty() {
+        if t.is_empty() {
             return f64::NAN;
         }
+        // The window clipped to the trajectory, with interpolated values at its ends so
+        // that windows between output points are measured over the right interval.
+        let (a, b) = self.window.unwrap_or((f64::NEG_INFINITY, f64::INFINITY));
+        let (a, b) = (a.max(t[0]), b.min(t[t.len() - 1]));
+        if a > b {
+            return f64::NAN;
+        }
+        let mut tw = vec![a];
+        let mut yw = vec![interp(t, y, a)];
+        for i in 0..t.len() {
+            if t[i] > a && t[i] < b {
+                tw.push(t[i]);
+                yw.push(y[i]);
+            }
+        }
+        if b > a {
+            tw.push(b);
+            yw.push(interp(t, y, b));
+        }
         let integral = || {
-            idx.windows(2)
-                .map(|w| 0.5 * (t[w[1]] - t[w[0]]) * (y[w[0]] + y[w[1]]))
+            (1..tw.len())
+                .map(|i| 0.5 * (tw[i] - tw[i - 1]) * (yw[i - 1] + yw[i]))
                 .sum::<f64>()
         };
         match self.kind {
-            QoiKind::Final => y[*idx.last().unwrap()],
-            QoiKind::Max => idx.iter().map(|&i| y[i]).fold(f64::NEG_INFINITY, f64::max),
-            QoiKind::Min => idx.iter().map(|&i| y[i]).fold(f64::INFINITY, f64::min),
+            QoiKind::Final => yw[yw.len() - 1],
+            QoiKind::Max => yw.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+            QoiKind::Min => yw.iter().copied().fold(f64::INFINITY, f64::min),
             QoiKind::Integral => integral(),
             QoiKind::Mean => {
-                let span = t[*idx.last().unwrap()] - t[idx[0]];
-                if span > 0.0 {
-                    integral() / span
+                if b > a {
+                    integral() / (b - a)
                 } else {
-                    y[idx[0]]
+                    yw[0]
                 }
             }
             QoiKind::At(_) => unreachable!(),
@@ -1368,5 +1384,14 @@ mod tests {
         assert!((q("mean(y)") - 1.0).abs() < 1e-12);
         assert!((q("at(y, 0.255)") - 0.51).abs() < 1e-12);
         assert!(Qoi::parse("foo(y)").is_err());
+        // windows whose ends fall between samples
+        let t = [0.0, 1.0, 2.0];
+        let y = [0.0, 1.0, 2.0];
+        let q = |s: &str| Qoi::parse(s).unwrap().eval(&t, &y);
+        assert!((q("integral(y, 0.5, 1.5)") - 1.0).abs() < 1e-12);
+        assert!((q("mean(y, 0.5, 1.5)") - 1.0).abs() < 1e-12);
+        assert!((q("final(y, 0.25, 0.75)") - 0.75).abs() < 1e-12);
+        assert!((q("max(y, 0.25, 0.75)") - 0.75).abs() < 1e-12);
+        assert!(q("max(y, 3, 4)").is_nan());
     }
 }

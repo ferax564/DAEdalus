@@ -34,9 +34,6 @@ export interface RunOutput {
   ms: number;
 }
 
-/** Libraries in the bundle: a model under these needs the bundle registered first. */
-const BUNDLE_ROOTS = ["Modelica", "ModelicaServices", "Complex"];
-
 export class CancelledError extends Error {
   constructor() {
     super("cancelled");
@@ -83,7 +80,7 @@ class PoolWorker {
   }
 
   /** Send the documents changed since the last sync, and the bundle once. */
-  private async sync(model: string) {
+  private async sync() {
     if (this.seq < sources.seq) {
       const set: [string, string][] = [];
       const removed: string[] = [];
@@ -101,12 +98,13 @@ class PoolWorker {
       for (const uri of removed) await this.call("removeDocument", uri);
       if (set.length) await this.call("setDocuments", set);
     }
-    if (this.bundle && BUNDLE_ROOTS.includes(model.split(".")[0])) await this.bundle;
+    // Any model may extend or instantiate library classes, so the bundle must be in first.
+    if (this.bundle) await this.bundle;
   }
 
   async run(job: Job): Promise<RunOutput> {
     const t0 = performance.now();
-    await this.sync(job.model);
+    await this.sync();
     const r = await this.call<{ summary: RunSummary; time: Float64Array; cols: Float64Array[] }>("run", job.model, job.options, job.vars);
     const series = new Map<string, Float64Array>();
     job.vars.forEach((n, i) => {

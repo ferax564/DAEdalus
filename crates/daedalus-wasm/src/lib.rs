@@ -39,7 +39,8 @@ pub struct Workspace {
     results: Option<Results>,
     /// Classes whose registered library files are parsed already: (class, full).
     ensured: std::collections::HashSet<(String, bool)>,
-    /// Translation reused by [`Workspace::simulate_run`] (sweeps): (model, compiled).
+    /// Translation reused by [`Workspace::simulate_run`] (sweeps): (model and state
+    /// overrides, compiled).
     compiled: Option<(String, daedalus_core::codegen::Model)>,
     /// Performance profile of the last simulation (JSON), when it was asked for.
     profile: Option<String>,
@@ -404,10 +405,13 @@ impl Workspace {
         let load_ms = self.ensure(model, Some(true));
         let t0 = now_ms();
         let mut cached = true;
-        if self.compiled.as_ref().is_none_or(|(n, _)| n != model) {
+        // State-selection overrides change the translation, so they are part of the key.
+        let bopts = backend_options(options);
+        let key = format!("{model}\0{:?}", bopts.state_overrides);
+        if self.compiled.as_ref().is_none_or(|(n, _)| *n != key) {
             cached = false;
-            match daedalus_core::translate(&self.lib, model, &Default::default()) {
-                Ok(m) => self.compiled = Some((model.to_string(), m)),
+            match daedalus_core::translate(&self.lib, model, &bopts) {
+                Ok(m) => self.compiled = Some((key, m)),
                 Err(e) => {
                     self.results = None;
                     return to_json(
@@ -448,7 +452,7 @@ impl Workspace {
                 model,
                 &structural,
                 Some(&base),
-                &Default::default(),
+                &bopts,
             ) {
                 Ok(m) => {
                     modified = m;

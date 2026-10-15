@@ -64,7 +64,8 @@ impl Workspace {
     pub fn analysis_start(&mut self, model: &str, kind: &str, spec: &str, options: &str) -> String {
         self.job = None;
         self.ensure(model, Some(true));
-        let m = match daedalus_core::translate(&self.lib, model, &Default::default()) {
+        // with the state-selection overrides of the Structure view, like a plain simulation
+        let m = match daedalus_core::translate(&self.lib, model, &crate::backend_options(options)) {
             Ok(m) => m,
             Err(e) => return to_json(&serde_json::json!({"ok": false, "error": format!("{e:#}")})),
         };
