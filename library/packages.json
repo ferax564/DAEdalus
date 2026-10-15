@@ -1,0 +1,112 @@
+{
+  "format": 1,
+  "description": "Open Modelica libraries DAEdalus can install by name (`daedalus lib install NAME[@VERSION]`, or the workbench's Libraries dialog). Each version names the git tag of its source archive; `packages` lists the top-level packages the archive holds when it is not just `name`.",
+  "libraries": [
+    {
+      "name": "Modelica",
+      "description": "Modelica Standard Library",
+      "repo": "modelica/ModelicaStandardLibrary",
+      "license": "BSD-3-Clause",
+      "packages": ["Modelica", "ModelicaServices", "Complex"],
+      "versions": [
+        { "version": "4.1.0", "ref": "v4.1.0" },
+        { "version": "4.0.0", "ref": "v4.0.0" }
+      ]
+    },
+    {
+      "name": "Buildings",
+      "description": "Building energy and control systems (LBNL)",
+      "repo": "lbl-srg/modelica-buildings",
+      "license": "BSD-3-Clause (modified)",
+      "versions": [
+        { "version": "12.1.0", "ref": "v12.1.0", "uses": { "Modelica": "4.0.0" } },
+        { "version": "11.1.0", "ref": "v11.1.0", "uses": { "Modelica": "4.0.0" } },
+        { "version": "10.0.0", "ref": "v10.0.0", "uses": { "Modelica": "4.0.0" } }
+      ]
+    },
+    {
+      "name": "ThermoSysPro",
+      "description": "Thermal-hydraulic power plants and energy systems (EDF)",
+      "repo": "ThermoSysPro/ThermoSysPro",
+      "license": "Modelica License 2",
+      "versions": [
+        { "version": "4.0", "ref": "v4.0", "uses": { "Modelica": "4.0.0" } }
+      ]
+    },
+    {
+      "name": "OpenIPSL",
+      "description": "Power system dynamics: phasor-domain models of grids and machines",
+      "repo": "OpenIPSL/OpenIPSL",
+      "license": "MPL-2.0",
+      "versions": [
+        { "version": "3.0.1", "ref": "v3.0.1", "uses": { "Modelica": "4.0.0" } },
+        { "version": "2.0.0", "ref": "v2.0.0", "uses": { "Modelica": "3.2.3" } }
+      ]
+    },
+    {
+      "name": "VehicleInterfaces",
+      "description": "Standard interfaces for vehicle subsystems (Modelica Association)",
+      "repo": "modelica/VehicleInterfaces",
+      "license": "BSD-3-Clause",
+      "versions": [
+        { "version": "2.0.1", "ref": "v2.0.1", "uses": { "Modelica": "4.0.0" } },
+        { "version": "1.2.5", "ref": "v1.2.5", "uses": { "Modelica": "3.2.3" } }
+      ]
+    },
+    {
+      "name": "ExternData",
+      "description": "Read data from CSV, INI, JSON, MATLAB, TIR, XML and Excel files",
+      "repo": "modelica-3rdparty/ExternData",
+      "license": "BSD-2-Clause",
+      "versions": [
+        { "version": "3.0.3", "ref": "v3.0.3", "uses": { "Modelica": "4.0.0" } }
+      ]
+    },
+    {
+      "name": "AixLib",
+      "description": "Building performance simulation (RWTH Aachen E.ON ERC)",
+      "repo": "RWTH-EBC/AixLib",
+      "license": "BSD-3-Clause",
+      "versions": [
+        { "version": "2.1.1", "ref": "v2.1.1", "uses": { "Modelica": "4.0.0" } },
+        { "version": "1.3.2", "ref": "v1.3.2", "uses": { "Modelica": "4.0.0" } }
+      ]
+    },
+    {
+      "name": "Modelica_DeviceDrivers",
+      "description": "Interfaces to hardware devices and communication protocols",
+      "repo": "modelica/Modelica_DeviceDrivers",
+      "license": "BSD-3-Clause",
+      "versions": [
+        { "version": "2.1.1", "ref": "v2.1.1", "uses": { "Modelica": "4.0.0" } }
+      ]
+    },
+    {
+      "name": "Modelica_LinearSystems2",
+      "description": "Linear systems: analysis, controller design, model reduction",
+      "repo": "modelica/Modelica_LinearSystems2",
+      "license": "BSD-3-Clause",
+      "versions": [
+        { "version": "2.4.0", "ref": "v2.4.0", "uses": { "Modelica": "4.0.0" } }
+      ]
+    },
+    {
+      "name": "PhotoVoltaics",
+      "description": "Photovoltaic cells, modules, inverters and plants",
+      "repo": "christiankral/PhotoVoltaics",
+      "license": "BSD-3-Clause",
+      "versions": [
+        { "version": "2.0.0", "ref": "v2.0.0", "uses": { "Modelica": "4.0.0" } }
+      ]
+    },
+    {
+      "name": "PowerGrids",
+      "description": "Electro-mechanical power system models (RTE, Politecnico di Milano)",
+      "repo": "PowerGrids/PowerGrids",
+      "license": "MPL-2.0",
+      "versions": [
+        { "version": "2.0.0", "ref": "v2.0.0", "uses": { "Modelica": "4.0.0" } }
+      ]
+    }
+  ]
+}

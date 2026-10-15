@@ -29,16 +29,20 @@ export async function bundledResources(): Promise<[string, ArrayBuffer][]> {
 export interface Picked {
   mo: [string, string][];
   resources: [string, ArrayBuffer][];
+  /** Model packages and library archives. */
+  zips: File[];
 }
 
-const RESOURCE = /\.(stl|obj)$/i;
+/** Resource files kept with a library: shape meshes, documentation images, data tables. */
+const RESOURCE = /\.(stl|obj|png|jpe?g|gif|svg|webp|bmp|txt|csv|mat|json|xml|html?|pdf)$/i;
 
 /** Read .mo files (and shape files) picked with a directory or file input. */
 export async function readPicked(list: FileList): Promise<Picked> {
-  const out: Picked = { mo: [], resources: [] };
+  const out: Picked = { mo: [], resources: [], zips: [] };
   for (const f of Array.from(list)) {
     const rel = `user/${(f as File & { webkitRelativePath?: string }).webkitRelativePath || f.name}`;
     if (f.name.endsWith(".mo")) out.mo.push([rel, await f.text()]);
+    else if (/\.zip$/i.test(f.name)) out.zips.push(f);
     else if (RESOURCE.test(f.name)) out.resources.push([rel, await f.arrayBuffer()]);
   }
   return out;

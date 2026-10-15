@@ -15,8 +15,10 @@
       </nav>
       <div class="tools">
         <a href="./scoreboard.html" title="How DAEdalus results compare with the MSL reference results" style="color: var(--muted)">Scoreboard</a>
-        <label class="file" title="Open .mo files (and .stl/.obj shape files)">Open .mo<input id="open-files" type="file" multiple accept=".mo,.stl,.obj" /></label>
-        <label class="file" title="Load a library folder">Library<input id="open-dir" type="file" webkitdirectory /></label>
+        <label class="file" title="Open .mo files, shape files, or a model package / library .zip">Open<input id="open-files" type="file" multiple accept=".mo,.stl,.obj,.zip" /></label>
+        <label class="file" title="Load a library folder">Folder<input id="open-dir" type="file" webkitdirectory /></label>
+        <button id="btn-libs" title="Install libraries (Buildings, ThermoSysPro, OpenIPSL, ...) and check the versions loaded">Libraries</button>
+        <button id="btn-save-zip" title="Save the open model with the files and resources it needs as a .zip">Save .zip</button>
         <span class="sep"></span>
         <button id="btn-check" title="Translate and check the model">Check</button>
         <label>Stop <input id="set-stop" type="number" step="any" placeholder="auto" /></label>
@@ -54,12 +56,14 @@
             <button data-view="text">Text</button>
             <button data-view="doc">Documentation</button>
             <button data-view="flat">Flat model</button>
+            <button data-view="diff" title="Differences from the version as loaded, or from a file">Diff</button>
           </div>
           <div id="views">
             <div id="view-graphic" class="view"></div>
             <div id="view-text" class="view hidden"></div>
             <div id="view-doc" class="view doc hidden"></div>
             <pre id="view-flat" class="view flat hidden"></pre>
+            <div id="view-diff" class="view diff hidden"></div>
           </div>
         </div>
         <div id="plot-pane" class="pane hidden">

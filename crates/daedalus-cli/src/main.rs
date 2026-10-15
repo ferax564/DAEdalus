@@ -4,6 +4,7 @@ use daedalus_core::backend::Options;
 use daedalus_core::frontend::Library;
 use daedalus_core::sim::{Method, SimOptions};
 mod fmu;
+mod manage;
 mod mos;
 
 use std::path::Path;
@@ -36,10 +37,13 @@ COMMANDS:
   test-library  translate and simulate every model with an experiment
                 annotation under --model (a package), each in its own
                 process with a time limit; prints a report
-
+{MANAGE}
 SOURCES:
-  .mo files or directories (loaded recursively). The bundled Daedalus library
-  is found via --lib or the DAEDALUS_LIB environment variable.
+  .mo files or directories (loaded recursively), or model packages (.zip). The
+  bundled Daedalus library is found via --lib or the DAEDALUS_LIB environment
+  variable. Libraries named in uses(...) annotations are taken from the
+  installed libraries (daedalus lib install; $DAEDALUS_LIBRARIES or
+  ~/.daedalus/libraries) unless given with -L.
 
 OPTIONS:
   -m, --model NAME        model to translate (full dotted name)
@@ -72,8 +76,29 @@ OPTIONS:
   --timeout S             per-model time limit for test-library (default 60)
 ";
 
+fn usage() -> String {
+    USAGE.replace("{MANAGE}", manage::USAGE)
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    type Sub = fn(&[String]) -> anyhow::Result<ExitCode>;
+    let sub: Option<Sub> = match args.first().map(String::as_str) {
+        Some("diff") => Some(manage::diff),
+        Some("params-from") => Some(manage::params_from),
+        Some("lib") => Some(manage::lib),
+        Some("package") => Some(manage::package),
+        _ => None,
+    };
+    if let Some(f) = sub {
+        return match f(&args[1..]) {
+            Ok(code) => code,
+            Err(e) => {
+                eprintln!("error: {e:#}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     if args.first().is_some_and(|a| a == "run") {
         return match mos::run_cli(&args[1..]) {
             Ok(code) => code,
@@ -95,7 +120,7 @@ fn main() -> ExitCode {
 fn run() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() || args[0] == "-h" || args[0] == "--help" {
-        print!("{USAGE}");
+        print!("{}", usage());
         return Ok(());
     }
     let cmd = args[0].clone();
@@ -206,11 +231,25 @@ fn run() -> anyhow::Result<()> {
                     j => anyhow::bail!("unknown jacobian method '{j}' (exact | fd)"),
                 }
             }
-            _ if a.starts_with('-') => anyhow::bail!("unknown option {a}\n\n{USAGE}"),
+            _ if a.starts_with('-') => anyhow::bail!("unknown option {a}\n\n{}", usage()),
             _ => sources.push(a.to_string()),
         }
         i += 1;
     }
+    // Model packages: extracted, and their model is the default
+    let mut opened = Vec::new();
+    for s in std::mem::take(&mut sources) {
+        if s.ends_with(".zip") {
+            let (paths, m) = manage::open_zip(&s)?;
+            opened.extend(paths);
+            if model.is_none() {
+                model = m;
+            }
+        } else {
+            opened.push(s);
+        }
+    }
+    sources = opened;
     let model = model.ok_or_else(|| anyhow::anyhow!("no model given (-m)"))?;
     let mut lib = Library::new();
     if let Ok(dir) = std::env::var("DAEDALUS_LIB") {
@@ -240,6 +279,7 @@ fn run() -> anyhow::Result<()> {
             }
         }
     }
+    manage::auto_uses(&mut lib);
     if lazy && lib.has_pending() {
         let before = lib.docs.len();
         lib.load_for(&model);

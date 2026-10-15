@@ -88,6 +88,14 @@ pub struct ClassInfo {
     pub components: Vec<ComponentInfo>,
     pub connections: Vec<ConnectionInfo>,
     pub documentation: Option<String>,
+    /// `Documentation(revisions=...)`.
+    pub revisions: Option<String>,
+    /// Key/value pairs of the vendor annotation `__Daedalus_metadata(key="value", ...)`.
+    pub metadata: Vec<(String, String)>,
+    /// `version` annotation of a library's top-level package.
+    pub version: Option<String>,
+    /// `uses(Lib(version="x"))` annotation: library name and version.
+    pub uses: Vec<(String, String)>,
     pub experiment: Option<Value>,
 }
 
@@ -309,6 +317,10 @@ pub fn class_info(lib: &Library, path: &str) -> Option<ClassInfo> {
         components: Vec::new(),
         connections: Vec::new(),
         documentation: None,
+        revisions: None,
+        metadata: Vec::new(),
+        version: None,
+        uses: Vec::new(),
         experiment: find_annotation(&def.annotation, "experiment").map(|e| expr_json(e, None)),
     };
     if let Some(ast::Expression::ClassModification { modifications, .. }) =
@@ -317,15 +329,93 @@ pub fn class_info(lib: &Library, path: &str) -> Option<ClassInfo> {
         for m in modifications {
             if let ast::Expression::Modification { target, value, .. } = m
                 && target.parts.len() == 1
-                && &*target.parts[0].ident.text == "info"
                 && let Value::String(s) = expr_json(value, None)
             {
-                info.documentation = Some(s);
+                match &*target.parts[0].ident.text {
+                    "info" => info.documentation = Some(s),
+                    "revisions" => info.revisions = Some(s),
+                    _ => {}
+                }
             }
         }
     }
+    let meta = class_meta(def);
+    info.metadata = meta.metadata;
+    info.version = meta.version;
+    info.uses = meta.uses;
     collect(lib, &tree, id, &mut info, 0);
     Some(info)
+}
+
+/// Library and vendor metadata read from a class annotation.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ClassMeta {
+    /// `version="..."`.
+    pub version: Option<String>,
+    /// `uses(Lib(version="..."), ...)`.
+    pub uses: Vec<(String, String)>,
+    /// `__Daedalus_metadata(key="value", ...)`.
+    pub metadata: Vec<(String, String)>,
+}
+
+fn scalar_text(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        Value::Null => String::new(),
+        other => other.to_string(),
+    }
+}
+
+/// The `version`, `uses` and `__Daedalus_metadata` annotations of a class.
+pub fn class_meta(def: &ast::ClassDef) -> ClassMeta {
+    // Walk the AST rather than `record`, so the keys keep their source order.
+    fn args(e: &ast::Expression) -> &[ast::Expression] {
+        match e {
+            ast::Expression::ClassModification { modifications, .. } => modifications,
+            ast::Expression::FunctionCall { args, .. } => args,
+            _ => &[],
+        }
+    }
+    fn pairs(list: &[ast::Expression]) -> Vec<(String, &ast::Expression)> {
+        let mut out = Vec::new();
+        for a in list {
+            match a {
+                ast::Expression::Modification { target, value, .. } => {
+                    out.push((cref_text(target), &**value))
+                }
+                ast::Expression::NamedArgument { name, value, .. } => {
+                    out.push((name.text.to_string(), &**value))
+                }
+                ast::Expression::ClassModification { target, .. } => out.push((cref_text(target), a)),
+                ast::Expression::FunctionCall { comp, .. } => out.push((cref_text(comp), a)),
+                _ => {}
+            }
+        }
+        out
+    }
+    let mut out = ClassMeta::default();
+    for (k, v) in pairs(&def.annotation) {
+        match k.as_str() {
+            "version" => out.version = Some(scalar_text(&expr_json(v, None))),
+            "uses" => {
+                for (lib, l) in pairs(args(v)) {
+                    let ver = pairs(args(l))
+                        .into_iter()
+                        .find(|(n, _)| n == "version")
+                        .map(|(_, x)| scalar_text(&expr_json(x, None)))
+                        .unwrap_or_default();
+                    out.uses.push((lib, ver));
+                }
+            }
+            "__Daedalus_metadata" => {
+                for (key, x) in pairs(args(v)) {
+                    out.metadata.push((key, scalar_text(&expr_json(x, None))));
+                }
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 /// Gather graphics, components and connections of `id` and its bases (bases first).
@@ -661,7 +751,8 @@ pub fn expr_json(e: &ast::Expression, text: Option<&str>) -> Value {
             ast::TerminalType::UnsignedInteger | ast::TerminalType::UnsignedReal => {
                 token.text.parse::<f64>().map(num).unwrap_or(Value::Null)
             }
-            ast::TerminalType::String => Value::String(unescape(token.text.trim_matches('"'))),
+            // the parser has already removed the quotes and decoded the escapes
+            ast::TerminalType::String => Value::String(token.text.to_string()),
             ast::TerminalType::Bool => Value::Bool(&*token.text == "true"),
             _ => Value::String(token.text.to_string()),
         },
