@@ -133,6 +133,8 @@ pub struct Instance<'a> {
     pub inner_of: FxHashMap<String, Comp>,
     pub parent: Option<InstId>,
     pub is_connector: bool,
+    /// Declared `final` (or inside a final component): its parameters cannot change.
+    pub is_final: bool,
     /// Connector components (by name) of this instance.
     pub connector_comps: FxHashSet<String>,
     pub equations: Vec<(&'a ast::Equation, Rc<Env>)>,
@@ -893,6 +895,7 @@ impl<'a, 't> Flattener<'a, 't> {
             inner_of: FxHashMap::default(),
             parent,
             is_connector,
+            is_final: m.final_ || parent.is_some_and(|p| self.insts[p as usize].is_final),
             connector_comps: FxHashSet::default(),
             equations: Vec::new(),
             initial_equations: Vec::new(),
@@ -1327,6 +1330,7 @@ impl<'a, 't> Flattener<'a, 't> {
                 v.is_flow = is_flow;
                 v.description = desc.clone();
                 v.is_protected = comp.is_protected;
+                v.is_final = comp.is_final || self.insts[inst as usize].is_final;
                 v.is_output = causality_output && prefix.is_empty();
                 let vid = self.model.add_var(v);
                 if b == "Clock" {

@@ -61,6 +61,8 @@ pub struct Variable {
     pub state_select: StateSelect,
     pub is_flow: bool,
     pub is_protected: bool,
+    /// Declared `final` (or part of a final component): its value cannot be changed.
+    pub is_final: bool,
     pub is_output: bool,
     /// Variable introduced by the compiler (derivative of a derivative, dummy, ...).
     pub generated: bool,
@@ -84,6 +86,7 @@ impl Variable {
             state_select: StateSelect::Default,
             is_flow: false,
             is_protected: false,
+            is_final: false,
             is_output: false,
             generated: false,
         }

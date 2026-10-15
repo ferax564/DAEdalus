@@ -367,6 +367,11 @@ pub fn compile(flat: FlatModel, opts: &Options) -> Result<System> {
     let mut discretes: Vec<VarId> = w.when_assigned.iter().copied().collect();
     discretes.sort();
 
+    // Final parameters that are zero drop out of the equations before any structural
+    // analysis: `ir*m_resist = p.v - pin` with `m_resist = 0` is `p.v = pin`, not an
+    // equation for `ir` (Spice3 diodes without series resistance).
+    fold_final_zeros(&mut w);
+
     // 2. Alias elimination
     let removed = alias::eliminate(&mut w);
     stats.aliases_removed = removed;
@@ -654,5 +659,33 @@ impl System {
             serde_json::to_string(&self.stats).unwrap_or_default()
         );
         s
+    }
+}
+
+/// Replace final parameters whose value is exactly zero by the constant 0.
+fn fold_final_zeros(w: &mut Work) {
+    let zero: FxHashSet<VarId> = (0..w.vars.len() as VarId)
+        .filter(|&v| {
+            let var = &w.vars[v as usize];
+            var.is_final
+                && matches!(var.kind, VarKind::Parameter | VarKind::Constant)
+                && var.ty == VarType::Real
+                && w.param_values[v as usize] == 0.0
+        })
+        .collect();
+    if zero.is_empty() {
+        return;
+    }
+    let mut memo = FxHashMap::default();
+    let mut fold = |arena: &mut Arena, e: ExprId| {
+        arena.rewrite(e, &mut memo, &mut |_, n| match n {
+            Node::Var(v) if zero.contains(&v) => Some(Arena::ZERO),
+            _ => None,
+        })
+    };
+    for i in 0..w.eqs.len() {
+        let (l, r) = (w.eqs[i].lhs, w.eqs[i].rhs);
+        w.eqs[i].lhs = fold(&mut w.arena, l);
+        w.eqs[i].rhs = fold(&mut w.arena, r);
     }
 }
