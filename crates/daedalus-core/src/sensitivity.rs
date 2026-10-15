@@ -157,7 +157,16 @@ pub fn sensitivities(
                     .insert(0, format!("finite differences used because {why}"));
                 Ok(s)
             }
-            Err(ExactError::Failed(e)) => Err(e),
+            // The staggered sensitivity run can fail where the plain run does not (e.g.
+            // stiff sensitivity equations); differences only need plain runs.
+            Err(ExactError::Failed(e)) => {
+                let mut s = fd(m, opts, so, &mut |_, _| true)?;
+                s.notes.insert(
+                    0,
+                    format!("finite differences used because the exact method failed: {e}"),
+                );
+                Ok(s)
+            }
         },
     }
 }
@@ -719,6 +728,13 @@ impl Job for SensJob {
                     }
                     Err(ExactError::NotApplicable(why)) if self.so.method == SensMethod::Auto => {
                         self.note = Some(format!("finite differences used because {why}"));
+                        self.start_fd()?;
+                        Ok(false)
+                    }
+                    Err(ExactError::Failed(e)) if self.so.method == SensMethod::Auto => {
+                        self.note = Some(format!(
+                            "finite differences used because the exact method failed: {e}"
+                        ));
                         self.start_fd()?;
                         Ok(false)
                     }

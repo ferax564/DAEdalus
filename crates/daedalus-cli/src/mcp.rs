@@ -374,10 +374,12 @@ impl Server {
                             .as_str()
                             .and_then(daedalus_core::backend::state_select::parse_tier)
                             .ok_or_else(|| anyhow::anyhow!("state {k}: unknown tier"))?;
-                        bopts.state_overrides.push(daedalus_core::backend::state_select::StateOverride {
-                            pattern: k.clone(),
-                            tier,
-                        });
+                        bopts.state_overrides.push(
+                            daedalus_core::backend::state_select::StateOverride {
+                                pattern: k.clone(),
+                                tier,
+                            },
+                        );
                     }
                 }
                 let sopts = daedalus_core::structure::StructureOptions {
