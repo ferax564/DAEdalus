@@ -49,6 +49,9 @@ cargo build --release
 
 # Run every model with an experiment annotation, each in its own process
 ./target/release/daedalus test-library library/Daedalus -m Daedalus
+
+# Export the index-reduced DAE for CasADi (optimal control, MPC, estimation)
+./target/release/daedalus export-casadi library/Daedalus -m Daedalus.Examples.OptimalControl.AileronServo -o servo.json
 ```
 
 Other source directories, such as the Modelica Standard Library, are loaded by
@@ -88,6 +91,27 @@ a quarter car with a hydraulic damper, vehicle-efficiency sensitivity, and
 coast-down road-load fitting. Each model cites its source post. Results and
 assumptions are in [docs/examples.md](docs/examples.md).
 
+## Optimal control, MPC and estimation
+
+`daedalus export-casadi` hands a translated model to [CasADi](https://web.casadi.org):
+the system after alias elimination, index reduction and tearing, as a
+semi-explicit index-1 DAE. The `daedalus_casadi` Python package in `python/`
+builds on it with:
+- direct-collocation optimal control;
+- model predictive control;
+- moving horizon estimation of states and parameters.
+
+Costs and constraints refer to model variables by their Modelica names.
+
+```sh
+pip install casadi numpy matplotlib
+python python/examples/ocp_aileron.py            # minimum-time aileron move: 41.7 ms
+python python/examples/mpc_active_suspension.py  # MPC with bump preview: -35 % body acceleration
+python python/examples/mhe_coastdown.py          # Cd and crr from a noisy coast-down
+```
+
+See [docs/optimal-control.md](docs/optimal-control.md).
+
 ## Performance
 
 The benchmark is `tools/gen_chain.py`: a chain of N masses and spring-dampers
@@ -111,6 +135,7 @@ of the EV model, which take 109k steps.
 | `crates/daedalus-wasm` | WebAssembly bindings used by the workbench |
 | `library/Daedalus` | Component library (Blocks, Mechanics, Hydraulics, Vehicle) and the examples |
 | `web` | Browser workbench (TypeScript, Vite, CodeMirror) |
+| `python` | `daedalus_casadi`: CasADi optimal control, MPC and MHE on exported models |
 | `tools` | Benchmark generator, coast-down fit |
 
 Modelica is a registered trademark of the Modelica Association. DAEdalus is not
