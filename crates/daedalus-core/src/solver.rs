@@ -473,10 +473,13 @@ impl Bdf {
         self.colors.len()
     }
 
-    fn compute_jac(&mut self, rt: &mut Runtime, t: f64, y: &[f64]) {
+    /// Finite-difference Jacobian at `(t, y)`; false if the model could not be evaluated
+    /// there (an algebraic loop failed or a derivative is not finite).
+    fn compute_jac(&mut self, rt: &mut Runtime, t: f64, y: &[f64]) -> bool {
         let n = self.n;
         let mut f0 = vec![0.0; n];
         rt.rhs(t, y, &mut f0);
+        let mut ok = rt.error.is_none() && f0.iter().all(|v| v.is_finite());
         let mut yp = y.to_vec();
         let mut f1 = vec![0.0; n];
         self.jac.fill(0.0);
@@ -491,6 +494,7 @@ impl Bdf {
             }
             rt.rhs(t, &yp, &mut f1);
             self.stats.rhs_evals += 1;
+            ok &= rt.error.is_none() && f1.iter().all(|v| v.is_finite());
             for (&j, &h) in group.iter().zip(&hs) {
                 if dense {
                     for &i in &self.rows_of_col[j] {
@@ -507,6 +511,8 @@ impl Bdf {
         }
         self.stats.rhs_evals += 1;
         self.stats.jac_evals += 1;
+        rt.error = None;
+        ok
     }
 
     fn factor(&mut self, c: f64) -> bool {
@@ -715,6 +721,21 @@ impl Integrator for Bdf {
                     rt.rhs(t_new, &y_new, &mut f);
                     self.stats.rhs_evals += 1;
                     if !f.iter().all(|v| v.is_finite()) || rt.error.is_some() {
+                        if std::env::var_os("DAEDALUS_SOLVER_DEBUG").is_some() {
+                            let bad: Vec<usize> =
+                                (0..n).filter(|&i| !f[i].is_finite()).take(5).collect();
+                            eprintln!(
+                                "bdf t={} h={:e}: non-finite derivatives {:?}, newton error {:?}",
+                                t_new,
+                                h,
+                                bad.iter()
+                                    .map(|&i| rt.m.vars[rt.m.states[i] as usize].name.clone())
+                                    .collect::<Vec<_>>(),
+                                rt.error
+                                    .as_ref()
+                                    .map(|e| rt.m.newton[e.block].names.join(","))
+                            );
+                        }
                         rt.error = None;
                         break;
                     }
@@ -749,7 +770,11 @@ impl Integrator for Bdf {
                 if converged || self.jac_current {
                     break;
                 }
-                self.compute_jac(rt, t_new, &y_pred);
+                if !self.compute_jac(rt, t_new, &y_pred) {
+                    // no Jacobian at the predicted point: fall back to the last accepted one
+                    let (t0, x0) = (self.t, self.x.clone());
+                    self.compute_jac(rt, t0, &x0);
+                }
                 self.jac_current = true;
                 self.lu_valid = false;
             }

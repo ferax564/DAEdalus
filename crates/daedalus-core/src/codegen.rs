@@ -731,6 +731,10 @@ pub struct Runtime<'m> {
     pub delays: Vec<DelayBuf>,
     pub newton_stats: NewtonStats,
     work: Vec<f64>,
+    jsave: Vec<f64>,
+    weights: Vec<f64>,
+    best_x: Vec<f64>,
+    entry: Vec<f64>,
     piv: Vec<usize>,
     pub error: Option<NewtonError>,
 }
@@ -747,6 +751,10 @@ impl<'m> Runtime<'m> {
             delays: vec![DelayBuf::default(); m.delays.len()],
             newton_stats: NewtonStats::default(),
             work: Vec::new(),
+            jsave: Vec::new(),
+            weights: Vec::new(),
+            best_x: Vec::new(),
+            entry: Vec::new(),
             piv: Vec::new(),
             error: None,
         }
@@ -835,9 +843,37 @@ impl<'m> Runtime<'m> {
         let n = b.tears.len();
         self.newton_stats.solves += 1;
         work.resize(n * n + 3 * n, 0.0);
+        // scratch buffers kept in the runtime: no allocation per solve
+        let mut weights = std::mem::take(&mut self.weights);
+        let mut best_x = std::mem::take(&mut self.best_x);
+        let mut entry = std::mem::take(&mut self.entry);
+        best_x.clear();
+        entry.clear();
+        entry.extend(b.tears.iter().map(|&t| self.r[t as usize]));
+        self.newton_iterate(bi, work, piv, &mut weights, &mut best_x, &entry);
+        self.weights = weights;
+        self.best_x = best_x;
+        self.entry = entry;
+    }
+
+    fn newton_iterate(
+        &mut self,
+        bi: usize,
+        work: &mut [f64],
+        piv: &mut Vec<usize>,
+        weights: &mut Vec<f64>,
+        best_x: &mut Vec<f64>,
+        entry: &[f64],
+    ) {
+        let m = self.m;
+        let b = &m.newton[bi];
+        let n = b.tears.len();
         let mut best = f64::INFINITY;
-        let mut weights: Vec<f64> = Vec::with_capacity(n);
-        let mut best_x: Vec<f64> = Vec::new();
+        // One tear: points on either side of the root, for a bracketing fallback when
+        // Newton cycles on a piecewise-linear residual (a saturating amplifier).
+        let (mut neg, mut pos): (Option<(f64, f64)>, Option<(f64, f64)>) = (None, None);
+        let mut prev_abs = f64::INFINITY;
+        let mut n_forced = 0u32;
         // A linear block normally converges in one step; if it does not (an ill-conditioned
         // or switching system), it continues as a damped Newton iteration.
         let max_iter = 50;
@@ -897,17 +933,78 @@ impl<'m> Runtime<'m> {
                 .map(|(&s, w)| (self.r[s as usize] * w).abs())
                 .fold(0.0, f64::max);
             piv.resize(n, 0);
-            if !crate::linalg::lu_factor(jm, n, piv) {
-                // Singular Jacobian: perturb the tears slightly and retry.
-                for &t in &b.tears {
-                    let x = &mut self.r[t as usize];
-                    *x += 1e-6 * (1.0 + x.abs());
+            self.jsave.clear();
+            self.jsave.extend_from_slice(jm);
+            if crate::linalg::lu_factor(jm, n, piv) {
+                crate::linalg::lu_solve(jm, n, piv, rhs);
+            } else {
+                // Singular Jacobian (a mode in which some unknowns are not determined, such
+                // as the torque split between stuck friction elements in series): take the
+                // regularised least-squares step (J'J + mu I) dx = -J'F.
+                let j = &self.jsave;
+                let mut dmax = 0.0f64;
+                for p in 0..n {
+                    for q in 0..n {
+                        let mut a = 0.0;
+                        for k in 0..n {
+                            a += j[k * n + p] * j[k * n + q];
+                        }
+                        jm[p * n + q] = a;
+                    }
+                    dmax = dmax.max(jm[p * n + p]);
+                    let mut g = 0.0;
+                    for k in 0..n {
+                        g += j[k * n + p] * rhs[k];
+                    }
+                    old[p] = g;
                 }
-                continue;
+                let mu = 1e-12 * dmax.max(1e-300);
+                for p in 0..n {
+                    jm[p * n + p] += mu;
+                }
+                if std::env::var_os("DAEDALUS_NEWTON_DEBUG").is_some() {
+                    eprintln!("newton {bi} it {it} norm {norm:.3e}: singular jacobian");
+                }
+                if !crate::linalg::lu_factor(jm, n, piv) {
+                    // perturb the tears slightly and retry
+                    for &t in &b.tears {
+                        let x = &mut self.r[t as usize];
+                        *x += 1e-6 * (1.0 + x.abs());
+                    }
+                    continue;
+                }
+                crate::linalg::lu_solve(jm, n, piv, &mut old[..n]);
+                rhs.copy_from_slice(&old[..n]);
             }
-            crate::linalg::lu_solve(jm, n, piv, rhs);
             for (i, &t) in b.tears.iter().enumerate() {
                 old[i] = self.r[t as usize];
+            }
+            let mut forced = false;
+            if n == 1 {
+                let f = self.r[b.residuals[0] as usize];
+                let x = old[0];
+                if f < 0.0 {
+                    neg = Some((x, f));
+                } else if f > 0.0 {
+                    pos = Some((x, f));
+                }
+                if let (Some((xn, fneg)), Some((xp, fpos))) = (neg, pos) {
+                    let cand = x + rhs[0];
+                    let (lo, hi) = (xn.min(xp), xn.max(xp));
+                    let slow = f.abs() > 0.5 * prev_abs;
+                    if !(cand > lo && cand < hi) || slow {
+                        let rf = xn - fneg * (xp - xn) / (fpos - fneg);
+                        let c = if n_forced % 2 == 0 && rf > lo && rf < hi {
+                            rf
+                        } else {
+                            0.5 * (lo + hi)
+                        };
+                        rhs[0] = c - x;
+                        forced = true;
+                        n_forced += 1;
+                    }
+                }
+                prev_abs = f.abs();
             }
             // Damped update: halve the step while the residual grows.
             let mut lambda = 1.0;
@@ -924,7 +1021,7 @@ impl<'m> Runtime<'m> {
                         x
                     };
                 }
-                if linear || lambda < 1e-3 {
+                if linear || forced || lambda < 1e-3 {
                     break;
                 }
                 self.run(&b.body);
@@ -946,6 +1043,17 @@ impl<'m> Runtime<'m> {
                     break;
                 }
                 lambda *= 0.5;
+            }
+            if std::env::var_os("DAEDALUS_NEWTON_DEBUG").is_some() {
+                eprintln!(
+                    "newton {} it {} norm {:.3e} lambda {} x {:?} dx {:?}",
+                    bi,
+                    it,
+                    norm,
+                    lambda,
+                    &old[..n],
+                    &rhs[..n]
+                );
             }
             let step = (0..n)
                 .map(|i| (lambda * rhs[i]).abs() / (1.0 + old[i].abs()))
@@ -975,6 +1083,11 @@ impl<'m> Runtime<'m> {
             .map(|&s| self.r[s as usize].abs())
             .fold(1.0, f64::max);
         if !(norm <= 1e-6 * scale) {
+            // A failed solve leaves the tears where they were, so that the retry (with a
+            // smaller step) starts from the last good point and not from a wild iterate.
+            for (i, &t) in b.tears.iter().enumerate() {
+                self.r[t as usize] = entry[i];
+            }
             self.newton_stats.failures += 1;
             if self.error.is_none() {
                 self.error = Some(NewtonError {
