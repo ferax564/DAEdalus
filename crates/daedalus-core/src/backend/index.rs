@@ -665,6 +665,12 @@ pub fn select_states(w: &mut Work) -> Result<Vec<VarId>> {
                 point1[v as usize] = w.param_values[v as usize];
             }
         }
+        // The dummy derivatives are picked at the start point with the explicitly defined
+        // unknowns filled in (rotation matrices from their joint angles rather than all
+        // zeros, which makes a mechanism's loop look singular or picks an ill-conditioned
+        // set), or, for a block singular there, at the start values themselves.
+        let mut point0p = point0.clone();
+        propagate_explicit(w, &mut point0p);
         let max_c = chains.iter().map(|c| c.len() - 1).max().unwrap();
         let trig = trig_defined(w);
         // Candidates for step 1: highest derivatives that are derivative variables.
@@ -710,6 +716,7 @@ pub fn select_states(w: &mut Work) -> Result<Vec<VarId>> {
             let col_of: FxHashMap<VarId, usize> =
                 cols.iter().enumerate().map(|(i, &z)| (z, i)).collect();
             let mut entries: Vec<Vec<(usize, f64)>> = vec![Vec::new(); g.len()];
+            let mut entries_p: Vec<Vec<(usize, f64)>> = vec![Vec::new(); g.len()];
             for (ri, &e) in g.iter().enumerate() {
                 let eq = w.eqs[e];
                 let r = w.arena.sub(eq.lhs, eq.rhs);
@@ -727,8 +734,7 @@ pub fn select_states(w: &mut Work) -> Result<Vec<VarId>> {
                     if w.arena.is_zero(d) {
                         continue;
                     }
-                    let mut val = 0.0;
-                    for (pt, wgt) in [(&point0, 1.0), (&point1, 1e-4)] {
+                    let at = |pt: &[f64]| {
                         let vals = eval::Values {
                             var: &|v| pt[v as usize],
                             pre: &|v| pt[v as usize],
@@ -737,11 +743,11 @@ pub fn select_states(w: &mut Work) -> Result<Vec<VarId>> {
                             rel: None,
                         };
                         let x = eval::eval(&w.arena, d, &vals, &mut FxHashMap::default());
-                        if x.is_finite() {
-                            val += wgt * x;
-                        }
-                    }
-                    entries[ri].push((ci, val));
+                        if x.is_finite() { x } else { 0.0 }
+                    };
+                    let x1 = 1e-4 * at(&point1);
+                    entries[ri].push((ci, at(&point0) + x1));
+                    entries_p[ri].push((ci, at(&point0p) + x1));
                 }
             }
             // H is block diagonal after permutation (one block per group of equations that
@@ -783,21 +789,27 @@ pub fn select_states(w: &mut Work) -> Result<Vec<VarId>> {
                 let local: FxHashMap<usize, usize> =
                     bcols.iter().enumerate().map(|(i, &c)| (c, i)).collect();
                 let btiers: Vec<i64> = bcols.iter().map(|&c| tiers[c]).collect();
-                let pick = if rows.len() <= DENSE_SELECT_MAX {
-                    let mut h = vec![vec![0.0; bcols.len()]; rows.len()];
-                    for (lr, &ri) in rows.iter().enumerate() {
-                        for &(ci, v) in &entries[ri] {
-                            h[lr][local[&ci]] = v;
+                let select = |entries: &[Vec<(usize, f64)>]| {
+                    if rows.len() <= DENSE_SELECT_MAX {
+                        let mut h = vec![vec![0.0; bcols.len()]; rows.len()];
+                        for (lr, &ri) in rows.iter().enumerate() {
+                            for &(ci, v) in &entries[ri] {
+                                h[lr][local[&ci]] = v;
+                            }
                         }
+                        select_columns(&h, &btiers, rows.len())
+                    } else {
+                        let h: Vec<Vec<(usize, f64)>> = rows
+                            .iter()
+                            .map(|&ri| entries[ri].iter().map(|&(ci, v)| (local[&ci], v)).collect())
+                            .collect();
+                        select_columns_sparse(&h, bcols.len(), rows.len())
                     }
-                    select_columns(&h, &btiers, rows.len())
-                } else {
-                    let h: Vec<Vec<(usize, f64)>> = rows
-                        .iter()
-                        .map(|&ri| entries[ri].iter().map(|&(ci, v)| (local[&ci], v)).collect())
-                        .collect();
-                    select_columns_sparse(&h, bcols.len(), rows.len())
                 };
+                let mut pick = select(&entries_p);
+                if pick.len() < rows.len() {
+                    pick = select(&entries);
+                }
                 if pick.len() < rows.len() {
                     let names: Vec<&str> = bcols.iter().map(|&c| w.name(cols[c])).collect();
                     let eqs: Vec<String> = rows
@@ -853,6 +865,55 @@ const DENSE_SELECT_MAX: usize = 64;
 /// preference order, accepting a column when its reduced entries are not negligible and
 /// pivoting on the row with the largest one. This is the greedy matroid basis, so the
 /// preferred columns are taken whenever they are independent of the ones already taken.
+/// Fill in unknowns that have no start value and are defined explicitly (`x = f(..)`) by
+/// evaluating their defining equations from the point, a few sweeps in equation order.
+/// The dummy-derivative Jacobian is evaluated there, so a rotation matrix defined from its
+/// joint angle (`R_rel.T = planarRotation(e, phi)`) is a rotation instead of all zeros,
+/// which made a mechanism's loop constraint look singular.
+fn propagate_explicit(w: &Work, pt: &mut [f64]) {
+    let mut defs: Vec<(VarId, ExprId)> = Vec::new();
+    for eq in &w.eqs {
+        if eq.parent.is_some() {
+            continue;
+        }
+        for (a, b) in [(eq.lhs, eq.rhs), (eq.rhs, eq.lhs)] {
+            let Node::Var(v) = w.arena.node(a) else {
+                continue;
+            };
+            if !w.unknown[v as usize] || w.vars[v as usize].start.is_some() {
+                continue;
+            }
+            if w.arena.vars_in(&[b]).contains(&v) {
+                continue;
+            }
+            defs.push((v, b));
+            break;
+        }
+    }
+    for _ in 0..8 {
+        let mut changed = false;
+        for &(v, e) in &defs {
+            let x = {
+                let vals = eval::Values {
+                    var: &|u| pt[u as usize],
+                    pre: &|u| pt[u as usize],
+                    time: 0.0,
+                    initial: false,
+                    rel: None,
+                };
+                eval::eval(&w.arena, e, &vals, &mut FxHashMap::default())
+            };
+            if x.is_finite() && x != pt[v as usize] {
+                pt[v as usize] = x;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+}
+
 fn select_columns_sparse(h: &[Vec<(usize, f64)>], ncols: usize, need: usize) -> Vec<usize> {
     let mut rows: Vec<FxHashMap<usize, f64>> =
         h.iter().map(|r| r.iter().copied().collect()).collect();

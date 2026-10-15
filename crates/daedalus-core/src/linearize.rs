@@ -41,6 +41,8 @@ pub struct Linearization {
     pub x0: Vec<f64>,
     pub u0: Vec<f64>,
     pub y0: Vec<f64>,
+    /// State derivatives at the linearization point (zero at an equilibrium).
+    pub dx0: Vec<f64>,
     pub a: Vec<Vec<f64>>,
     pub b: Vec<Vec<f64>>,
     pub c: Vec<Vec<f64>>,
@@ -120,6 +122,7 @@ pub fn linearize_at(rt: &mut Runtime, method: JacobianMethod) -> Result<Lineariz
         x0: m.states.iter().map(|&s| rt.r[s as usize]).collect(),
         u0: inputs.iter().map(|&s| rt.r[s as usize]).collect(),
         y0: outputs.iter().map(|&s| rt.r[s as usize]).collect(),
+        dx0: m.derivs.iter().map(|&s| rt.r[s as usize]).collect(),
         a: Vec::new(),
         b: Vec::new(),
         c: Vec::new(),
@@ -268,8 +271,10 @@ impl Linearization {
         s
     }
 
-    /// The model as OpenModelica's `linearize` writes it: `model linearized_model` with
-    /// parameters `A, B, C, D, x0, u0` and `der(x) = A*x + B*u; y = C*x + D*u`.
+    /// The model in the layout of OpenModelica's `linearize` (`model linearized_model`
+    /// with parameters `A, B, C, D, x0, u0`), written in affine form around the
+    /// linearization point so that it reproduces it: `der(x) = A*(x - x0) + B*(u - u0)
+    /// + dx0; y = y0 + C*(x - x0) + D*(u - u0)` with `x(start = x0)`.
     pub fn to_modelica(&self) -> String {
         use std::fmt::Write;
         let (n, nu, ny) = (self.states.len(), self.inputs.len(), self.outputs.len());
@@ -313,6 +318,12 @@ impl Linearization {
         );
         let _ = writeln!(s, "  parameter Real x0[n] = {};", vector(&self.x0));
         let _ = writeln!(s, "  parameter Real u0[m] = {};", vector(&self.u0));
+        let _ = writeln!(s, "  parameter Real y0[p] = {};", vector(&self.y0));
+        let _ = writeln!(
+            s,
+            "  parameter Real dx0[n] = {} \"der(x) at the linearization point\";",
+            vector(&self.dx0)
+        );
         let _ = writeln!(s);
         let _ = writeln!(s, "  parameter Real A[n, n] ={};", matrix(&self.a, n, n));
         let _ = writeln!(s);
@@ -336,8 +347,8 @@ impl Linearization {
             let _ = writeln!(s, "  Real {} = y[{}];", quote("y", nm), i + 1);
         }
         let _ = writeln!(s, "equation");
-        let _ = writeln!(s, "  der(x) = A * x + B * u;");
-        let _ = writeln!(s, "  y = C * x + D * u;");
+        let _ = writeln!(s, "  der(x) = A * (x - x0) + B * (u - u0) + dx0;");
+        let _ = writeln!(s, "  y = y0 + C * (x - x0) + D * (u - u0);");
         let _ = writeln!(s, "end linearized_model;");
         s
     }

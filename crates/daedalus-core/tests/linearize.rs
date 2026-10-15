@@ -172,8 +172,29 @@ fn pendulum_after_simulation() {
     // the Modelica model OpenModelica's linearize writes
     let mo = l.to_modelica();
     assert!(mo.starts_with("model linearized_model"));
-    assert!(mo.contains("der(x) = A * x + B * u;"));
+    assert!(mo.contains("der(x) = A * (x - x0) + B * (u - u0) + dx0;"));
     assert!(mo.contains("Real 'x_phi' = x["));
+}
+
+#[test]
+fn linearized_model_reproduces_the_operating_point() {
+    // Away from an equilibrium (the pendulum still swings at t = 2): the affine model
+    // starts at x0 with der(x) = dx0 and y = y0, and has the same matrices.
+    let l = lin("Lin.Pendulum", Some(2.0), JacobianMethod::Exact);
+    assert!(l.dx0.iter().any(|v| v.abs() > 1e-3), "{:?}", l.dx0);
+    let mo = l.to_modelica();
+    let mut lib = Library::new();
+    let errs = lib.set_document("linearized_model.mo", &mo);
+    assert!(errs.is_empty(), "{errs:?}\n{mo}");
+    let m = daedalus_core::translate(&lib, "linearized_model", &Default::default()).unwrap();
+    let l2 = linearize(&m, SimOptions::from_model(&m), None, JacobianMethod::Exact).unwrap();
+    check(&[l2.x0.clone()], &[l.x0.clone()], 1e-12);
+    check(&[l2.u0.clone()], &[l.u0.clone()], 1e-12);
+    check(&[l2.y0.clone()], &[l.y0.clone()], 1e-12);
+    check(&[l2.dx0.clone()], &[l.dx0.clone()], 1e-12);
+    for (x, y) in [(&l2.a, &l.a), (&l2.b, &l.b), (&l2.c, &l.c), (&l2.d, &l.d)] {
+        check(x, y, 1e-12);
+    }
 }
 
 #[test]

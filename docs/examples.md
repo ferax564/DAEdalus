@@ -180,6 +180,18 @@ Assumed values:
 - a 20 l/min valve at 70 bar with a 100 Hz spool;
 - an 80 mm horn.
 
+## Optimal control plants
+
+`Daedalus.Examples.OptimalControl` holds three plants whose control or unknown
+inputs are top-level `input` variables or free parameters. They are solved with
+CasADi from `python/examples/`; see [optimal-control.md](optimal-control.md).
+- **AileronServo**: the aileron actuator without its position loop. The
+  servo-valve command `u` is the input.
+- **ActiveSuspension**: a quarter car with a force actuator `F_act` and a soft
+  passive damper, over the same 50 mm bump.
+- **CoastDownTest**: the coast-down without the stop at 15 km/h. It is used to
+  estimate `body.Cd` and `body.crr`.
+
 ## Note on sources
 
 From the build environment, modelon.com and claytex.com returned HTTP 403.

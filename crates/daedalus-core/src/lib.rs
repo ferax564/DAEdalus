@@ -1,6 +1,7 @@
 //! DAEdalus core: Modelica instantiation, symbolic backend, code generation and solvers.
 
 pub mod backend;
+pub mod casadi;
 pub mod codegen;
 pub mod expr;
 pub mod external;
