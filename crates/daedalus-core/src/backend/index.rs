@@ -556,6 +556,9 @@ fn prefer_state_change(w: &mut Work) {
         .filter(|&e| chosen[e])
         .map(|e| alg_eqs[e])
         .collect();
+    if let Some(t) = &mut w.trace {
+        t.state_change_eqs = todo.len();
+    }
     for l in todo {
         let eq = w.eqs[l];
         for v in w.eq_unknowns(&eq) {
@@ -815,6 +818,15 @@ pub fn select_states(w: &mut Work) -> Result<Vec<VarId>> {
                         names.join(", "),
                         eqs.join("; ")
                     );
+                }
+                if let Some(t) = &mut w.trace {
+                    t.state_sets.push(super::trace::StateSet {
+                        level: k,
+                        eqs: rows.iter().map(|&ri| g[ri]).collect(),
+                        candidates: bcols.iter().map(|&c| cols[c]).collect(),
+                        tiers: btiers.clone(),
+                        dummies: pick.iter().map(|&l| cols[bcols[l]]).collect(),
+                    });
                 }
                 chosen.extend(pick.into_iter().map(|l| bcols[l]));
             }

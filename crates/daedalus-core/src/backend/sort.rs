@@ -206,6 +206,23 @@ pub fn causalize(
     }
     let comps = tarjan_blt(&adj, &var_match);
     let mut blocks = Vec::with_capacity(comps.len());
+    // The structure report records which equation computes which unknown.
+    let tracing = label == "simulation" && w.trace.is_some();
+    if tracing && let Some(t) = &mut w.trace {
+        t.eqs = eqs
+            .iter()
+            .map(|e| super::trace::TraceEq {
+                lhs: e.lhs,
+                rhs: e.rhs,
+                origin: e.origin,
+                parent: e.parent,
+            })
+            .collect();
+        t.incidence = adj
+            .iter()
+            .map(|row| row.iter().map(|&i| vars[i as usize]).collect())
+            .collect();
+    }
     // Guess point propagated through the blocks in order (start values, then what the
     // explicit assignments give from them): tearing checks its pivots against it.
     let mut pt: Vec<f64> = (0..w.vars.len() as VarId)
@@ -221,7 +238,16 @@ pub fn causalize(
         if comp.len() == 1 {
             let e = comp[0] as usize;
             let v = vars[eq_match[e] as usize];
-            match w.solve_for(&eqs[e], v) {
+            let sol = w.solve_for(&eqs[e], v);
+            if tracing && let Some(t) = &mut w.trace {
+                let solved = sol.is_some();
+                t.blocks.push(super::trace::TraceBlock {
+                    solved: if solved { vec![(e, v)] } else { vec![] },
+                    residual_eqs: if solved { vec![] } else { vec![e] },
+                    tears: if solved { vec![] } else { vec![v] },
+                });
+            }
+            match sol {
                 Some(x) => {
                     let y = eval_at(w, x, &pt);
                     if y.is_finite() {
@@ -248,7 +274,21 @@ pub fn causalize(
             .iter()
             .map(|&e| vars[eq_match[e as usize] as usize])
             .collect();
-        let b = tear(w, &ceqs, &cvars, tearing, &pt);
+        let (b, solved) = tear(w, &ceqs, &cvars, tearing, &pt);
+        if tracing
+            && let Some(t) = &mut w.trace
+            && let Block::Solve { tears, .. } = &b
+        {
+            let done: FxHashSet<usize> = solved.iter().map(|&(i, _)| i).collect();
+            t.blocks.push(super::trace::TraceBlock {
+                solved: solved.iter().map(|&(i, v)| (comp[i] as usize, v)).collect(),
+                residual_eqs: (0..comp.len())
+                    .filter(|i| !done.contains(i))
+                    .map(|i| comp[i] as usize)
+                    .collect(),
+                tears: tears.clone(),
+            });
+        }
         if let Block::Solve { inner, .. } = &b {
             for &(v, x) in inner {
                 let y = eval_at(w, x, &pt);
@@ -275,17 +315,25 @@ fn eval_at(w: &Work, e: ExprId, pt: &[f64]) -> f64 {
 
 /// Tear an algebraic loop: greedily assign equations with one remaining unknown that can be
 /// solved explicitly, otherwise pick the variable occurring most often as tear variable.
-fn tear(w: &mut Work, eqs: &[Eq], vars: &[VarId], tearing: bool, pt: &[f64]) -> Block {
+/// Also returns `(equation, unknown)` of the inner assignments, in order.
+fn tear(
+    w: &mut Work,
+    eqs: &[Eq],
+    vars: &[VarId],
+    tearing: bool,
+    pt: &[f64],
+) -> (Block, Vec<(usize, VarId)>) {
     let set: FxHashSet<VarId> = vars.iter().copied().collect();
     let residual_all: Vec<ExprId> = eqs.iter().map(|e| w.arena.sub(e.lhs, e.rhs)).collect();
     let linear = residual_all.iter().all(|&r| w.is_linear_in(r, &set));
     if !tearing {
-        return Block::Solve {
+        let b = Block::Solve {
             tears: vars.to_vec(),
             inner: vec![],
             residuals: residual_all,
             linear,
         };
+        return (b, Vec::new());
     }
     let occ: Vec<Vec<VarId>> = eqs
         .iter()
@@ -299,6 +347,7 @@ fn tear(w: &mut Work, eqs: &[Eq], vars: &[VarId], tearing: bool, pt: &[f64]) -> 
     let mut known: FxHashSet<VarId> = FxHashSet::default();
     let mut used = vec![false; eqs.len()];
     let mut inner: Vec<(VarId, ExprId)> = Vec::new();
+    let mut solved: Vec<(usize, VarId)> = Vec::new();
     let mut tears: Vec<VarId> = Vec::new();
     // Cache of failed solve attempts: (eq, var).
     let mut unsolvable: FxHashSet<(usize, VarId)> = FxHashSet::default();
@@ -347,6 +396,7 @@ fn tear(w: &mut Work, eqs: &[Eq], vars: &[VarId], tearing: bool, pt: &[f64]) -> 
                 pt[v as usize] = y;
             }
             inner.push((v, x));
+            solved.push((i, v));
             known.insert(v);
             used[i] = true;
         }
@@ -392,12 +442,13 @@ fn tear(w: &mut Work, eqs: &[Eq], vars: &[VarId], tearing: bool, pt: &[f64]) -> 
         .map(|i| residual_all[i])
         .collect();
     debug_assert_eq!(residuals.len(), tears.len());
-    Block::Solve {
+    let b = Block::Solve {
         tears,
         inner,
         residuals,
         linear,
-    }
+    };
+    (b, solved)
 }
 
 /// Build and causalise the initialization problem: all unknowns (states included) from the
