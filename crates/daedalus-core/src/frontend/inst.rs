@@ -157,6 +157,23 @@ pub enum Val {
     Rec(Vec<(String, Val)>),
     /// Several function outputs (tuple).
     Tuple(Vec<Val>),
+    /// A function value: `function f(a = 1)` passed to a functional input.
+    Func(Rc<FuncVal>),
+}
+
+/// A function with some inputs bound (MLS 12.4.2, partial application).
+pub struct FuncVal {
+    cls: ClassId,
+    overrides: Rc<FxHashMap<String, ClassId>>,
+    /// Scope of the package the function was reached through (`Medium.f`).
+    penv: Option<Rc<Env>>,
+    bound: Vec<(String, Val)>,
+}
+
+impl std::fmt::Debug for FuncVal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "function #{} bound {:?}", self.cls, self.bound)
+    }
 }
 
 impl Val {
@@ -179,6 +196,7 @@ impl Val {
             Val::SA(..) => "string array",
             Val::Rec(_) => "record",
             Val::Tuple(_) => "tuple",
+            Val::Func(_) => "function",
         }
     }
 
@@ -3437,6 +3455,12 @@ impl<'a, 't> Flattener<'a, 't> {
                 self.binary(op, l, r, ctx)
             }
             E::ComponentReference(cr) => self.resolve_ref(cr, scope, ctx),
+            E::FunctionCall {
+                comp,
+                args,
+                is_partial_application: true,
+                ..
+            } => self.function_value(comp, args, scope, ctx),
             E::FunctionCall { comp, args, .. } => self.call(comp, args, scope, ctx),
             E::Array { elements, kind, .. } => {
                 let mut vals = Vec::new();
@@ -3950,6 +3974,12 @@ impl<'a, 't> Flattener<'a, 't> {
     }
 
     fn binary(&mut self, op: &OpBinary, l: Val, r: Val, ctx: &Ctx) -> Result<Val> {
+        // String concatenation (messages of assert, error and print).
+        if let (Val::Str(x), Val::Str(y)) = (&l, &r)
+            && matches!(op, OpBinary::Add | OpBinary::AddElem)
+        {
+            return Ok(Val::Str(format!("{x}{y}")));
+        }
         if Self::is_record_like(&l) || Self::is_record_like(&r) {
             return self.record_binary(op, l, r, ctx);
         }
@@ -5505,7 +5535,24 @@ impl<'a, 't> Flattener<'a, 't> {
                 return Ok(Val::A(dims, out));
             }
             "Integer" | "Real" | "Boolean" => return Ok(arg!(0)),
-            "String" => return Ok(Val::Str(String::new())),
+            "String" => {
+                // The text of a translation-time value; run-time values only reach
+                // diagnostic messages, which are not evaluated.
+                let v = match pos.first() {
+                    Some(e) => self.translate(e, scope, ctx).ok(),
+                    None => None,
+                };
+                let text = match v {
+                    Some(Val::Str(x)) => x,
+                    Some(Val::S(e)) => match self.eval_param_expr(e) {
+                        Some(x) if x.fract() == 0.0 && x.abs() < 1e15 => format!("{}", x as i64),
+                        Some(x) => format!("{x:.6}"),
+                        None => String::new(),
+                    },
+                    _ => String::new(),
+                };
+                return Ok(Val::Str(text));
+            }
             "assert" | "terminate" | "print" => return Ok(Val::S(Arena::ZERO)),
             "inStream" | "actualStream" => {
                 let v = arg!(0);
@@ -5571,6 +5618,37 @@ impl<'a, 't> Flattener<'a, 't> {
                 return Ok(Val::S(if r { Arena::ONE } else { Arena::ZERO }));
             }
             _ => {}
+        }
+        // Call of a functional input (`f(u)` where `f` was passed as `function g(a = 1)`).
+        if comp.parts.len() == 1
+            && ctx.in_function
+            && let Some(Val::Func(fv)) = ctx
+                .locals
+                .iter()
+                .rev()
+                .find_map(|f| f.get(&*comp.parts[0].ident.text))
+                .cloned()
+        {
+            let mut argv = Vec::new();
+            for p in &pos {
+                argv.push(self.translate(p, scope, ctx)?);
+            }
+            let mut nargv = Vec::new();
+            for (n, e) in &named {
+                nargv.push((n.to_string(), self.translate(e, scope, ctx)?));
+            }
+            for (n, v) in &fv.bound {
+                if !nargv.iter().any(|(m, _)| m == n) {
+                    nargv.push((n.clone(), v.clone()));
+                }
+            }
+            let outs =
+                self.inline_function_in(fv.cls, argv, nargv, fv.overrides.clone(), fv.penv.clone())?;
+            return Ok(if outs.len() == 1 {
+                outs.into_iter().next().unwrap()
+            } else {
+                Val::Tuple(outs)
+            });
         }
         // User-defined function or record constructor.
         let parts: Vec<&str> = comp.parts.iter().map(|p| &*p.ident.text).collect();
@@ -5690,6 +5768,65 @@ impl<'a, 't> Flattener<'a, 't> {
             }
             _ => bail!("'{}' is not a function", name),
         }
+    }
+
+    /// `function f(a = 1)`: a function value with some inputs bound. A functional input
+    /// passed on (`function f()` where `f` is itself a function value) keeps its bindings.
+    fn function_value(
+        &mut self,
+        comp: &'a ast::ComponentReference,
+        args: &'a [E],
+        scope: &Scope,
+        ctx: &mut Ctx,
+    ) -> Result<Val> {
+        let (_, named) = split_args(args);
+        let mut bound = Vec::new();
+        for (n, e) in &named {
+            bound.push((n.to_string(), self.translate(e, scope, ctx)?));
+        }
+        if comp.parts.len() == 1
+            && let Some(Val::Func(fv)) = ctx
+                .locals
+                .iter()
+                .rev()
+                .find_map(|f| f.get(&*comp.parts[0].ident.text))
+                .cloned()
+        {
+            for (n, v) in &fv.bound {
+                if !bound.iter().any(|(m, _)| m == n) {
+                    bound.push((n.clone(), v.clone()));
+                }
+            }
+            return Ok(Val::Func(Rc::new(FuncVal {
+                cls: fv.cls,
+                overrides: fv.overrides.clone(),
+                penv: fv.penv.clone(),
+                bound,
+            })));
+        }
+        let parts: Vec<&str> = comp.parts.iter().map(|p| &*p.ident.text).collect();
+        let env = if comp.local {
+            self.env_of(ROOT)
+        } else {
+            scope.env.clone()
+        };
+        let name = cref_name(comp);
+        let cls = self
+            .lookup_class(&env, &parts)
+            .filter(|&c| matches!(self.tree.class_type(c), ClassType::Function))
+            .ok_or_else(|| anyhow!("function '{name}' not found"))?;
+        let via = self.class_via(&env, &parts, cls);
+        let lexical = self.tree.node(cls).parent;
+        let penv = via.map(|v| {
+            let owner = lexical.unwrap_or(ROOT);
+            self.inherited_env(v, owner, env.overrides.clone())
+        });
+        Ok(Val::Func(Rc::new(FuncVal {
+            cls,
+            overrides: env.overrides.clone(),
+            penv,
+            bound,
+        })))
     }
 
     /// Whether a type class carries array dimensions (`type Orientation = Real[3, 3]`).
@@ -7204,7 +7341,7 @@ impl<'a, 't> Flattener<'a, 't> {
                 Ok(Val::Rec(out))
             }
             (Val::Str(t), _) => Ok(Val::Str(t)),
-            (t @ (Val::Inst(_) | Val::IA(..)), _) => Ok(t),
+            (t @ (Val::Inst(_) | Val::IA(..) | Val::Func(_)), _) => Ok(t),
             (t, e) => self.zip2(t, e, &mut |a, x, y| if x == y { x } else { a.if_(c, x, y) }),
         }
     }
@@ -7797,7 +7934,7 @@ fn flatten_scalars(v: &Val, out: &mut Vec<ExprId>) {
                 flatten_scalars(x, out);
             }
         }
-        Val::Inst(_) | Val::IA(..) | Val::Str(_) | Val::SA(..) => {}
+        Val::Inst(_) | Val::IA(..) | Val::Str(_) | Val::SA(..) | Val::Func(_) => {}
     }
 }
 
@@ -7838,6 +7975,7 @@ fn vals_identical(a: &Val, b: &Val) -> bool {
         (Val::Tuple(x), Val::Tuple(y)) => {
             x.len() == y.len() && x.iter().zip(y).all(|(u, v)| vals_identical(u, v))
         }
+        (Val::Func(x), Val::Func(y)) => Rc::ptr_eq(x, y),
         _ => false,
     }
 }
