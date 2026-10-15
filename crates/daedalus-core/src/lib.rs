@@ -1,6 +1,7 @@
 //! DAEdalus core: Modelica instantiation, symbolic backend, code generation and solvers.
 
 pub mod backend;
+pub mod calibrate;
 pub mod casadi;
 pub mod codegen;
 pub mod expr;
@@ -9,10 +10,13 @@ pub mod fmi;
 pub mod frontend;
 pub mod linalg;
 pub mod linearize;
+pub mod optimize;
 pub mod results;
+pub mod sensitivity;
 pub mod sim;
 pub mod solver;
 pub mod sparse;
+pub mod uq;
 
 /// Flatten, analyse and compile `model` from `lib` into an executable model.
 pub fn translate(
