@@ -4,6 +4,7 @@ use daedalus_core::backend::Options;
 use daedalus_core::frontend::Library;
 use daedalus_core::sim::{Method, SimOptions};
 mod fmu;
+mod mcp;
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -27,6 +28,9 @@ COMMANDS:
               states x, top-level inputs u and outputs y
   fmu         export an FMI 2.0 FMU (Model Exchange and Co-Simulation) to -o
               (default <Model>.fmu); needs the runtime libdaedalus_fmi.so
+  mcp         serve the libraries to an AI assistant over the Model Context
+              Protocol (stdio): browse, edit, check, simulate, linearize.
+              `daedalus mcp [sources...] [-L DIR] [--workspace DIR]`
   test-library  translate and simulate every model with an experiment
                 annotation under --model (a package), each in its own
                 process with a time limit; prints a report
@@ -79,6 +83,9 @@ fn run() -> anyhow::Result<()> {
         return Ok(());
     }
     let cmd = args[0].clone();
+    if cmd == "mcp" {
+        return mcp::run(&args[1..]);
+    }
     let mut sources: Vec<String> = Vec::new();
     let mut libs: Vec<String> = Vec::new();
     let mut model = None;

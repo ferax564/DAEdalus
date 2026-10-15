@@ -34,6 +34,8 @@
 - `fmu`: FMI 2.0 export, Model Exchange and Co-Simulation in one FMU (linux64),
   with a model-independent runtime library and the compiled model as a resource;
   validated with FMPy in CI.
+- `mcp`: a Model Context Protocol server (browse, edit, check, simulate,
+  linearize) and an in-app Claude assistant in the workbench with the same tools.
 - Browser workbench:
   - package browser;
   - icon, diagram and text views;

@@ -6,6 +6,7 @@ import { DiagramView, type ViewKind } from "./diagram";
 import { TextView } from "./editor";
 import { PlotWindow, displayUnit, interp } from "./plot";
 import { bundledLibrary, readPicked } from "./library";
+import { initAssistant } from "./assistant";
 import { drawIcon, newCtx, SVG_NS, systemExtent, IDENTITY, el } from "./graphics";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -656,6 +657,21 @@ async function start() {
   const w = window as unknown as { daedalus: Record<string, unknown> };
   w.daedalus = { api, simulate, openClass, plot, timings, togglePlot: (n: string) => togglePlot(n, summary!.vars.find((v) => v.name === n)!) };
   await load(bundledLibrary(), "Daedalus library");
+  initAssistant({
+    currentClass: () => current?.path ?? null,
+    openClass,
+    afterEdit: async () => {
+      classes.clear();
+      await refreshTree();
+      if (current) await openClass(current.path);
+    },
+    afterSimulate: (model, s) => {
+      summary = s;
+      summaryPath = model;
+      cache = { time: new Float64Array(), cols: new Map() };
+      renderVariables();
+    },
+  });
   const msl = loadMsl();
   w.daedalus.msl = msl;
   if (hash && isMsl(hash)) {
