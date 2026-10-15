@@ -66,6 +66,14 @@ npm run dev      # http://localhost:5173
 The page loads the bundled `Daedalus` library. Other `.mo` files can be opened
 from disk.
 
+The `Dockerfile` at the repository root builds the workbench (Rust to
+WebAssembly, then Vite) and serves the static bundle with nginx on port 80:
+
+```sh
+docker build -t daedalus-web .
+docker run --rm -p 8080:80 daedalus-web   # http://localhost:8080
+```
+
 The page is laid out like Dymola:
 - the package browser is on the left;
 - the class you open shows in Icon, Diagram or Text view;
