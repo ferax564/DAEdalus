@@ -282,6 +282,9 @@ pub struct Profiler {
     /// Seconds spent in event handling and in storing output points.
     pub events_secs: f64,
     pub output_secs: f64,
+    /// Clock at the start of the run and at the end of the initialization.
+    t_start: f64,
+    t_init: f64,
 }
 
 impl Profiler {
@@ -320,6 +323,8 @@ impl Profiler {
             watched,
             events_secs: 0.0,
             output_secs: 0.0,
+            t_start: now(),
+            t_init: f64::NAN,
         }
     }
 
@@ -480,6 +485,7 @@ impl Profiler {
     /// The when-clauses fired by the initialization (`initial()`, `sample()` at the
     /// start time) form the first entry of the log.
     pub fn initial_event(&mut self, t: f64) {
+        self.t_init = now();
         let whens = std::mem::take(&mut self.pending_whens);
         if !whens.is_empty() {
             self.n_events += 1;
@@ -657,11 +663,19 @@ impl Profiler {
             })
             .collect();
         limiting.sort_by(|a, b| b.steps.cmp(&a.steps).then(a.index.cmp(&b.index)));
-        // Time split.
-        let total_ms = stats.init_ms + stats.sim_ms;
+        // Time split (on the profiling clock, which also runs in WebAssembly).
+        let t_end = now();
+        let t_init = if self.t_init.is_nan() {
+            t_end
+        } else {
+            self.t_init
+        };
+        let init_ms = (t_init - self.t_start) * 1e3;
+        let sim_ms = (t_end - t_init) * 1e3;
+        let total_ms = init_ms + sim_ms;
         let events_ms = self.events_secs * 1e3;
         let output_ms = self.output_secs * 1e3;
-        let integration_ms = (stats.sim_ms - events_ms - output_ms).max(0.0);
+        let integration_ms = (sim_ms - events_ms - output_ms).max(0.0);
         // Blocks.
         let mut block_costs = Vec::new();
         let mut newton_stats = Vec::new();
@@ -774,7 +788,7 @@ impl Profiler {
             states: state_names,
             timing: Timing {
                 total_ms,
-                init_ms: stats.init_ms,
+                init_ms,
                 integration_ms,
                 events_ms,
                 output_ms,
@@ -868,9 +882,19 @@ pub fn origin_of(text: &str) -> String {
     best
 }
 
-/// Longest common instance prefix of dotted names (`a.b.x`, `a.b.y` -> `a.b`).
+/// Longest common instance prefix of dotted names (`a.b.x`, `der(a.b.y)` -> `a.b`).
 fn common_prefix(names: &[String]) -> String {
-    let mut it = names.iter();
+    let bare: Vec<&str> = names
+        .iter()
+        .map(|n| {
+            let mut s = n.as_str();
+            while let Some(r) = s.strip_prefix("der(") {
+                s = r.strip_suffix(')').unwrap_or(r);
+            }
+            s
+        })
+        .collect();
+    let mut it = bare.iter();
     let Some(first) = it.next() else {
         return String::new();
     };
@@ -1448,6 +1472,10 @@ mod tests {
         assert_eq!(
             common_prefix(&["a.b.x".into(), "a.b.y".into(), "a.c".into()]),
             "a"
+        );
+        assert_eq!(
+            common_prefix(&["a.b.x".into(), "der(der(a.b.y))".into()]),
+            "a.b"
         );
     }
 }

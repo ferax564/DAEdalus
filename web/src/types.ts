@@ -104,6 +104,8 @@ export interface SimSettings {
   tolerance?: number;
   method?: string;
   params?: [string, number][];
+  /** Record a performance profile and event log (see performance.ts). */
+  profile?: boolean;
 }
 
 /** Progress of loading a library bundle in the worker. */

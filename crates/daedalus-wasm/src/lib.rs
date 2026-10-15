@@ -6,7 +6,7 @@
 
 use daedalus_core::frontend::{Library, inspect, lazy};
 use daedalus_core::results::Results;
-use daedalus_core::sim::{SimOptions, simulate};
+use daedalus_core::sim::{SimOptions, simulate_profiled};
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
@@ -37,6 +37,8 @@ pub struct Workspace {
     results: Option<Results>,
     /// Classes whose registered library files are parsed already: (class, full).
     ensured: std::collections::HashSet<(String, bool)>,
+    /// Performance profile of the last simulation (JSON), when it was asked for.
+    profile: Option<String>,
 }
 
 fn to_json<T: Serialize>(v: &T) -> String {
@@ -77,6 +79,8 @@ struct VarSummary<'a> {
 impl Workspace {
     #[wasm_bindgen(constructor)]
     pub fn new() -> Workspace {
+        #[cfg(target_arch = "wasm32")]
+        daedalus_core::profile::set_clock(|| perf_now() * 1e-3);
         Workspace::default()
     }
 
@@ -218,7 +222,9 @@ impl Workspace {
         }
         let experiment = serde_json::to_value(&m.experiment).ok();
         let t1 = now_ms();
-        let (res, stats, error) = match simulate(&m, opts) {
+        let (r, profile) = simulate_profiled(&m, opts);
+        self.profile = profile.map(|p| to_json(&p));
+        let (res, stats, error) = match r {
             Ok((r, mut s)) => {
                 s.init_ms = 0.0;
                 s.sim_ms = now_ms() - t1;
@@ -268,6 +274,12 @@ impl Workspace {
             model_stats: Some(m.stats.clone()),
             experiment,
         })
+    }
+
+    /// JSON performance profile and event log of the last simulation (`null` unless it
+    /// ran with `"profile": true`).
+    pub fn profile(&self) -> String {
+        self.profile.clone().unwrap_or_else(|| "null".into())
     }
 
     /// Time axis of the last result.

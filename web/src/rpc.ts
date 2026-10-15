@@ -1,5 +1,6 @@
 // Promise-based calls into the simulation worker.
 import type { BundleInfo, BundleProgress, ClassEntry, ClassInfo, SimSettings, SimSummary } from "./types";
+import type { Profile } from "./performance";
 
 const worker = new Worker(new URL("./worker.ts", import.meta.url), { type: "module" });
 let nextId = 1;
@@ -46,4 +47,6 @@ export const api = {
   values: (names: string[]) => call<{ time: Float64Array; cols: Float64Array[] }>("values", names),
   resultMat: () => call<Uint8Array>("resultMat"),
   resultCsv: (names: string) => call<string>("resultCsv", names),
+  /** Performance profile and event log of the last simulation (null unless profiled). */
+  profile: () => call<Profile | null>("profile"),
 };

@@ -6,6 +6,7 @@ import { DiagramView, type ViewKind } from "./diagram";
 import { TextView } from "./editor";
 import { PlotWindow, displayUnit, interp } from "./plot";
 import { bundledLibrary, readPicked } from "./library";
+import { initPerformance, profileRequested, updatePerformance } from "./performance";
 import { drawIcon, newCtx, SVG_NS, systemExtent, IDENTITY, el } from "./graphics";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -56,6 +57,7 @@ $("msg-clear").onclick = () => ($("log").innerHTML = "");
 const diagram = new DiagramView($("view-graphic"), src, classes);
 const text = new TextView($("view-text"));
 const plot = new PlotWindow($("plot"));
+initPerformance(plot);
 
 diagram.onSelect = (c) => showInspector(c);
 diagram.onOpen = (p) => openClass(p);
@@ -307,6 +309,7 @@ function settings(): SimSettings {
   const m = ($("set-method") as HTMLSelectElement).value;
   if (m) s.method = m;
   if (overrides.size) s.params = [...overrides.entries()];
+  if (profileRequested()) s.profile = true;
   return s;
 }
 
@@ -333,9 +336,11 @@ async function simulate() {
   btn.disabled = true;
   const t0 = performance.now();
   try {
-    const s = await api.simulate(name, settings());
+    const set = settings();
+    const s = await api.simulate(name, set);
     summary = s;
     summaryPath = name;
+    void updatePerformance(!!set.profile);
     if (!s.ok) {
       log(s.error ?? "simulation failed", "err");
       if (!s.vars?.length) return;

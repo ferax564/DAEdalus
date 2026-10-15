@@ -143,6 +143,9 @@ self.onmessage = async (ev: MessageEvent<Req>) => {
       case "resultCsv":
         result = w.resultCsv(args[0] as string);
         break;
+      case "profile":
+        result = JSON.parse(w.profile());
+        break;
       default:
         throw new Error(`unknown op ${op}`);
     }
