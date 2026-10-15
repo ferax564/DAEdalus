@@ -6,7 +6,14 @@
 //!
 //! Objective terms: `weight * q` (minimize; a negative weight maximizes) or, with a
 //! target, `weight * (q - target)^2`.
+//!
+//! With [`Algorithm::Lbfgsb`] the optimizer is a bound-constrained quasi-Newton method
+//! ([`crate::lbfgsb`]) driven by gradients of the whole objective: one adjoint solve
+//! per iteration where it applies (event-free models, see [`crate::adjoint`]), else
+//! forward sensitivities. Each iteration then costs one gradient and usually one
+//! simulation, whatever the number of parameters.
 
+use crate::adjoint::{GradMethod, objective_gradient};
 use crate::calibrate::{Tuner, modifier, tuner_starts, with_params};
 use crate::codegen::Model;
 use crate::sim::SimOptions;
@@ -35,6 +42,34 @@ pub struct OptSpec {
     /// Stop when the simplex values differ by less than this (relative).
     #[serde(default = "default_tol")]
     pub tol: f64,
+    #[serde(default)]
+    pub algorithm: Algorithm,
+    /// Gradient source of L-BFGS-B (default: adjoint where it applies).
+    #[serde(default)]
+    pub gradient: GradMethod,
+}
+
+/// The optimization method.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Algorithm {
+    /// Derivative-free simplex search (works with events).
+    #[default]
+    #[serde(alias = "nelder-mead", alias = "nm")]
+    NelderMead,
+    /// Projected L-BFGS with bounds, gradients from adjoints or sensitivities.
+    #[serde(alias = "l-bfgs-b", alias = "lbfgs")]
+    Lbfgsb,
+}
+
+impl Algorithm {
+    pub fn parse(s: &str) -> Option<Algorithm> {
+        Some(match s.to_ascii_lowercase().as_str() {
+            "nelder-mead" | "neldermead" | "nm" | "simplex" => Algorithm::NelderMead,
+            "lbfgsb" | "l-bfgs-b" | "lbfgs" | "gradient" => Algorithm::Lbfgsb,
+            _ => return None,
+        })
+    }
 }
 
 fn default_iter() -> usize {
@@ -61,6 +96,11 @@ pub struct OptResult {
     pub converged: bool,
     pub message: String,
     pub modifier: String,
+    pub algorithm: Algorithm,
+    /// Gradient evaluations (L-BFGS-B) and the method that computed them.
+    pub gradients: usize,
+    pub gradient_method: Option<GradMethod>,
+    pub notes: Vec<String>,
 }
 
 /// Nelder–Mead in the unit box `[0, 1]^n` of the bounds.
@@ -83,6 +123,15 @@ pub struct Optimization {
     done: bool,
     converged: bool,
     message: String,
+    algorithm: Algorithm,
+    grad_method: GradMethod,
+    objective: Vec<ObjTerm>,
+    // L-BFGS-B state (unit box)
+    grad: Vec<f64>,
+    memory: crate::lbfgsb::Memory,
+    gradients: usize,
+    grad_used: Option<GradMethod>,
+    notes: Vec<String>,
 }
 
 impl Optimization {
@@ -125,6 +174,14 @@ impl Optimization {
             })
             .collect();
         Ok(Optimization {
+            algorithm: spec.algorithm,
+            grad_method: spec.gradient,
+            objective: spec.objective.clone(),
+            grad: Vec::new(),
+            memory: crate::lbfgsb::Memory::new(8),
+            gradients: 0,
+            grad_used: None,
+            notes: Vec::new(),
             m,
             opts: o,
             names: spec.tuners.iter().map(|t| t.name.clone()).collect(),
@@ -174,6 +231,114 @@ impl Optimization {
             };
         }
         (if f.is_finite() { f } else { f64::INFINITY }, qs)
+    }
+
+    /// Gradient of the objective in unit coordinates.
+    fn gradient(&mut self, x: &[f64]) -> Result<Vec<f64>, String> {
+        let p = self.to_params(x);
+        let o = with_params(&self.opts, &self.names, &p);
+        let g = objective_gradient(&self.m, &o, &self.names, &self.objective, self.grad_method)?;
+        self.gradients += 1;
+        if self.grad_used != Some(g.method) {
+            self.grad_used = Some(g.method);
+            self.notes.push(format!(
+                "gradients by {}{}",
+                match g.method {
+                    GradMethod::Adjoint => "the adjoint method",
+                    GradMethod::Forward => "forward sensitivities",
+                    GradMethod::Fd => "finite differences",
+                    GradMethod::Auto => "auto",
+                },
+                g.notes
+                    .iter()
+                    .find(|n| n.contains("because"))
+                    .map(|n| format!(" ({n})"))
+                    .unwrap_or_default()
+            ));
+        }
+        if g.gradient.iter().any(|v| !v.is_finite()) {
+            return Err("the gradient is not finite".into());
+        }
+        Ok(g.gradient
+            .iter()
+            .zip(&self.tuners)
+            .map(|(d, t)| d * (t.hi() - t.lo()))
+            .collect())
+    }
+
+    fn start_lbfgs(&mut self) -> Result<(), String> {
+        let x0 = self.x0.clone();
+        let (f, q) = self.eval(&x0);
+        self.f0 = (f, q.clone());
+        self.simplex = vec![(x0.clone(), f, q)];
+        self.history.push(f);
+        if !f.is_finite() {
+            return Ok(());
+        }
+        self.grad = self.gradient(&x0)?;
+        Ok(())
+    }
+
+    fn iterate_lbfgs(&mut self) -> Result<(), String> {
+        use crate::lbfgsb::{Outcome, iterate};
+        let n = self.x0.len();
+        let (lo, hi) = (vec![0.0; n], vec![1.0; n]);
+        let mut x = self.simplex[0].0.clone();
+        let mut f = self.simplex[0].1;
+        let mut g = std::mem::take(&mut self.grad);
+        let mut mem = std::mem::take(&mut self.memory);
+        let mut last_q = None;
+        let gtol = 1e-9 * (1.0 + f.abs());
+        let r = {
+            let this = std::cell::RefCell::new(&mut *self);
+            let mut evals: Vec<(Vec<f64>, Vec<f64>)> = Vec::new();
+            let out = iterate(
+                &mut x,
+                &mut f,
+                &mut g,
+                &lo,
+                &hi,
+                &mut mem,
+                gtol,
+                &mut |p| {
+                    let (v, q) = this.borrow_mut().eval(p);
+                    evals.push((p.to_vec(), q));
+                    v
+                },
+                &mut |p| this.borrow_mut().gradient(p),
+            );
+            if let Ok(Outcome::Moved { .. }) = &out {
+                last_q = evals.into_iter().rev().find(|(p, _)| *p == x).map(|e| e.1);
+            }
+            out
+        };
+        self.memory = mem;
+        self.grad = g;
+        let out = r?;
+        match out {
+            Outcome::Moved { decrease, step } => {
+                let q = last_q.unwrap_or_else(|| self.simplex[0].2.clone());
+                self.simplex[0] = (x, f, q);
+                self.history.push(f);
+                if decrease.abs() < self.tol || step < 1e-12 {
+                    self.converged = true;
+                    self.done = true;
+                    self.message = "objective and step no longer decrease".into();
+                }
+            }
+            Outcome::Restart => {}
+            Outcome::Stationary => {
+                self.converged = true;
+                self.done = true;
+                self.message = "projected gradient vanishes (stationary point)".into();
+            }
+            Outcome::NoDecrease => {
+                self.converged = true;
+                self.done = true;
+                self.message = "no step lowers the objective (local minimum)".into();
+            }
+        }
+        Ok(())
     }
 
     fn start(&mut self) {
@@ -288,6 +453,10 @@ impl Optimization {
             converged: self.converged,
             message: self.message.clone(),
             modifier: modifier(&fitted),
+            algorithm: self.algorithm,
+            gradients: self.gradients,
+            gradient_method: self.grad_used,
+            notes: self.notes.clone(),
         }
     }
 
@@ -296,9 +465,24 @@ impl Optimization {
         let mut s = String::new();
         let _ = writeln!(
             s,
-            "optimization of {} (Nelder-Mead): {} iterations, {} runs; {}",
-            r.model, r.iterations, r.runs, r.message
+            "optimization of {} ({}): {} iterations, {} runs{}; {}",
+            r.model,
+            match r.algorithm {
+                Algorithm::NelderMead => "Nelder-Mead",
+                Algorithm::Lbfgsb => "L-BFGS-B",
+            },
+            r.iterations,
+            r.runs,
+            if r.gradients > 0 {
+                format!(", {} gradients", r.gradients)
+            } else {
+                String::new()
+            },
+            r.message
         );
+        for n in &r.notes {
+            let _ = writeln!(s, "  note: {n}");
+        }
         let _ = writeln!(
             s,
             "  objective: {:.6e} -> {:.6e}",
@@ -333,6 +517,25 @@ impl Job for Optimization {
     fn step(&mut self) -> Result<bool, String> {
         if self.done {
             return Ok(true);
+        }
+        if self.algorithm == Algorithm::Lbfgsb {
+            if self.simplex.is_empty() {
+                self.start_lbfgs()?;
+                if !self.simplex[0].1.is_finite() {
+                    return Err(
+                        "the objective is not finite at the start point (does the run fail?)"
+                            .into(),
+                    );
+                }
+                return Ok(false);
+            }
+            self.iterate_lbfgs()?;
+            self.iter += 1;
+            if !self.done && self.iter >= self.max_iter {
+                self.done = true;
+                self.message = format!("iteration limit ({}) reached", self.max_iter);
+            }
+            return Ok(self.done);
         }
         if self.simplex.is_empty() {
             self.start();

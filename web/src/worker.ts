@@ -1,5 +1,5 @@
 // Web Worker owning the WebAssembly workspace, so translation and simulation never block the UI.
-import init, { Workspace } from "./wasm/daedalus_wasm.js";
+import init, { Workspace, doePlan, doeAnalyze } from "./wasm/daedalus_wasm.js";
 import type { BundleInfo, BundleProgress } from "./types";
 
 let ws: Workspace | null = null;
@@ -151,9 +151,18 @@ self.onmessage = async (ev: MessageEvent<Req>) => {
         const time = w.time();
         const cols = names.map((n) => w.values(n));
         transfer.push(time.buffer, ...cols.map((c) => c.buffer));
-        result = { summary, time, cols };
+        // Quantities of interest of a design of experiments, evaluated here.
+        const qois = args[3] as string[] | null;
+        const qoi = qois && summary.ok ? (JSON.parse(w.qoiValues(JSON.stringify(qois))) as (number | null)[]) : undefined;
+        result = { summary, time, cols, qoi };
         break;
       }
+      case "doePlan":
+        result = JSON.parse(doePlan(JSON.stringify(args[0])));
+        break;
+      case "doeAnalyze":
+        result = JSON.parse(doeAnalyze(args[0] as string, JSON.stringify(args[1]), JSON.stringify(args[2]), JSON.stringify(args[3]), JSON.stringify(args[4])));
+        break;
       case "resultCsv":
         result = w.resultCsv(args[0] as string);
         break;

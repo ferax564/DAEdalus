@@ -1,15 +1,18 @@
 //! DAEdalus core: Modelica instantiation, symbolic backend, code generation and solvers.
 
+pub mod adjoint;
 pub mod backend;
 pub mod calibrate;
 pub mod casadi;
 pub mod codegen;
+pub mod doe;
 pub mod expr;
 pub mod flat;
 pub mod fmi;
 #[cfg(all(feature = "fmu", not(target_arch = "wasm32")))]
 pub mod fmu;
 pub mod frontend;
+pub mod lbfgsb;
 pub mod linalg;
 pub mod linearize;
 pub mod modal;
@@ -25,6 +28,7 @@ pub mod solver_jac;
 pub mod solver_radau;
 pub mod sparse;
 pub mod sweep;
+pub mod tape_reverse;
 pub mod structure;
 pub mod uq;
 pub mod steady;

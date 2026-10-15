@@ -89,6 +89,11 @@ export const api = {
     return call<T | { cancelled: true }>("analysisRun", model, kind, spec, settings);
   },
   analysisCancel: () => call<void>("analysisCancel"),
+  /** Plan a design of experiments (see `daedalus_core::doe`): the runs' coded points and values. */
+  doePlan: <T>(spec: unknown) => call<T>("doePlan", spec),
+  /** Fit response surfaces, effects and the Pareto front to the responses of a planned design. */
+  doeAnalyze: <T>(model: string, spec: unknown, plan: unknown, responses: ((number | null)[] | null)[], errors: string[]) =>
+    call<T>("doeAnalyze", model, spec, plan, responses, errors),
 };
 
 export interface EditReply {
