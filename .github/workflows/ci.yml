@@ -48,6 +48,23 @@ jobs:
           python3 tools/gen_chain.py 2000 > /tmp/chain.mo
           ./target/release/daedalus simulate library/Daedalus /tmp/chain.mo -m Chain --stop 0.2 -o /tmp/chain.mat
 
+  python:
+    name: CasADi optimal control (Python)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build CLI
+        run: cargo build --release -p daedalus-cli
+      - name: Install
+        run: pip install casadi numpy pytest
+      - name: Test daedalus_casadi
+        run: python -m pytest -q python/tests
+
   web:
     name: WebAssembly and workbench build
     runs-on: ubuntu-latest

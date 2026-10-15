@@ -20,6 +20,8 @@ COMMANDS:
   flatten     print the flat model
   dump        print the sorted, causalised equation system
   simulate    simulate and write results
+  export-casadi  write the index-reduced DAE as JSON for CasADi (optimal
+              control, MPC, estimation; see python/daedalus_casadi)
   linearize   linearize around the initial point (or --at T): the state-space
               matrices A, B, C, D of der(x) = A x + B u, y = C x + D u for the
               states x, top-level inputs u and outputs y
@@ -359,6 +361,42 @@ fn run() -> anyhow::Result<()> {
                     }
                 }
             }
+            Ok(())
+        }
+        "export-casadi" => {
+            let flat = with_all_files(&mut lib, |l| l.flatten(&model))?;
+            let sys = daedalus_core::backend::compile(flat, &opts)?;
+            let o = SimOptions {
+                start_time: if set_start {
+                    so.start_time
+                } else {
+                    sys.experiment.start_time.unwrap_or(0.0)
+                },
+                params: so.params.clone(),
+                ..Default::default()
+            };
+            let doc = daedalus_core::casadi::export(sys, &o)?;
+            if let Some(w) = doc["warnings"].as_array() {
+                for w in w {
+                    eprintln!("warning: {}", w.as_str().unwrap_or_default());
+                }
+            }
+            if let Some(e) = doc["init_error"].as_str() {
+                eprintln!("warning: initialization failed ({e}); values are start values");
+            }
+            let text = doc.to_string();
+            match &output {
+                Some(out) => std::fs::write(out, text)?,
+                None => println!("{text}"),
+            }
+            eprintln!(
+                "exported {}: {} states, {} algebraic, {} inputs, {} parameters",
+                model,
+                doc["states"].as_array().map_or(0, |a| a.len()),
+                doc["algebraics"].as_array().map_or(0, |a| a.len()),
+                doc["inputs"].as_array().map_or(0, |a| a.len()),
+                doc["parameters"].as_array().map_or(0, |a| a.len()),
+            );
             Ok(())
         }
         "linearize" => {
