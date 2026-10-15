@@ -638,7 +638,7 @@ impl<'m> Simulation<'m> {
                                 self.rt.r[m.zc_raw[i] as usize] != self.rt.r[m.layout.rel0 + i]
                             })
                             .take(4)
-                            .map(|i| format!("relation {i}"))
+                            .map(|i| format!("`{}`", m.rel_text.get(i).map_or("?", |s| s.as_str())))
                             .collect();
                         return Err(format!(
                             "events chatter at t = {te}: {} keep switching back and forth",

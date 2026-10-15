@@ -3624,7 +3624,8 @@ impl<'a, 't> Flattener<'a, 't> {
         if Self::is_record_like(&l) || Self::is_record_like(&r) {
             return self.record_binary(op, l, r, ctx);
         }
-        let no_event = ctx.no_event;
+        // Relations in function bodies do not generate events (MLS 8.5).
+        let no_event = ctx.no_event || ctx.in_function;
         match op {
             OpBinary::Add | OpBinary::AddElem => self.zip2(l, r, &mut |a, x, y| a.add(x, y)),
             OpBinary::Sub | OpBinary::SubElem => self.zip2(l, r, &mut |a, x, y| a.sub(x, y)),
@@ -5334,6 +5335,24 @@ impl<'a, 't> Flattener<'a, 't> {
         }
     }
 
+    /// Whether a type class carries array dimensions (`type Orientation = Real[3, 3]`).
+    fn type_has_dims(&self, t: ClassId, depth: usize) -> bool {
+        if depth > 16 {
+            return false;
+        }
+        if self
+            .tree
+            .def(t)
+            .is_some_and(|d| !d.array_subscripts.is_empty())
+        {
+            return true;
+        }
+        self.tree
+            .bases(t)
+            .into_iter()
+            .any(|b| self.type_has_dims(b, depth + 1))
+    }
+
     /// A call of a function with scalar inputs that passes arrays to some of them is
     /// applied element-wise (Modelica's function vectorization).
     fn vectorized_call(
@@ -5367,13 +5386,7 @@ impl<'a, 't> Flattener<'a, 't> {
             }
             let env = this.env_of(*owner);
             match this.lookup_class(&env, &tparts) {
-                Some(t) => {
-                    this.tree.builtin_base(t).is_some()
-                        && this
-                            .tree
-                            .def(t)
-                            .is_none_or(|d| d.array_subscripts.is_empty())
-                }
+                Some(t) => this.tree.builtin_base(t).is_some() && !this.type_has_dims(t, 0),
                 None => false,
             }
         };
