@@ -69,6 +69,11 @@
             <button id="plot-new">New subplot</button>
             <button id="plot-clear">Clear</button>
             <label>x-axis <select id="plot-x"><option value="">time</option></select></label>
+            <span id="plot-units">
+              <label title="Unit of the x axis">x unit <select id="plot-xunit"></select></label>
+              <label title="Unit of the y axis of the active subplot">y unit <select id="plot-yunit"></select></label>
+              <label title="Default to Imperial / US units (ft, lbf, psi, mph, degF, hp ...)"><input type="checkbox" id="plot-imperial" /> Imperial</label>
+            </span>
             <span class="spacer"></span>
             <button id="export-csv">Export CSV</button>
             <button id="export-mat">Export .mat</button>
