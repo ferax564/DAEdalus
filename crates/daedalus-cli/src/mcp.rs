@@ -90,6 +90,26 @@ fn tools() -> Vec<Tool> {
             schema: || model_schema(json!({"at": {"type": "number"}})),
         },
         Tool {
+            name: "model_structure",
+            description: "Structure report: variable roles, BLT blocks and algebraic loops, the state-selection sets and why each state was chosen, and the state Jacobian at the start (or after simulating to `at`): eigenvalues, time constants, participation factors, stiffness ratio and a solver suggestion. `states` overrides stateSelect, e.g. {\"body.v\": \"prefer\"}.",
+            schema: || {
+                model_schema(json!({
+                    "at": {"type": "number"},
+                    "states": {"type": "object", "additionalProperties": {"type": "string", "enum": ["always", "prefer", "default", "avoid", "never"]}}
+                }))
+            },
+        },
+        Tool {
+            name: "profile_simulation",
+            description: "Simulate with the performance profiler: time split, which states limit the step size, the costliest blocks, the event log summary and chattering relations, with hints.",
+            schema: || {
+                model_schema(json!({
+                    "stop_time": {"type": "number"},
+                    "parameters": {"type": "object", "additionalProperties": {"type": "number"}}
+                }))
+            },
+        },
+        Tool {
             name: "equations",
             description: "The sorted, causalised equation system after alias elimination, index reduction and tearing (long for big models; use `max_lines`).",
             schema: || model_schema(json!({"max_lines": {"type": "integer"}})),
@@ -343,6 +363,68 @@ impl Server {
                 )
                 .map_err(|e| anyhow::anyhow!(e))?;
                 Ok(lin.report())
+            }
+            "model_structure" => {
+                let model = model()?;
+                self.prepare(&model);
+                let mut bopts = Options::default();
+                if let Some(Value::Object(st)) = a.get("states") {
+                    for (k, v) in st {
+                        let tier = v
+                            .as_str()
+                            .and_then(daedalus_core::backend::state_select::parse_tier)
+                            .ok_or_else(|| anyhow::anyhow!("state {k}: unknown tier"))?;
+                        bopts.state_overrides.push(daedalus_core::backend::state_select::StateOverride {
+                            pattern: k.clone(),
+                            tier,
+                        });
+                    }
+                }
+                let sopts = daedalus_core::structure::StructureOptions {
+                    at: n("at"),
+                    ..Default::default()
+                };
+                let r = daedalus_core::structure::structure(&self.lib, &model, &bopts, &sopts)
+                    .or_else(|e| {
+                        if self.lib.has_pending() {
+                            self.lib.load_all();
+                            daedalus_core::structure::structure(&self.lib, &model, &bopts, &sopts)
+                        } else {
+                            Err(e)
+                        }
+                    })?;
+                let text = r.to_text();
+                Ok(if text.len() > 40_000 {
+                    format!("{}\n… truncated", &text[..text.floor_char_boundary(40_000)])
+                } else {
+                    text
+                })
+            }
+            "profile_simulation" => {
+                let model = model()?;
+                let m = self.translate(&model)?;
+                let mut o = SimOptions::from_model(&m);
+                if let Some(v) = n("stop_time") {
+                    o.stop_time = v;
+                }
+                if let Some(Value::Object(p)) = a.get("parameters") {
+                    for (k, v) in p {
+                        o.params.push((k.clone(), v.as_f64().unwrap_or(f64::NAN)));
+                    }
+                }
+                if o.max_wall_time <= 0.0 || o.max_wall_time > 120.0 {
+                    o.max_wall_time = 120.0;
+                }
+                o.profile = true;
+                let (r, prof) = daedalus_core::sim::simulate_profiled(&m, o);
+                let mut out = match r {
+                    Ok(_) => format!("simulation of {model} finished.\n"),
+                    Err(e) => format!("simulation of {model} FAILED: {}\n", e.message),
+                };
+                if let Some(p) = prof {
+                    out += &p.summary_text();
+                }
+                Ok(out)
             }
             "equations" | "flatten_model" => {
                 let model = model()?;
@@ -647,6 +729,10 @@ mod tests {
         assert!((v - (-1f64).exp()).abs() < 1e-4, "{line}");
         let (t, err) = tool(&mut s, "linearize_model", json!({"model": "Decay"}));
         assert!(!err && t.contains("-2"), "{t}");
+        let (t, err) = tool(&mut s, "model_structure", json!({"model": "Decay"}));
+        assert!(!err && t.contains("structure of Decay"), "{t}");
+        let (t, err) = tool(&mut s, "profile_simulation", json!({"model": "Decay"}));
+        assert!(!err && t.contains("finished"), "{t}");
         let (t, err) = tool(&mut s, "check_model", json!({"model": "Missing"}));
         assert!(err && t.starts_with("error"), "{t}");
         let (t, err) = tool(&mut s, "set_source", json!({"file": "../x.mo", "text": ""}));

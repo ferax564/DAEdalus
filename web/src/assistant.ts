@@ -190,6 +190,44 @@ function builtinTools(hooks: AssistantHooks): AssistantTool[] {
       },
     },
     {
+      name: "model_structure",
+      description: "Structure report of a model: variable roles, BLT blocks and algebraic loops, the state-selection sets and why each state was chosen, and the state Jacobian (eigenvalues, time constants, participation factors, stiffness ratio, suggested solver) at the start or after simulating to `at`. `states` tries stateSelect overrides such as {\"body.v\": \"prefer\"} without editing the model.",
+      input_schema: {
+        type: "object",
+        properties: {
+          model: { type: "string" },
+          at: { type: "number" },
+          states: { type: "object", additionalProperties: { type: "string", enum: ["always", "prefer", "default", "avoid", "never"] } },
+        },
+        required: ["model"],
+      },
+      async run(i) {
+        const opts: Record<string, unknown> = {};
+        if (num(i.at) !== undefined) opts.at = num(i.at);
+        if (i.states && typeof i.states === "object") opts.stateOverrides = Object.entries(i.states as Record<string, unknown>).map(([k, v]) => [k, String(v)]);
+        const r = (await api.structure(str(i.model) ?? "", opts)) as { ok: boolean; error?: string; text?: string };
+        if (!r.ok) throw new Error(r.error ?? "structure failed");
+        const t = r.text ?? "";
+        return t.length > 40000 ? t.slice(0, 40000) + "\n… truncated" : t;
+      },
+    },
+    {
+      name: "profile_simulation",
+      description: "Simulate with the performance profiler: time split, which states limit the step size, the costliest blocks, events and chattering relations, with hints.",
+      input_schema: { type: "object", properties: { model: { type: "string" }, stop_time: { type: "number" }, parameters: { type: "object", additionalProperties: { type: "number" } } }, required: ["model"] },
+      async run(i) {
+        const model = str(i.model) ?? "";
+        const s: SimSettings = { profile: true };
+        if (num(i.stop_time) !== undefined) s.stop_time = num(i.stop_time);
+        if (i.parameters && typeof i.parameters === "object")
+          s.params = Object.entries(i.parameters as Record<string, unknown>).filter(([, v]) => num(v) !== undefined).map(([k, v]) => [k, v as number]);
+        const r = await api.simulate(model, s);
+        hooks.afterSimulate(model, r);
+        const p = (await api.profile()) as unknown as { summary_text?: string } | null;
+        return `${r.ok ? `simulation of ${model} finished.` : `simulation of ${model} FAILED: ${r.error}`}\n${p?.summary_text ?? "(no profile)"}`;
+      },
+    },
+    {
       name: "flatten_model",
       description: "The flat model (all components expanded) as Modelica-like text, truncated to max_lines.",
       input_schema: { type: "object", properties: { model: { type: "string" }, max_lines: { type: "integer" } }, required: ["model"] },

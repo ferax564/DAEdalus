@@ -294,7 +294,8 @@ See [docs/optimal-control.md](docs/optimal-control.md).
 `daedalus mcp` serves the loaded libraries to an AI assistant over the Model Context
 Protocol (newline-delimited JSON-RPC on stdio). Its tools are `list_classes`,
 `get_class`, `set_source`, `check_model`, `simulate_model`, `linearize_model`,
-`equations` and `flatten_model`. With `--workspace DIR`, `set_source` also writes the
+`model_structure` (roles, BLT, state choice, Jacobian eigenvalues and stiffness, with
+`stateSelect` overrides), `profile_simulation`, `equations` and `flatten_model`. With `--workspace DIR`, `set_source` also writes the
 file to `DIR` and the `.mo` files already there are loaded at start.
 
 ```sh
@@ -304,8 +305,8 @@ claude mcp add daedalus -- /path/to/daedalus mcp /path/to/library/Daedalus --wor
 
 The workbench has the same tools built in: **✦ Assistant** in the top bar opens a chat
 with Claude (`claude-opus-5-5`) that can browse and read classes, write models to
-`user/*.mo` files, check, simulate (the result shows in the variable browser) and open
-classes. Library files stay read-only. It uses your own Claude API key, which is kept
+`user/*.mo` files, check, simulate (the result shows in the variable browser), read the
+structure report and the performance profile, and open classes. Library files stay read-only. It uses your own Claude API key, which is kept
 only in that browser; requests go straight from the page to the Claude API. Other
 workbench features add their tools with `registerAssistantTool` (`web/src/assistant.ts`).
 

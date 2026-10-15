@@ -230,7 +230,11 @@ impl Workspace {
         let experiment = serde_json::to_value(&m.experiment).ok();
         let t1 = now_ms();
         let (r, profile) = simulate_profiled(&m, opts);
-        self.profile = profile.map(|p| to_json(&p));
+        self.profile = profile.map(|p| {
+            let mut v = serde_json::to_value(&p).unwrap_or_default();
+            v["summary_text"] = p.summary_text().into();
+            to_json(&v)
+        });
         let (res, stats, error) = match r {
             Ok((r, mut s)) => {
                 s.init_ms = 0.0;
@@ -355,6 +359,7 @@ impl Workspace {
                 let mut j = serde_json::to_value(&r).unwrap_or_default();
                 j["ok"] = true.into();
                 j["ms"] = (now_ms() - t0).into();
+                j["text"] = r.to_text().into();
                 to_json(&j)
             }
             Err(e) => to_json(&serde_json::json!({"ok": false, "error": format!("{e:#}")})),
