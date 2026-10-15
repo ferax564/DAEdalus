@@ -12,6 +12,9 @@
 //! Anything the scan cannot see shows up as a failed translation, and the caller then
 //! loads the rest with [`Library::load_all`].
 
+// The browser build registers no directories, so the closure code is unused there.
+#![cfg_attr(target_arch = "wasm32", allow(dead_code, unused_imports))]
+
 use super::Library;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::path::{Path, PathBuf};
