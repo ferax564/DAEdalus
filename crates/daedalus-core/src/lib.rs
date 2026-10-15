@@ -12,6 +12,7 @@ pub mod results;
 pub mod sim;
 pub mod solver;
 pub mod sparse;
+pub mod steady;
 
 /// Flatten, analyse and compile `model` from `lib` into an executable model.
 pub fn translate(
