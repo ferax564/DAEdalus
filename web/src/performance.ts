@@ -117,23 +117,26 @@ export function initPerformance(plot: PlotWindow) {
   };
   $("btn-sim").before(cb);
 
+  // The Performance tab joins the Plot | Animation switch of the results pane.
   const pane = $("plot-pane");
-  const tabs = pane.querySelector(".tabs")!;
-  const tPlot = h("button", { class: "perf-tab active", "data-ptab": "plot" }, "Plot");
+  const views = $("sim-views");
   const tPerf = h("button", { class: "perf-tab hidden", "data-ptab": "perf", id: "perf-tab", title: "Performance profile and event log of the last simulation" }, "Performance");
-  tabs.prepend(tPlot, tPerf);
-  const title = tabs.querySelector(".model-title");
-  if (title?.textContent === "Plot") title.remove();
+  views.append(tPerf);
   const view = h("div", { id: "perf-view", class: "perf hidden" });
   pane.append(view);
-  tPlot.onclick = () => showTab("plot");
   tPerf.onclick = () => showTab("perf");
+  // Plot and Animation (handled in main.ts) leave the performance view.
+  views.addEventListener("click", (e) => {
+    if ((e.target as HTMLElement).hasAttribute("data-sim")) showTab("plot");
+  });
 }
 
 function showTab(which: "plot" | "perf") {
   const pane = $("plot-pane");
   pane.classList.toggle("perf-mode", which === "perf");
-  pane.querySelectorAll<HTMLButtonElement>(".perf-tab").forEach((b) => b.classList.toggle("active", b.dataset.ptab === which));
+  $("perf-tab").classList.toggle("active", which === "perf");
+  if (which === "perf") $("sim-views").querySelectorAll("button[data-sim]").forEach((b) => b.classList.remove("active"));
+  else if (!$("sim-views").querySelector("button[data-sim].active")) $("sim-views").querySelector("button[data-sim]")?.classList.add("active");
   $("perf-view").classList.toggle("hidden", which !== "perf");
   if (which === "perf") requestAnimationFrame(() => stepPlot?.draw());
   else requestAnimationFrame(() => mainPlot?.draw());

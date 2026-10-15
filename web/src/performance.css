@@ -1,6 +1,6 @@
 /* Performance panel (performance.ts). */
-#plot-pane.perf-mode .tabs > :not(.perf-tab) { display: none; }
-#plot-pane.perf-mode #plot { display: none; }
+#plot-pane.perf-mode .tabs > :not(#sim-views) { display: none; }
+#plot-pane.perf-mode #plot, #plot-pane.perf-mode #anim { display: none; }
 .perf { flex: 1; min-height: 0; overflow: auto; padding: 4px 12px 16px; }
 .perf-sec { margin: 8px 0 16px; }
 .perf-sec h3 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted); margin: 6px 0; }
