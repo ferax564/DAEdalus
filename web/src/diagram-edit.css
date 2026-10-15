@@ -1,0 +1,47 @@
+/* Diagram editor (diagram-edit.ts): toolbar, selection and connection overlay, parameter dialog. */
+.edit-toolbar {
+  position: absolute; top: 8px; left: 8px; z-index: 2;
+  display: flex; gap: 4px; flex-wrap: wrap; max-width: calc(100% - 16px);
+}
+.edit-toolbar.hidden, .edit-toolbar .hidden { display: none; }
+.edit-toolbar button { padding: 2px 8px; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08); }
+.edit-toolbar button:disabled { opacity: 0.45; cursor: default; }
+
+svg.diagram.editing { cursor: default; }
+svg.diagram.editing .component { cursor: move; }
+svg.diagram .edit-overlay .edit-selection { fill: rgba(11, 95, 255, 0.08); stroke: #0b5fff; stroke-width: 1.5; stroke-dasharray: 4 2; vector-effect: non-scaling-stroke; pointer-events: none; }
+svg.diagram .edit-overlay .edit-resize,
+svg.diagram .edit-overlay .edit-vertex { fill: white; stroke: #0b5fff; stroke-width: 1.5; vector-effect: non-scaling-stroke; cursor: nwse-resize; }
+svg.diagram .edit-overlay .edit-vertex { cursor: move; }
+svg.diagram .edit-overlay .edit-port { fill: transparent; stroke: transparent; stroke-width: 1.5; vector-effect: non-scaling-stroke; cursor: crosshair; }
+svg.diagram .edit-overlay .edit-port:hover { fill: rgba(11, 95, 255, 0.18); stroke: #0b5fff; }
+svg.diagram .edit-overlay .edit-port.compatible { fill: rgba(43, 138, 62, 0.25); stroke: #2b8a3e; }
+svg.diagram .edit-overlay .edit-port.incompatible { fill: rgba(201, 42, 42, 0.08); }
+svg.diagram .edit-overlay .edit-wire { fill: none; stroke: transparent; stroke-width: 9; vector-effect: non-scaling-stroke; cursor: pointer; }
+svg.diagram .edit-overlay .edit-wire:hover { stroke: rgba(11, 95, 255, 0.18); }
+svg.diagram .edit-overlay .edit-wire.selected { stroke: rgba(11, 95, 255, 0.35); }
+svg.diagram .edit-rubber-line { fill: none; stroke: #0b5fff; stroke-width: 1.5; stroke-dasharray: 5 3; vector-effect: non-scaling-stroke; pointer-events: none; }
+svg.diagram .edit-band { fill: rgba(11, 95, 255, 0.06); stroke: #0b5fff; stroke-width: 1; stroke-dasharray: 3 3; vector-effect: non-scaling-stroke; pointer-events: none; }
+
+.param-dialog {
+  position: fixed; inset: 0; z-index: 50; display: grid; place-items: center;
+  background: rgba(10, 14, 22, 0.35);
+}
+.param-dialog .box {
+  background: var(--panel); color: var(--fg); border: 1px solid var(--line); border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25); padding: 14px 16px; width: min(720px, calc(100vw - 32px));
+  max-height: calc(100vh - 64px); display: flex; flex-direction: column; gap: 6px;
+}
+.param-dialog h3 { margin: 0; font-size: 15px; }
+.param-dialog h3 .muted, .param-dialog .muted { color: var(--muted); font-weight: 400; font-size: 12px; }
+.param-dialog .small { font-size: 11.5px; margin: 0; }
+.param-dialog p { margin: 0; }
+.param-dialog .name input { margin-left: 6px; width: 200px; font-family: var(--mono); }
+.param-dialog .scroll { overflow: auto; border: 1px solid var(--line); border-radius: 6px; }
+.param-dialog table { width: 100%; border-collapse: collapse; }
+.param-dialog td { padding: 3px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+.param-dialog td.k { font-family: var(--mono); white-space: nowrap; }
+.param-dialog td.u { color: var(--muted); white-space: nowrap; }
+.param-dialog td.d { color: var(--muted); font-size: 12px; }
+.param-dialog td input { width: 140px; font-family: var(--mono); }
+.param-dialog .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }

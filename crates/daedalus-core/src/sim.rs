@@ -7,6 +7,10 @@ use crate::expr::VarId;
 use crate::flat::VarKind;
 use crate::results::{ResultKind, ResultVar, Results};
 use crate::solver::{Bdf, Dopri5, FixedMethod, FixedStep, Integrator, SolverStats};
+use crate::solver_auto::AutoSwitch;
+use crate::solver_esdirk::Esdirk;
+pub use crate::solver_jac::JacobianMode;
+use crate::solver_radau::Radau5;
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
 
@@ -18,17 +22,42 @@ pub enum Method {
     Dopri5,
     Rk4,
     Euler,
+    /// Radau IIA order 5 (stiff, L-stable, one-step).
+    Radau,
+    /// ESDIRK4(3)6L[2]SA (stiff, L-stable, one-step).
+    Esdirk,
+    /// Dopri5 with automatic switching to BDF when the problem turns stiff, and back.
+    Auto,
 }
 
 impl Method {
+    /// A DAEdalus method name, or the closest one to a Dymola `__Dymola_Algorithm`.
     pub fn parse(s: &str) -> Option<Method> {
-        Some(match s.to_ascii_lowercase().as_str() {
-            "bdf" | "dassl" | "ida" | "cvode" | "lsodar" | "radau" | "esdirk45a" => Method::Bdf,
-            "dopri5" | "dopri45" | "dopri" | "rkfix" | "rk45" => Method::Dopri5,
-            "rk4" | "rkfix4" => Method::Rk4,
-            "euler" => Method::Euler,
+        let s = s.trim().to_ascii_lowercase();
+        Some(match s.as_str() {
+            "bdf" | "dassl" | "ida" | "cvode" | "lsode" | "dlsode" => Method::Bdf,
+            "auto" | "lsodar" | "lsoda" => Method::Auto,
+            "radau" | "radau5" | "radauiia" | "radau iia" | "radau2a" => Method::Radau,
+            "dopri5" | "dopri45" | "dopri853" | "dopri" | "rk45" | "cerk23" | "cerk34"
+            | "cerk45" => Method::Dopri5,
+            "rk4" | "rkfix4" | "rkfix3" | "rkfix2" | "rkfix" => Method::Rk4,
+            "euler" | "expliciteuler" => Method::Euler,
+            _ if s.starts_with("esdirk") || s.starts_with("sdirk") || s == "dirk" => Method::Esdirk,
             _ => return None,
         })
+    }
+
+    /// Lower-case name as `--method` takes it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Method::Bdf => "bdf",
+            Method::Dopri5 => "dopri5",
+            Method::Rk4 => "rk4",
+            Method::Euler => "euler",
+            Method::Radau => "radau",
+            Method::Esdirk => "esdirk",
+            Method::Auto => "auto",
+        }
     }
 }
 
@@ -56,6 +85,13 @@ pub struct SimOptions {
     /// Abort after this many seconds of wall-clock time (0 = no limit).
     #[serde(default)]
     pub max_wall_time: f64,
+    /// Record a performance profile and event log (see [`crate::profile`] and
+    /// [`simulate_profiled`]). Off by default: it costs time.
+    #[serde(default)]
+    pub profile: bool,
+    /// State Jacobian of the implicit methods: exact (tape tangents) or differences.
+    #[serde(default)]
+    pub jacobian: JacobianMode,
 }
 
 impl Default for SimOptions {
@@ -73,6 +109,8 @@ impl Default for SimOptions {
             max_event_rows: 0,
             params: Vec::new(),
             max_wall_time: 0.0,
+            profile: false,
+            jacobian: JacobianMode::Exact,
         }
     }
 }
@@ -115,6 +153,8 @@ pub struct SimStats {
     pub jacobian_colors: usize,
     pub init_ms: f64,
     pub sim_ms: f64,
+    /// The integration method used (`--method` name).
+    pub method: String,
 }
 
 /// Columns stored in the result: all time-varying, non-hidden variables.
@@ -223,6 +263,8 @@ pub struct Simulation<'m> {
     delay_events: Vec<f64>,
     /// Event indicators of the external components at the last accepted point.
     ext_z: Vec<f64>,
+    /// Performance profile being recorded (`SimOptions::profile`).
+    prof: Option<Box<crate::profile::Profiler>>,
 }
 
 #[derive(Debug)]
@@ -251,6 +293,7 @@ impl<'m> Simulation<'m> {
             stats: SimStats::default(),
             delay_events: Vec::new(),
             ext_z: Vec::new(),
+            prof: None,
         }
     }
 
@@ -430,6 +473,9 @@ impl<'m> Simulation<'m> {
                         self.rt.run(&m.when_prog);
                     }
                     fired.push(wi);
+                    if let Some(p) = self.prof.as_deref_mut() {
+                        p.when_fired(wi, bi);
+                    }
                     let chained = w.chained[bi];
                     for (k, a) in acts.iter().enumerate() {
                         match a {
@@ -756,7 +802,37 @@ impl<'m> Simulation<'m> {
     }
 
     /// Run the whole simulation.
-    pub fn run(mut self) -> Result<(Results, SimStats), SimError> {
+    pub fn run(self) -> Result<(Results, SimStats), SimError> {
+        self.run_profiled().0
+    }
+
+    /// Run the whole simulation; with `SimOptions::profile` also return its performance
+    /// profile (on failure too, up to where the run stopped).
+    pub fn run_profiled(
+        mut self,
+    ) -> (
+        Result<(Results, SimStats), SimError>,
+        Option<crate::profile::Profile>,
+    ) {
+        let m = self.rt.m;
+        if self.opts.profile {
+            self.prof = Some(Box::new(crate::profile::Profiler::new(m)));
+            self.rt.prof = Some(Box::new(crate::profile::BlockProf::new(m)));
+        }
+        let r = self.run_inner();
+        let span = self.opts.stop_time - self.opts.start_time;
+        let method = format!("{:?}", self.opts.method);
+        let profile = self.prof.take().map(|p| {
+            let s = match &r {
+                Ok((_, s)) => s,
+                Err(_) => &self.stats,
+            };
+            p.finish(m, self.rt.prof.take(), s, &method, span)
+        });
+        (r, profile)
+    }
+
+    fn run_inner(&mut self) -> Result<(Results, SimStats), SimError> {
         let m = self.rt.m;
         let (mut rec, order) = Recorder::new(m);
         let t_init = crate::backend::web_time_now();
@@ -765,6 +841,9 @@ impl<'m> Simulation<'m> {
                 message: e,
                 partial: None,
             });
+        }
+        if let Some(p) = self.prof.as_deref_mut() {
+            p.initial_event(self.rt.time());
         }
         // Parameter values into the result.
         self.rt.run(&m.outputs);
@@ -786,7 +865,7 @@ impl<'m> Simulation<'m> {
             rec.res.log.push(format!("terminated: {msg}"));
         }
         match r {
-            Ok(()) => Ok((rec.res, self.stats)),
+            Ok(()) => Ok((rec.res, self.stats.clone())),
             Err(e) => Err(SimError {
                 message: e,
                 partial: Some(rec.res),
@@ -796,6 +875,11 @@ impl<'m> Simulation<'m> {
 
     fn integrate(&mut self, rec: &mut Recorder) -> Result<(), String> {
         let mut st = self.make_stepper();
+        if self.prof.is_some()
+            && let Some(p) = st.solver.probe()
+        {
+            p.enable(self.rt.m.states.len());
+        }
         rec.record(&mut self.rt);
         self.restart(&mut st);
         st.event_budget = if self.opts.max_event_rows > 0 {
@@ -852,11 +936,37 @@ impl<'m> Simulation<'m> {
         }
         let rtol = o.tolerance;
         let atol = o.tolerance;
+        self.stats.method = o.method.name().to_string();
+        // FMU components: the tape does not see through them (their derivatives and
+        // outputs are set from outside), so the state Jacobian is dense and by
+        // differences of the right-hand side.
+        let full: Vec<Vec<u32>>;
+        let (pattern, jacobian) = if m.externals.is_empty() {
+            (&m.jac_pattern, o.jacobian)
+        } else {
+            full = vec![(0..n as u32).collect(); n];
+            (&full, JacobianMode::Fd)
+        };
         let solver: Box<dyn Integrator> = match o.method {
             Method::Bdf => {
-                let b = Bdf::new(n, rtol, atol, max_step, &m.jac_pattern);
+                let b = Bdf::new(n, rtol, atol, max_step, pattern).with_jacobian(jacobian);
                 self.stats.jacobian_colors = b.n_colors();
                 Box::new(b)
+            }
+            Method::Radau => {
+                let r = Radau5::new(n, rtol, atol, max_step, pattern, jacobian);
+                self.stats.jacobian_colors = r.n_colors();
+                Box::new(r)
+            }
+            Method::Esdirk => {
+                let e = Esdirk::new(n, rtol, atol, max_step, pattern, jacobian);
+                self.stats.jacobian_colors = e.n_colors();
+                Box::new(e)
+            }
+            Method::Auto => {
+                let b = Bdf::new(n, rtol, atol, max_step, pattern).with_jacobian(jacobian);
+                self.stats.jacobian_colors = b.n_colors();
+                Box::new(AutoSwitch::new(Dopri5::new(n, rtol, atol, max_step), b))
             }
             Method::Dopri5 => Box::new(Dopri5::new(n, rtol, atol, max_step)),
             Method::Rk4 => Box::new(FixedStep::new(
@@ -1005,7 +1115,12 @@ impl<'m> Simulation<'m> {
             } else {
                 t_lim
             };
+            let s0 = self.prof.as_ref().map(|_| st.solver.stats());
             let tn = st.solver.step(&mut self.rt, t_lim)?;
+            if let (Some(s0), Some(p)) = (s0, self.prof.as_deref_mut()) {
+                p.on_step(&mut *st.solver, s0);
+            }
+            self.log.extend(st.solver.take_log());
             let tp = st.solver.t_prev();
             self.rt.error = None;
             // Event detection at the end of the step.
@@ -1092,6 +1207,7 @@ impl<'m> Simulation<'m> {
             }
             let t_end = event_t.unwrap_or(tn);
             // Output points inside the step (before the event).
+            let t_out = self.prof.as_ref().map(|_| crate::profile::now());
             if let Some(rec) = rec.as_deref_mut() {
                 while next_out(st.k_out) <= t_end * (1.0 + 1e-14) + 1e-300
                     && next_out(st.k_out) <= o.stop_time * (1.0 + 1e-14)
@@ -1107,6 +1223,9 @@ impl<'m> Simulation<'m> {
                     self.check_asserts()?;
                     st.k_out += 1;
                 }
+            }
+            if let (Some(t0), Some(p)) = (t_out, self.prof.as_deref_mut()) {
+                p.output_secs += crate::profile::now() - t0;
             }
             if let Some(te) = event_t {
                 if te - st.last_event <= 1e-10 * te.abs().max(1.0) {
@@ -1140,6 +1259,7 @@ impl<'m> Simulation<'m> {
                 self.rt.delay_right = false;
                 st.solver.interpolate(te, &mut st.xi);
                 self.rt.rhs(te, &st.xi, &mut st.x);
+                let snap = self.prof.as_deref_mut().map(|p| p.event_begin(&self.rt));
                 let store = o.store_events && st.event_rows < event_budget && rec.is_some();
                 if store && let Some(rec) = rec.as_deref_mut() {
                     rec.record(&mut self.rt);
@@ -1157,6 +1277,14 @@ impl<'m> Simulation<'m> {
                 self.event_iteration_ext(true)?;
                 self.check_newton("event")?;
                 self.record_delays();
+                if let (Some(snap), Some(p)) = (snap, self.prof.as_deref_mut()) {
+                    let trigger = if time_event {
+                        crate::profile::Trigger::Time
+                    } else {
+                        crate::profile::Trigger::Crossing
+                    };
+                    p.event_end(snap, &self.rt, te, trigger);
+                }
                 if let Some(rec) = rec.as_deref_mut() {
                     if store {
                         rec.record(&mut self.rt);
@@ -1245,9 +1373,13 @@ impl<'m> Simulation<'m> {
             self.stats.events += 1;
             st.last_event = t_end;
             self.rt.delay_right = true;
+            let snap = self.prof.as_deref_mut().map(|p| p.event_begin(&self.rt));
             self.event_iteration_ext(true)?;
             self.check_newton("event")?;
             self.record_delays();
+            if let (Some(snap), Some(p)) = (snap, self.prof.as_deref_mut()) {
+                p.event_end(snap, &self.rt, t_end, crate::profile::Trigger::Time);
+            }
         }
         Ok(due)
     }
@@ -1378,9 +1510,20 @@ pub fn simulate(m: &Model, opts: SimOptions) -> Result<(Results, SimStats), SimE
     Simulation::new(m, opts).run()
 }
 
+/// Simulate and, with `opts.profile`, return the performance profile and event log.
+pub fn simulate_profiled(
+    m: &Model,
+    opts: SimOptions,
+) -> (
+    Result<(Results, SimStats), SimError>,
+    Option<crate::profile::Profile>,
+) {
+    Simulation::new(m, opts).run_profiled()
+}
+
 /// Whether a relation's text reads `time` as a whole word, on either side (`time >= T`,
 /// `1 <= time`), as opposed to a name that only contains it (`timer.y`, `t.time0`).
-fn mentions_time(text: &str) -> bool {
+pub(crate) fn mentions_time(text: &str) -> bool {
     let ident = |c: char| c.is_alphanumeric() || c == '_' || c == '.';
     text.match_indices("time").any(|(i, _)| {
         !text[..i].chars().next_back().is_some_and(ident)

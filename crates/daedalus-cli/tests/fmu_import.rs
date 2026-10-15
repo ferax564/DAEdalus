@@ -355,6 +355,22 @@ fn closed_loop_and_ssp() {
     let me = Csv::read(&s.path("ME.csv"));
     assert!(deviation(&reference, "plant.y", &me, "plant.y") < 1e-5);
     assert!(deviation(&reference, "ctrl.u", &me, "ctrl.u") < 1e-5);
+    // every integrator (the implicit ones with a difference Jacobian through the FMUs)
+    for method in ["bdf", "radau", "esdirk", "auto", "dopri5"] {
+        let out = format!("ME_{method}.csv");
+        daedalus(
+            &s,
+            &rt,
+            &[
+                "simulate", ".", "-m", "LoopME", "--method", method, "-o", &out, "--vars", vars,
+            ],
+        );
+        let r = Csv::read(&s.path(&out));
+        for v in ["plant.y", "ctrl.u"] {
+            let d = deviation(&reference, v, &r, v);
+            assert!(d < 1e-4, "{method} {v}: {d}");
+        }
+    }
     // Co-Simulation: inputs held over a step (h = 0.01): O(h) error, here mostly the
     // reference step reaching the plant one or two communication steps late.
     let cs = Csv::read(&s.path("CS.csv")).right();

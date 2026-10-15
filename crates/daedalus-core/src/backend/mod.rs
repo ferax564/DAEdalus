@@ -14,6 +14,8 @@ pub mod eval;
 pub mod graph;
 pub mod index;
 pub mod sort;
+pub mod state_select;
+pub mod trace;
 
 use crate::expr::{Arena, ExprId, Node, VarId};
 use crate::flat::*;
@@ -100,6 +102,8 @@ pub struct System {
     pub stats: Stats,
     pub warnings: Vec<String>,
     pub origins: Vec<String>,
+    /// Structural record for the structure report (only with [`Options::trace`]).
+    pub trace: Option<trace::Trace>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -138,6 +142,7 @@ pub struct Work {
     pub init_only: FxHashSet<VarId>,
     /// `(v, p)`: initialization solved `pre(v)` as variable `p`.
     pub pre_init: Vec<(VarId, VarId)>,
+    pub trace: Option<trace::Trace>,
 }
 
 impl Work {
@@ -210,9 +215,14 @@ impl Work {
     }
 }
 
+#[derive(Clone, Debug)]
 pub struct Options {
     pub index_reduction: bool,
     pub tearing: bool,
+    /// `stateSelect` overrides applied before index reduction (later ones win).
+    pub state_overrides: Vec<state_select::StateOverride>,
+    /// Keep a [`trace::Trace`] of the structural decisions in [`System::trace`].
+    pub trace: bool,
 }
 
 impl Default for Options {
@@ -220,6 +230,8 @@ impl Default for Options {
         Options {
             index_reduction: true,
             tearing: true,
+            state_overrides: Vec::new(),
+            trace: false,
         }
     }
 }
@@ -247,6 +259,8 @@ pub fn compile(flat: FlatModel, opts: &Options) -> Result<System> {
         externals,
     } = flat;
     let mut vars = vars;
+    let mut warnings = warnings;
+    let applied = state_select::apply(&mut vars, &opts.state_overrides, &mut warnings);
     let mut arena = arena;
     let mut initial_equations = initial_equations;
     let mut origins = origins;
@@ -360,6 +374,10 @@ pub fn compile(flat: FlatModel, opts: &Options) -> Result<System> {
         invariant_eqs: FxHashSet::default(),
         init_only,
         pre_init: Vec::new(),
+        trace: opts.trace.then(|| trace::Trace {
+            overrides: applied,
+            ..Default::default()
+        }),
     };
 
     // 1. Parameters
@@ -501,6 +519,7 @@ pub fn compile(flat: FlatModel, opts: &Options) -> Result<System> {
         stats,
         warnings: w.warnings,
         origins: w.origins,
+        trace: w.trace,
     })
 }
 

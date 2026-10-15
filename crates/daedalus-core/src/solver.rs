@@ -1,20 +1,19 @@
 //! Time integrators for the state-space form `dx/dt = f(t, x)` produced by the
 //! symbolic backend.
 //!
-//! * [`Bdf`]: variable-order (1-5) variable-step BDF/NDF with a colored
-//!   finite-difference Jacobian, the stiff default (the role DASSL plays in Dymola).
+//! * [`Bdf`]: variable-order (1-5) variable-step BDF/NDF with a colored exact (or
+//!   finite-difference) Jacobian, the stiff default (the role DASSL plays in Dymola).
 //! * [`Dopri5`]: explicit Dormand–Prince 5(4) with 4th-order dense output.
 //! * [`FixedStep`]: explicit Euler and classic RK4 for real-time use.
+//! * [`crate::solver_radau::Radau5`], [`crate::solver_esdirk::Esdirk`] and
+//!   [`crate::solver_auto::AutoSwitch`] live in their own modules.
 //!
 //! All integrators expose dense output so the simulation driver can place
 //! output points and locate events without restricting the step size.
 
 use crate::codegen::Runtime;
-use crate::linalg::{lu_factor, lu_solve};
-use crate::sparse::{Csc, SparseLu, min_degree};
-
-/// Systems larger than this use the sparse LU.
-const DENSE_LIMIT: usize = 48;
+use crate::profile::StepProbe;
+use crate::solver_jac::{JacobianMode, RealSystem, StateJac};
 
 #[derive(Clone, Copy, Debug, Default, serde::Serialize)]
 pub struct SolverStats {
@@ -25,6 +24,30 @@ pub struct SolverStats {
     pub rhs_evals: u64,
     pub jac_evals: u64,
     pub lu_factorizations: u64,
+    /// Forward-mode tape passes for exact Jacobians (one per color group).
+    pub tangent_evals: u64,
+    /// Explicit steps whose size was limited by stability (Hairer's stiffness test,
+    /// `h |lambda| > 3.25`): many of them mean the problem is stiff.
+    pub stiff_steps: u64,
+    /// Switches between the non-stiff and the stiff method (`auto`).
+    pub switches: u64,
+}
+
+impl SolverStats {
+    /// Sum of the counters of two integrators (used by the switching method).
+    pub fn add(&self, o: &SolverStats) -> SolverStats {
+        SolverStats {
+            steps: self.steps + o.steps,
+            rejected: self.rejected + o.rejected,
+            newton_failures: self.newton_failures + o.newton_failures,
+            rhs_evals: self.rhs_evals + o.rhs_evals,
+            jac_evals: self.jac_evals + o.jac_evals,
+            lu_factorizations: self.lu_factorizations + o.lu_factorizations,
+            tangent_evals: self.tangent_evals + o.tangent_evals,
+            stiff_steps: self.stiff_steps + o.stiff_steps,
+            switches: self.switches + o.switches,
+        }
+    }
 }
 
 pub trait Integrator {
@@ -37,9 +60,18 @@ pub trait Integrator {
     /// Dense output on the last step `[t_prev, t]`.
     fn interpolate(&self, t: f64, out: &mut [f64]);
     fn stats(&self) -> SolverStats;
+    /// Per-step diagnostics for the performance analyzer (see [`StepProbe`]); an
+    /// integrator without them still has its steps and rejections profiled.
+    fn probe(&mut self) -> Option<&mut StepProbe> {
+        None
+    }
+    /// Messages for the simulation log since the last call (method switches).
+    fn take_log(&mut self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
-fn rms(v: impl Iterator<Item = f64>, n: usize) -> f64 {
+pub(crate) fn rms(v: impl Iterator<Item = f64>, n: usize) -> f64 {
     if n == 0 {
         return 0.0;
     }
@@ -47,7 +79,8 @@ fn rms(v: impl Iterator<Item = f64>, n: usize) -> f64 {
 }
 
 /// Hairer's initial step size heuristic.
-fn initial_step(
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn initial_step(
     rt: &mut Runtime,
     t: f64,
     x: &[f64],
@@ -100,7 +133,12 @@ pub struct Dopri5 {
     k: [Vec<f64>; 7],
     cont: [Vec<f64>; 5],
     tmp: Vec<f64>,
+    /// Argument of stage 6 (for the stiffness test).
+    ysti: Vec<f64>,
+    /// `h |lambda|` estimate of the last accepted step (Hairer's stiffness test).
+    pub hlamb: f64,
     stats: SolverStats,
+    probe: StepProbe,
 }
 
 impl Dopri5 {
@@ -117,8 +155,16 @@ impl Dopri5 {
             k: [z(), z(), z(), z(), z(), z(), z()],
             cont: [z(), z(), z(), z(), z()],
             tmp: z(),
+            ysti: z(),
+            hlamb: 0.0,
             stats: SolverStats::default(),
+            probe: StepProbe::default(),
         }
+    }
+
+    /// The step size the next step will try.
+    pub fn next_step(&self) -> f64 {
+        self.h
     }
 }
 
@@ -227,6 +273,9 @@ impl Integrator for Dopri5 {
                     }
                     self.tmp[i] = acc;
                 }
+                if s == 5 {
+                    self.ysti.copy_from_slice(&self.tmp);
+                }
                 let (_, rest) = self.k.split_at_mut(s);
                 rt.rhs(self.t + C[s] * h, &self.tmp, &mut rest[0]);
                 self.stats.rhs_evals += 1;
@@ -242,10 +291,14 @@ impl Integrator for Dopri5 {
                 }
                 e *= h;
                 let sk = self.atol + self.rtol * self.x[i].abs().max(self.tmp[i].abs());
+                if self.probe.enabled {
+                    self.probe.err[i] = e / sk;
+                }
                 err += (e / sk) * (e / sk);
             }
             err = (err / n as f64).sqrt();
             if !err.is_finite() {
+                self.probe.reject(self.t, h, false);
                 self.h = h * 0.25;
                 self.stats.rejected += 1;
                 if self.h < min_h {
@@ -254,6 +307,22 @@ impl Integrator for Dopri5 {
                 continue;
             }
             if err <= 1.0 {
+                // Stiffness test: stages 6 and 7 are both at t + h, so the difference
+                // quotient of f between their arguments estimates the dominant |lambda|.
+                let mut stnum = 0.0;
+                let mut stden = 0.0;
+                for i in 0..n {
+                    stnum += (self.k[6][i] - self.k[5][i]).powi(2);
+                    stden += (self.tmp[i] - self.ysti[i]).powi(2);
+                }
+                self.hlamb = if stden > 0.0 {
+                    h * (stnum / stden).sqrt()
+                } else {
+                    0.0
+                };
+                if self.hlamb > 3.25 {
+                    self.stats.stiff_steps += 1;
+                }
                 // Dense output coefficients.
                 for i in 0..n {
                     let y0 = self.x[i];
@@ -278,11 +347,13 @@ impl Integrator for Dopri5 {
                 let (first, rest) = self.k.split_at_mut(1);
                 first[0].copy_from_slice(&rest[5]);
                 self.stats.steps += 1;
+                self.probe.accept(5);
                 let fac = (0.9 * err.max(1e-10).powf(-0.2)).clamp(0.2, 10.0);
                 self.h = h * fac;
                 return Ok(self.t);
             }
             self.stats.rejected += 1;
+            self.probe.reject(self.t, h, false);
             let fac = (0.9 * err.powf(-0.2)).clamp(0.2, 1.0);
             self.h = h * fac;
             if self.h < min_h {
@@ -316,6 +387,9 @@ impl Integrator for Dopri5 {
     fn stats(&self) -> SolverStats {
         self.stats
     }
+    fn probe(&mut self) -> Option<&mut StepProbe> {
+        Some(&mut self.probe)
+    }
 }
 
 // ----------------------------------------------------------------------------
@@ -339,9 +413,9 @@ pub struct Bdf {
     n_equal_steps: usize,
     d: Vec<Vec<f64>>,
     d_dense: Vec<Vec<f64>>,
-    jac: Vec<f64>,
-    lu: Vec<f64>,
-    piv: Vec<usize>,
+    jac: StateJac,
+    /// Iteration matrix `I - c J`, factored as `(1/c) I - J`.
+    sys: RealSystem,
     lu_valid: bool,
     jac_current: bool,
     jac_needed: bool,
@@ -349,12 +423,9 @@ pub struct Bdf {
     gamma: [f64; MAX_ORDER + 1],
     alpha: [f64; MAX_ORDER + 1],
     error_const: [f64; MAX_ORDER + 2],
-    colors: Vec<Vec<usize>>,
-    rows_of_col: Vec<Vec<usize>>,
-    /// Sparse iteration matrix `I - c J` (structure = pattern + diagonal).
-    sp: Option<(Csc, Vec<f64>, Vec<bool>, SparseLu)>,
     x: Vec<f64>,
     stats: SolverStats,
+    probe: StepProbe,
 }
 
 impl Bdf {
@@ -374,75 +445,13 @@ impl Bdf {
             error_const[k] = kappa[k] * gamma[k] + 1.0 / (k as f64 + 1.0);
         }
         error_const[MAX_ORDER + 1] = 1.0 / (MAX_ORDER as f64 + 2.0);
-        // Column coloring for the finite-difference Jacobian.
-        let mut rows_of_col: Vec<Vec<usize>> = vec![Vec::new(); n];
-        for (i, deps) in pattern.iter().enumerate() {
-            for &j in deps {
-                rows_of_col[j as usize].push(i);
-            }
-        }
-        let mut color_of = vec![usize::MAX; n];
-        let mut colors: Vec<Vec<usize>> = Vec::new();
-        for j in 0..n {
-            // Find the first color not used by any column sharing a row with j.
-            let mut forbidden: Vec<usize> = Vec::new();
-            for &r in &rows_of_col[j] {
-                for &k in &pattern[r] {
-                    let c = color_of[k as usize];
-                    if c != usize::MAX {
-                        forbidden.push(c);
-                    }
-                }
-            }
-            forbidden.sort_unstable();
-            forbidden.dedup();
-            let mut c = 0;
-            for &f in &forbidden {
-                if f == c {
-                    c += 1;
-                } else if f > c {
-                    break;
-                }
-            }
-            color_of[j] = c;
-            if c == colors.len() {
-                colors.push(Vec::new());
-            }
-            colors[c].push(j);
-        }
-        let sp = if n > DENSE_LIMIT {
-            let cols: Vec<Vec<usize>> = (0..n)
-                .map(|j| {
-                    let mut c = rows_of_col[j].clone();
-                    c.push(j);
-                    c.sort_unstable();
-                    c.dedup();
-                    c
-                })
-                .collect();
-            let m = Csc::from_columns(n, &cols);
-            let in_pat: Vec<bool> = (0..n)
-                .flat_map(|j| {
-                    let r = &rows_of_col[j];
-                    cols[j]
-                        .iter()
-                        .map(move |i| r.contains(i))
-                        .collect::<Vec<_>>()
-                })
-                .collect();
-            let q = min_degree(&m);
-            let nnz = m.nnz();
-            Some((m, vec![0.0; nnz], in_pat, SparseLu::new(q)))
-        } else {
-            None
-        };
-        let dense_n = if sp.is_some() { 0 } else { n };
+        let jac = StateJac::new(n, pattern, JacobianMode::Exact);
+        let sys = RealSystem::new(&jac);
         Bdf {
             rtol,
             atol,
             max_step,
             n,
-            sp,
             t: 0.0,
             t_old: 0.0,
             h_abs: 0.0,
@@ -452,9 +461,8 @@ impl Bdf {
             n_equal_steps: 0,
             d: vec![vec![0.0; n]; MAX_ORDER + 3],
             d_dense: vec![vec![0.0; n]; MAX_ORDER + 1],
-            jac: vec![0.0; dense_n * dense_n],
-            lu: vec![0.0; dense_n * dense_n],
-            piv: vec![0; n],
+            jac,
+            sys,
             lu_valid: false,
             jac_current: false,
             jac_needed: true,
@@ -462,82 +470,38 @@ impl Bdf {
             gamma,
             alpha,
             error_const,
-            colors,
-            rows_of_col,
             x: vec![0.0; n],
             stats: SolverStats::default(),
+            probe: StepProbe::default(),
         }
     }
 
     pub fn n_colors(&self) -> usize {
-        self.colors.len()
+        self.jac.n_colors()
     }
 
-    /// Finite-difference Jacobian at `(t, y)`; false if the model could not be evaluated
-    /// there (an algebraic loop failed or a derivative is not finite).
+    /// Choose how the Jacobian is computed (exact by default).
+    pub fn with_jacobian(mut self, mode: JacobianMode) -> Self {
+        self.jac.mode = mode;
+        self
+    }
+
+    /// The Jacobian evaluated last.
+    pub fn jacobian(&self) -> &StateJac {
+        &self.jac
+    }
+
+    /// Jacobian at `(t, y)`; false if the model could not be evaluated there (an
+    /// algebraic loop failed or a derivative is not finite).
     fn compute_jac(&mut self, rt: &mut Runtime, t: f64, y: &[f64]) -> bool {
-        let n = self.n;
-        let mut f0 = vec![0.0; n];
-        rt.rhs(t, y, &mut f0);
-        let mut ok = rt.error.is_none() && f0.iter().all(|v| v.is_finite());
-        let mut yp = y.to_vec();
-        let mut f1 = vec![0.0; n];
-        self.jac.fill(0.0);
-        let dense = self.sp.is_none();
-        let eps = f64::EPSILON.sqrt();
-        for group in &self.colors {
-            let mut hs = Vec::with_capacity(group.len());
-            for &j in group {
-                let h = eps * y[j].abs().max(self.atol / self.rtol.max(1e-12)).max(1e-8);
-                yp[j] = y[j] + h;
-                hs.push(h);
-            }
-            rt.rhs(t, &yp, &mut f1);
-            self.stats.rhs_evals += 1;
-            ok &= rt.error.is_none() && f1.iter().all(|v| v.is_finite());
-            for (&j, &h) in group.iter().zip(&hs) {
-                if dense {
-                    for &i in &self.rows_of_col[j] {
-                        self.jac[i * n + j] = (f1[i] - f0[i]) / h;
-                    }
-                } else if let Some((m, jv, in_pat, _)) = &mut self.sp {
-                    for p in m.colptr[j]..m.colptr[j + 1] {
-                        let i = m.rowidx[p];
-                        jv[p] = if in_pat[p] { (f1[i] - f0[i]) / h } else { 0.0 };
-                    }
-                }
-                yp[j] = y[j];
-            }
-        }
-        self.stats.rhs_evals += 1;
-        self.stats.jac_evals += 1;
-        rt.error = None;
-        ok
+        self.jac
+            .compute(rt, t, y, self.atol, self.rtol, &mut self.stats)
     }
 
     fn factor(&mut self, c: f64) -> bool {
-        let n = self.n;
-        if let Some((m, jv, _, lu)) = &mut self.sp {
-            for j in 0..n {
-                for p in m.colptr[j]..m.colptr[j + 1] {
-                    let i = m.rowidx[p];
-                    m.vals[p] = if i == j { 1.0 } else { 0.0 } - c * jv[p];
-                }
-            }
-            self.stats.lu_factorizations += 1;
-            self.lu_c = c;
-            self.lu_valid = lu.factor(m, 0.001);
-            return self.lu_valid;
-        }
-        for i in 0..n {
-            for j in 0..n {
-                self.lu[i * n + j] = -c * self.jac[i * n + j];
-            }
-            self.lu[i * n + i] += 1.0;
-        }
         self.stats.lu_factorizations += 1;
         self.lu_c = c;
-        self.lu_valid = lu_factor(&mut self.lu, n, &mut self.piv);
+        self.lu_valid = self.sys.factor(&self.jac, 1.0 / c);
         self.lu_valid
     }
 
@@ -615,7 +579,6 @@ impl Integrator for Bdf {
         self.d[1].copy_from_slice(&f);
         self.dense_order = 0;
         self.d_dense[0].copy_from_slice(x);
-        self.jac.fill(0.0);
         self.jac_needed = true;
     }
 
@@ -739,13 +702,11 @@ impl Integrator for Bdf {
                         rt.error = None;
                         break;
                     }
+                    // (I - c J) dy = r  <=>  (I/c - J) dy = r / c
                     for i in 0..n {
-                        dy[i] = c * f[i] - psi[i] - dsum[i];
+                        dy[i] = f[i] - (psi[i] + dsum[i]) / c;
                     }
-                    match &mut self.sp {
-                        Some((_, _, _, lu)) => lu.solve(&mut dy),
-                        None => lu_solve(&self.lu, n, &self.piv, &mut dy),
-                    }
+                    self.sys.solve(&mut dy);
                     let dy_norm = rms(dy.iter().zip(&scale).map(|(a, s)| a / s), n);
                     let rate = dy_norm_old.map(|o| dy_norm / o);
                     if let Some(r) = rate
@@ -779,6 +740,7 @@ impl Integrator for Bdf {
                 self.lu_valid = false;
             }
             if !converged {
+                self.probe.reject(self.t, h, true);
                 self.stats.rejected += 1;
                 self.stats.newton_failures += 1;
                 self.h_abs *= 0.5;
@@ -795,12 +757,19 @@ impl Integrator for Bdf {
             let ec = self.error_const[order];
             let en = rms(dsum.iter().zip(&scale).map(|(d, s)| ec * d / s), n);
             if en > 1.0 {
+                self.probe.reject(self.t, h, false);
                 self.stats.rejected += 1;
                 let factor = (s * en.powf(-1.0 / (order as f64 + 1.0))).max(0.2);
                 self.h_abs *= factor;
                 self.change_d(factor);
                 self.n_equal_steps = 0;
                 continue;
+            }
+            if self.probe.enabled {
+                for i in 0..n {
+                    self.probe.err[i] = ec * dsum[i] / scale[i];
+                }
+                self.probe.accept(order as u32);
             }
             safety = s;
             error_norm = en;
@@ -903,6 +872,9 @@ impl Integrator for Bdf {
     }
     fn stats(&self) -> SolverStats {
         self.stats
+    }
+    fn probe(&mut self) -> Option<&mut StepProbe> {
+        Some(&mut self.probe)
     }
 }
 
