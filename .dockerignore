@@ -6,5 +6,6 @@ web/src/wasm
 web/public/msl
 web/public/conformance
 **/*.log
-docs
+docs/*
+!docs/conformance
 tools
