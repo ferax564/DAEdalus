@@ -11,6 +11,7 @@
 
 use crate::codegen::Runtime;
 use crate::linalg::{lu_factor, lu_solve};
+use crate::profile::StepProbe;
 use crate::sparse::{Csc, SparseLu, min_degree};
 
 /// Systems larger than this use the sparse LU.
@@ -37,6 +38,11 @@ pub trait Integrator {
     /// Dense output on the last step `[t_prev, t]`.
     fn interpolate(&self, t: f64, out: &mut [f64]);
     fn stats(&self) -> SolverStats;
+    /// Per-step diagnostics for the performance analyzer (see [`StepProbe`]); an
+    /// integrator without them still has its steps and rejections profiled.
+    fn probe(&mut self) -> Option<&mut StepProbe> {
+        None
+    }
 }
 
 fn rms(v: impl Iterator<Item = f64>, n: usize) -> f64 {
@@ -101,6 +107,7 @@ pub struct Dopri5 {
     cont: [Vec<f64>; 5],
     tmp: Vec<f64>,
     stats: SolverStats,
+    probe: StepProbe,
 }
 
 impl Dopri5 {
@@ -118,6 +125,7 @@ impl Dopri5 {
             cont: [z(), z(), z(), z(), z()],
             tmp: z(),
             stats: SolverStats::default(),
+            probe: StepProbe::default(),
         }
     }
 }
@@ -242,10 +250,14 @@ impl Integrator for Dopri5 {
                 }
                 e *= h;
                 let sk = self.atol + self.rtol * self.x[i].abs().max(self.tmp[i].abs());
+                if self.probe.enabled {
+                    self.probe.err[i] = e / sk;
+                }
                 err += (e / sk) * (e / sk);
             }
             err = (err / n as f64).sqrt();
             if !err.is_finite() {
+                self.probe.reject(self.t, h, false);
                 self.h = h * 0.25;
                 self.stats.rejected += 1;
                 if self.h < min_h {
@@ -278,11 +290,13 @@ impl Integrator for Dopri5 {
                 let (first, rest) = self.k.split_at_mut(1);
                 first[0].copy_from_slice(&rest[5]);
                 self.stats.steps += 1;
+                self.probe.accept(5);
                 let fac = (0.9 * err.max(1e-10).powf(-0.2)).clamp(0.2, 10.0);
                 self.h = h * fac;
                 return Ok(self.t);
             }
             self.stats.rejected += 1;
+            self.probe.reject(self.t, h, false);
             let fac = (0.9 * err.powf(-0.2)).clamp(0.2, 1.0);
             self.h = h * fac;
             if self.h < min_h {
@@ -315,6 +329,9 @@ impl Integrator for Dopri5 {
     }
     fn stats(&self) -> SolverStats {
         self.stats
+    }
+    fn probe(&mut self) -> Option<&mut StepProbe> {
+        Some(&mut self.probe)
     }
 }
 
@@ -355,6 +372,7 @@ pub struct Bdf {
     sp: Option<(Csc, Vec<f64>, Vec<bool>, SparseLu)>,
     x: Vec<f64>,
     stats: SolverStats,
+    probe: StepProbe,
 }
 
 impl Bdf {
@@ -466,6 +484,7 @@ impl Bdf {
             rows_of_col,
             x: vec![0.0; n],
             stats: SolverStats::default(),
+            probe: StepProbe::default(),
         }
     }
 
@@ -779,6 +798,7 @@ impl Integrator for Bdf {
                 self.lu_valid = false;
             }
             if !converged {
+                self.probe.reject(self.t, h, true);
                 self.stats.rejected += 1;
                 self.stats.newton_failures += 1;
                 self.h_abs *= 0.5;
@@ -795,12 +815,19 @@ impl Integrator for Bdf {
             let ec = self.error_const[order];
             let en = rms(dsum.iter().zip(&scale).map(|(d, s)| ec * d / s), n);
             if en > 1.0 {
+                self.probe.reject(self.t, h, false);
                 self.stats.rejected += 1;
                 let factor = (s * en.powf(-1.0 / (order as f64 + 1.0))).max(0.2);
                 self.h_abs *= factor;
                 self.change_d(factor);
                 self.n_equal_steps = 0;
                 continue;
+            }
+            if self.probe.enabled {
+                for i in 0..n {
+                    self.probe.err[i] = ec * dsum[i] / scale[i];
+                }
+                self.probe.accept(order as u32);
             }
             safety = s;
             error_norm = en;
@@ -903,6 +930,9 @@ impl Integrator for Bdf {
     }
     fn stats(&self) -> SolverStats {
         self.stats
+    }
+    fn probe(&mut self) -> Option<&mut StepProbe> {
+        Some(&mut self.probe)
     }
 }
 

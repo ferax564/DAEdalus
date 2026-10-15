@@ -7,6 +7,7 @@ import { TextView } from "./editor";
 import { PlotWindow, displayUnit, interp } from "./plot";
 import { bundledLibrary, readPicked } from "./library";
 import { initAssistant } from "./assistant";
+import { initPerformance, profileRequested, updatePerformance } from "./performance";
 import { drawIcon, newCtx, SVG_NS, systemExtent, IDENTITY, el } from "./graphics";
 import * as experiments from "./experiments";
 import { StructureView, stateOverridesFor } from "./structure";
@@ -59,6 +60,7 @@ $("msg-clear").onclick = () => ($("log").innerHTML = "");
 const diagram = new DiagramView($("view-graphic"), src, classes);
 const text = new TextView($("view-text"));
 const plot = new PlotWindow($("plot"));
+initPerformance(plot);
 
 diagram.onSelect = (c) => showInspector(c);
 diagram.onOpen = (p) => openClass(p);
@@ -315,6 +317,7 @@ function settings(): SimSettings {
   if (overrides.size) s.params = [...overrides.entries()];
   const so = stateOverridesFor(current?.path);
   if (so.length) s.stateOverrides = so;
+  if (profileRequested()) s.profile = true;
   return s;
 }
 
@@ -343,9 +346,11 @@ async function simulate() {
   btn.disabled = true;
   const t0 = performance.now();
   try {
-    const s = await api.simulate(name, settings());
+    const set = settings();
+    const s = await api.simulate(name, set);
     summary = s;
     summaryPath = name;
+    void updatePerformance(!!set.profile);
     if (!s.ok) {
       log(s.error ?? "simulation failed", "err");
       if (!s.vars?.length) return;

@@ -156,6 +156,8 @@ self.onmessage = async (ev: MessageEvent<Req>) => {
         break;
       case "structure":
         result = JSON.parse(w.structure(args[0] as string, JSON.stringify(args[1] ?? {})));
+      case "profile":
+        result = JSON.parse(w.profile());
         break;
       default:
         throw new Error(`unknown op ${op}`);

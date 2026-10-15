@@ -10,6 +10,7 @@ pub mod frontend;
 pub mod linalg;
 pub mod linearize;
 pub mod modal;
+pub mod profile;
 pub mod results;
 pub mod sim;
 pub mod solver;

@@ -106,6 +106,8 @@ export interface SimSettings {
   params?: [string, number][];
   /** stateSelect overrides `[name or glob, tier]` (Structure view). */
   stateOverrides?: [string, string][];
+  /** Record a performance profile and event log (see performance.ts). */
+  profile?: boolean;
 }
 
 /** Progress of loading a library bundle in the worker. */

@@ -1,5 +1,6 @@
 // Promise-based calls into the simulation worker.
 import type { BundleInfo, BundleProgress, ClassEntry, ClassInfo, SimSettings, SimSummary } from "./types";
+import type { Profile } from "./performance";
 
 const worker = new Worker(new URL("./worker.ts", import.meta.url), { type: "module" });
 let nextId = 1;
@@ -67,4 +68,6 @@ export const api = {
   resultCsv: (names: string) => call<string>("resultCsv", names),
   /** Structure report (see structure.ts); `opts.stateOverrides` are `[name, tier]` pairs. */
   structure: (model: string, opts: Record<string, unknown>) => call<unknown>("structure", model, opts),
+  /** Performance profile and event log of the last simulation (null unless profiled). */
+  profile: () => call<Profile | null>("profile"),
 };

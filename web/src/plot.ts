@@ -13,6 +13,8 @@ export interface Series {
   displayUnit?: string;
   /** Overlay from a stored run (experiments.ts): kept as is when a new result arrives. */
   run?: string;
+  /** Draw the samples as dots instead of a line. */
+  points?: boolean;
 }
 
 export interface Subplot {
@@ -22,6 +24,8 @@ export interface Subplot {
   xUnit?: string;
   /** Zoomed x range of a parametric subplot (time subplots share one range). */
   xZoom?: [number, number];
+  /** Logarithmic y axis (values <= 0 are left out). */
+  logY?: boolean;
 }
 
 const PALETTE = ["#0b5fff", "#d9480f", "#2b8a3e", "#ae3ec9", "#e8590c", "#1098ad", "#c2255c", "#5c940d", "#364fc7", "#862e9c"];
@@ -78,6 +82,10 @@ export class PlotWindow {
   private dragNow: number | null = null;
   private colorIndex = 0;
   onChange: () => void = () => {};
+  /** Vertical marker lines at these times (time subplots). */
+  markers: { t: number; color: string }[] = [];
+  /** Shown when nothing is plotted. */
+  emptyText = "Tick variables in the variable browser to plot them";
 
   constructor(private host: HTMLElement) {
     this.canvas = document.createElement("canvas");
@@ -288,6 +296,8 @@ export class PlotWindow {
         g.fillRect(0, top - head, 3, height + head + 26);
       }
       const xr = sp.xName ? this.parametricRange(sp) : timeRange;
+      // Values in axis space (log10 on a logarithmic axis).
+      const ty = sp.logY ? (v: number) => (v > 0 ? Math.log10(v) : NaN) : (v: number) => v;
       // y range of visible part
       let ylo = Infinity;
       let yhi = -Infinity;
@@ -297,7 +307,7 @@ export class PlotWindow {
         for (let i = 0; i < s.y.length; i++) {
           const x = s.x[i];
           if ((!sp.xName || sp.xZoom) && (x < xr[0] || x > xr[1])) continue;
-          const v = s.y[i] * sc + of;
+          const v = ty(s.y[i] * sc + of);
           if (v < ylo) ylo = v;
           if (v > yhi) yhi = v;
         }
@@ -322,13 +332,17 @@ export class PlotWindow {
       g.lineWidth = 1;
       g.textAlign = "right";
       g.textBaseline = "middle";
-      for (const t of niceTicks(ylo, yhi, Math.max(2, Math.floor(height / 40)))) {
+      const yTicks = sp.logY
+        ? niceTicks(ylo, yhi, Math.max(2, Math.floor(height / 40))).filter((t) => Number.isInteger(t))
+        : niceTicks(ylo, yhi, Math.max(2, Math.floor(height / 40)));
+      if (sp.logY && yTicks.length === 0) for (let d = Math.ceil(ylo); d <= yhi; d++) yTicks.push(d);
+      for (const t of yTicks) {
         const y = Math.round(Y(t)) + 0.5;
         g.beginPath();
         g.moveTo(left, y);
         g.lineTo(left + width, y);
         g.stroke();
-        g.fillText(fmtTick(t), left - 6, y);
+        g.fillText(sp.logY ? `1e${t}` : fmtTick(t), left - 6, y);
       }
       g.textAlign = "center";
       g.textBaseline = "top";
@@ -351,8 +365,20 @@ export class PlotWindow {
       g.clip();
       for (const s of sp.series) {
         g.strokeStyle = s.color;
+        g.fillStyle = s.color;
         g.lineWidth = 1.5;
-        this.drawSeries(g, s, xr, X, Y, !!sp.xName);
+        this.drawSeries(g, s, xr, X, sp.logY ? (y: number) => Y(ty(y)) : Y, !!sp.xName);
+      }
+      if (!sp.xName) {
+        for (const m of this.markers) {
+          if (m.t < xr[0] || m.t > xr[1]) continue;
+          g.strokeStyle = m.color;
+          g.lineWidth = 1.5;
+          g.beginPath();
+          g.moveTo(Math.round(X(m.t)) + 0.5, top);
+          g.lineTo(Math.round(X(m.t)) + 0.5, top + height);
+          g.stroke();
+        }
       }
       g.restore();
       // legend
@@ -386,7 +412,7 @@ export class PlotWindow {
         for (const { s, v, text } of lines) {
           g.fillStyle = s.color;
           g.beginPath();
-          g.arc(this.hover.px, Y(v), 3, 0, 2 * Math.PI);
+          g.arc(this.hover.px, Y(ty(v)), 3, 0, 2 * Math.PI);
           g.fill();
           g.fillText(text, boxX, ry);
           ry += 14;
@@ -403,7 +429,7 @@ export class PlotWindow {
       g.fillStyle = muted;
       g.textAlign = "center";
       g.font = "13px system-ui, sans-serif";
-      g.fillText("Tick variables in the variable browser to plot them", W / 2, H / 2);
+      g.fillText(this.emptyText, W / 2, H / 2);
     }
   }
 
@@ -425,6 +451,15 @@ export class PlotWindow {
     if (n === 0) return;
     const sc = s.scale ?? 1;
     const of = s.offset ?? 0;
+    if (s.points) {
+      for (let i = 0; i < n; i++) {
+        if (s.x[i] < xr[0] || s.x[i] > xr[1]) continue;
+        const py = Y(s.y[i] * sc + of);
+        if (!Number.isFinite(py)) continue;
+        g.fillRect(X(s.x[i]) - 2, py - 2, 4, 4);
+      }
+      return;
+    }
     g.beginPath();
     if (parametric || n < 4 * this.canvas.clientWidth) {
       let started = false;

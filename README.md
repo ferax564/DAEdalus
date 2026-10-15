@@ -293,6 +293,47 @@ simulated for 1 s with BDF at tolerance 1e-6, in a release build.
 The nine example models simulate in 2.6 s in total. That includes 11 NEDC laps
 of the EV model, which take 109k steps.
 
+### Profiling a simulation
+
+`--profile` answers "why is my model slow" and "why does it chatter", like
+Dymola's Simulation Analysis and Amesim's Performance Analyzer:
+
+```sh
+./target/release/daedalus simulate library/Daedalus -m Daedalus.Examples.TorqueConverter.Launch \
+    --profile launch-profile.json   # summary on stdout, the full profile as JSON
+./target/release/daedalus simulate model.mo -m M --events   # the event log
+```
+
+A profile records:
+- every accepted step (time, size, order) and the scaled local error estimate
+  of each state, and every rejected step with its reason (error test or Newton
+  failure). From these it finds the states that limit the step size: the
+  state with the largest error term, per step and as a share of all steps;
+- the time, calls, iterations and failures of each algebraic loop (Newton
+  block) and function loop, the explicit equations and the integrator itself,
+  with the equations of each block;
+- each event: its time, whether a state or a time event triggered it, the
+  relations that switched (source text and component), the `when` clauses
+  that fired (`reinit`, `terminate`) and the values that changed;
+- per relation, its switches, first and last time and shortest interval. A
+  relation that switches at least 20 times in a row, each less than 0.05 % of
+  the simulated interval after the previous switch, is reported as chattering;
+- the time split (initialization, integration, events, output) and
+  plain-language hints, e.g. "relation `v > 0` fired 501 times between
+  t=1.019367991845 and 1.019367991895: likely chattering; consider ...".
+
+In the workbench, tick **Profile** next to **Simulate**. A **Performance** tab
+then appears beside the plot. It shows the step size over time (log scale,
+rejected steps in red), a strip of the dominant state per step, the limiting
+states, the block cost table (click a block for its equations), the
+relations, and the event log with a filter. Chattering is highlighted, and
+clicking an event marks its time in both plots.
+
+Profiling is off by default, and then nothing is recorded. Results with and
+without profiling are bit-identical. With profiling on, the run is about 10-35 %
+slower (TorqueConverter.Launch: 4.5 ms to 6.5 ms; the 1000-mass chain: 344 ms
+to 453 ms).
+
 ## Layout
 
 | Path | What |

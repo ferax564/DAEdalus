@@ -31,6 +31,10 @@
   the tape, implicit differentiation of algebraic loops) at the initial point or
   after simulating to a time; text, JSON or an OpenModelica-style
   `linearized_model`.
+- Performance analyzer and event log (`simulate --profile`, `--events`, the
+  workbench Performance tab): step sizes, rejected steps and the states that
+  limit the step; time and Newton iterations per block; events with their
+  relations, components and changed values; chattering detection; hints.
 - `fmu`: FMI 2.0 export, Model Exchange and Co-Simulation in one FMU (linux64),
   with a model-independent runtime library and the compiled model as a resource;
   validated with FMPy in CI.
