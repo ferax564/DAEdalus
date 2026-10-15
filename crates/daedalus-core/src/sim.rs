@@ -743,10 +743,11 @@ impl<'m> Simulation<'m> {
         let event_budget = if o.max_event_rows > 0 {
             o.max_event_rows
         } else {
-            // About 50 million stored values of event rows, and never fewer rows than
-            // output points: every event of a small model, a bounded file for a large one.
-            let per_row = rec.stored.len().max(1);
-            ((span / dt).ceil() as usize).max(50_000_000 / per_row)
+            // About 10 million written values of event rows (every column, aliases
+            // included, as the result file holds them): every event of a small model, a
+            // bounded file for a large one, however fine the output grid.
+            let per_row = rec.res.vars.len().max(rec.stored.len()).max(1);
+            (10_000_000 / per_row).max(2_000)
         };
         let mut event_rows = 0usize;
         solver.reset(&mut self.rt, t, &x);
@@ -931,6 +932,29 @@ impl<'m> Simulation<'m> {
                     t,
                     e.residual
                 ));
+            }
+        }
+        // A time event exactly at the stop time (`sample(0, T)` with StopTime a multiple of
+        // T, as in the sampled mean of a harmonic analysis) sits on its switching point
+        // when the last step ends, inside the hysteresis band of the crossing test. It is
+        // still an event of the run: process it and store its right value.
+        if self.terminated.is_none()
+            && n_rel > 0
+            && (t - o.stop_time).abs() <= 1e-12 * o.stop_time.abs().max(1.0)
+        {
+            let xs = solver.x().to_vec();
+            self.rt.rhs(o.stop_time, &xs, &mut xi);
+            self.rt.eval_zc();
+            let due = (0..n_rel).any(|i| {
+                (m.sample_rels.contains(&i) || m.rel_text[i].starts_with("time "))
+                    && self.rt.r[m.zc_raw[i] as usize] != self.rt.r[m.layout.rel0 + i]
+            });
+            if due {
+                self.stats.events += 1;
+                self.rt.delay_right = true;
+                self.event_iteration()?;
+                self.check_newton("event")?;
+                rec.record(&mut self.rt);
             }
         }
         self.stats.solver = solver.stats();
