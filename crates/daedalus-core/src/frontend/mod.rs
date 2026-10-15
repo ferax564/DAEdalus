@@ -5,6 +5,7 @@
 
 pub mod inspect;
 pub mod inst;
+pub mod lazy;
 pub mod overconstrained;
 pub mod tree;
 
@@ -25,6 +26,9 @@ pub struct Document {
 #[derive(Default)]
 pub struct Library {
     pub docs: Vec<Document>,
+    /// Library files registered for on-demand parsing, by path and by class.
+    pub lazy: Vec<lazy::LazyFile>,
+    lazy_index: rustc_hash::FxHashMap<String, usize>,
 }
 
 impl Library {

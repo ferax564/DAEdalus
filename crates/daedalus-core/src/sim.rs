@@ -699,8 +699,9 @@ impl<'m> Simulation<'m> {
                 }
                 if !crossing.is_empty() {
                     let mut best = tn;
+                    let after_event = tp - last_event <= 1e-10 * tp.abs().max(1.0);
                     for &i in &crossing {
-                        let te = self.locate(&*solver, i, tp, best, &mut xi);
+                        let te = self.locate(&*solver, i, tp, best, after_event, &mut xi);
                         if te < best {
                             best = te;
                         }
@@ -857,6 +858,7 @@ impl<'m> Simulation<'m> {
         i: usize,
         ta: f64,
         tb: f64,
+        after_event: bool,
         xi: &mut Vec<f64>,
     ) -> f64 {
         let m = self.rt.m;
@@ -879,9 +881,11 @@ impl<'m> Simulation<'m> {
             return tb; // no crossing at tb any more (should not happen)
         }
         if ra != lat {
-            // Already crossed at the start: right after an event, or the step ended
-            // within the hysteresis band just past the switching point (a sample
-            // instant hit exactly) and the relation has since moved clearly past it.
+            if after_event && ga.abs() <= self.hysteresis(i) {
+                return tb; // still inside the hysteresis band right after an event
+            }
+            // Already crossed at the start: right after an event, or a step that ended
+            // just past the switching point (a sample instant hit exactly).
             return ta;
         }
         let mut side = 0;
