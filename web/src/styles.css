@@ -199,3 +199,30 @@ canvas.plot { position: absolute; inset: 0; display: block; }
 .anim-slider { flex: 1 1 200px; min-width: 120px; }
 .anim-time { font-family: var(--mono); min-width: 96px; }
 .anim-info { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; max-width: 100%; }
+
+/* Linear analysis view */
+.view.linear { display: flex; flex-direction: column; overflow: hidden; }
+.view.linear.hidden { display: none; }
+.lin-bar { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; padding: 6px 10px; border-bottom: 1px solid var(--line); }
+.lin-bar label { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); }
+.lin-bar select { max-width: 16em; }
+.lin-grid { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) minmax(0, 1fr); gap: 1px; background: var(--line); }
+.lin-cell { background: var(--panel); display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+.lin-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 3px 8px; font-size: 12px; }
+.lin-stack { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.lin-plot { flex: 1; min-height: 0; position: relative; }
+.lin-plot.hidden { display: none; }
+.lin-plot canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.lin-summary { display: block; overflow: auto; padding: 6px 12px; font-size: 12px; }
+.lin-summary h4 { margin: 8px 0 4px; font-size: 12.5px; }
+.lin-summary table { border-collapse: collapse; }
+.lin-summary th { text-align: left; font-weight: normal; color: var(--muted); padding: 1px 12px 1px 0; white-space: nowrap; }
+.lin-summary td { padding: 1px 0; }
+.lin-summary .mono { font: 11.5px/1.4 var(--mono); margin: 2px 0; word-break: break-word; }
+.lin-summary p { margin: 3px 0; }
+.lin-summary .ok { color: var(--ok); }
+.lin-summary .err, .view.linear .err { color: var(--err); }
+.hsv { flex-shrink: 0; display: flex; align-items: flex-end; gap: 2px; height: 48px; border-bottom: 1px solid var(--line); }
+.hsv-bar { flex: 1; max-width: 18px; background: var(--line); }
+.hsv-bar.kept { background: #d9480f; }
+@media (max-width: 900px) { .lin-grid { grid-template-columns: minmax(0, 1fr); grid-template-rows: repeat(4, minmax(260px, 1fr)); overflow: auto; } }

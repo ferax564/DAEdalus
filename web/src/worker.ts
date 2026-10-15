@@ -126,6 +126,9 @@ self.onmessage = async (ev: MessageEvent<Req>) => {
       case "simulate":
         result = JSON.parse(w.simulate(args[0] as string, JSON.stringify(args[1] ?? {})));
         break;
+      case "linearAnalysis":
+        result = JSON.parse(w.linearAnalysis(args[0] as string, JSON.stringify(args[1] ?? {})));
+        break;
       case "values": {
         const names = args[0] as string[];
         const time = w.time();

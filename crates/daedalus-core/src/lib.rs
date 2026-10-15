@@ -11,6 +11,7 @@ pub mod fmu;
 pub mod frontend;
 pub mod linalg;
 pub mod linearize;
+pub mod lti;
 pub mod results;
 pub mod sim;
 pub mod solver;

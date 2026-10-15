@@ -95,6 +95,38 @@ with algebraic loops differentiated implicitly through their symbolic Jacobians
 (`--jacobian fd` uses central differences instead). `--format mo` writes the model
 `linearized_model` in the form OpenModelica writes it.
 
+### Linear analysis
+
+`daedalus linear-analysis` linearizes the model like `linearize` and analyzes the
+chosen input → output pairs: poles, transmission zeros, DC gain and relative degree,
+Bode and Nyquist data with gain and phase margins, step and impulse responses with
+rise time, settling time and overshoot, and PID suggestions (SIMC PI and
+Ziegler–Nichols PID from a first-order-plus-dead-time fit of the step response).
+`--reduce N` adds balanced truncation (reduced A, B, C, D, Hankel singular values,
+the H∞ error bound, and the reduced model's responses for comparison), `--lqr Q,R`
+the LQR gain for `Q = q·I`, `R = r·I` with its closed-loop poles. Outputs may be any
+continuous variable or state, not only top-level outputs.
+
+```sh
+./target/release/daedalus linear-analysis library/Daedalus \
+    -m Daedalus.Examples.OptimalControl.ActiveSuspension \
+    --inputs F_act --outputs a_body,travel --reduce 2 --lqr 1,1e-6 -o suspension.json
+# CSV: Bode data to bode.csv and step responses to bode_step.csv
+./target/release/daedalus linear-analysis model.mo -m MyModel --at 2 --bode --step -o bode.csv
+```
+
+A text summary goes to stdout; `-o file.json` holds everything, `-o file.csv` the
+Bode (`--bode`) and step (`--step`) data. The numerics are in
+`crates/daedalus-core/src/lti.rs`, with no extra dependencies: Bode points are `O(n²)`
+each after a Householder Hessenberg reduction; step responses are exact for a step
+(zero-order hold with the Padé matrix exponential); Lyapunov and Riccati equations are
+solved with the matrix sign function; transmission zeros are the zero-dynamics
+eigenvalues of a Krylov minimal realization of each pair. Balanced truncation needs a
+stable model, and the dense algorithms are meant for up to a few hundred states. In
+the workbench, the **Linear** tab of the model view shows the same analysis with input
+and output pickers, Bode or Nyquist plot, pole-zero map, step or impulse response and
+the summary.
+
 ```sh
 # Steady state: x with der(x) = 0, from the initial state (or after simulating
 # to --at-time T); prints states, derivatives, outputs and the eigenvalues

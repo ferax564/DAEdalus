@@ -8,6 +8,7 @@ import { PlotWindow, displayUnit, interp } from "./plot";
 import { bundledLibrary, bundledResources, readPicked, type Picked } from "./library";
 import { drawIcon, newCtx, SVG_NS, systemExtent, IDENTITY, el } from "./graphics";
 import type { Animation3D, AnimData } from "./anim3d";
+import { LinearView } from "./linear";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -33,7 +34,7 @@ const src = {
 let tree: ClassEntry[] = [];
 const expanded = new Set<string>(["Daedalus", "Daedalus.Examples"]);
 let current: ClassInfo | null = null;
-let view: ViewKind | "text" | "doc" | "flat" = "diagram";
+let view: ViewKind | "text" | "doc" | "flat" | "linear" = "diagram";
 let mode: "modeling" | "simulation" = "modeling";
 let summary: SimSummary | null = null;
 /** Model the variables in `summary` belong to. */
@@ -59,6 +60,9 @@ $("msg-clear").onclick = () => ($("log").innerHTML = "");
 const diagram = new DiagramView($("view-graphic"), src, classes);
 const text = new TextView($("view-text"));
 const plot = new PlotWindow($("plot"));
+const linear = new LinearView($("view-linear"));
+linear.onLog = (m, c) => log(m, c);
+linear.params = () => [...overrides.entries()];
 
 diagram.onSelect = (c) => showInspector(c);
 diagram.onOpen = (p) => openClass(p);
@@ -89,7 +93,7 @@ function setActive(container: HTMLElement, attr: string, value: string) {
 
 async function showView() {
   setActive($("view-tabs"), "data-view", view);
-  for (const id of ["view-graphic", "view-text", "view-doc", "view-flat"]) $(id).classList.add("hidden");
+  for (const id of ["view-graphic", "view-text", "view-doc", "view-flat", "view-linear"]) $(id).classList.add("hidden");
   if (!current) return;
   if (view === "icon" || view === "diagram") {
     $("view-graphic").classList.remove("hidden");
@@ -112,6 +116,9 @@ async function showView() {
     $("view-doc").classList.remove("hidden");
     const d = current.documentation;
     $("view-doc").innerHTML = `<h2>${escapeHtml(current.path)}</h2><p class="muted">${escapeHtml(current.description)}</p>` + (d ?? "<p class='muted'>No documentation.</p>");
+  } else if (view === "linear") {
+    $("view-linear").classList.remove("hidden");
+    await linear.show(current.path);
   } else if (view === "flat") {
     $("view-flat").classList.remove("hidden");
     $("view-flat").textContent = "Flattening…";
@@ -335,7 +342,7 @@ async function openClass(path: string, push = true) {
     history.replaceState({ idx: navIdx }, "", hash);
   }
   updateNav();
-  if (view !== "text" && view !== "doc" && view !== "flat") view = info.kind !== "connector" && info.kind !== "package" && info.components.some((c) => c.type_kind !== "type" && !c.protected) ? "diagram" : "icon";
+  if (view !== "text" && view !== "doc" && view !== "flat" && view !== "linear") view = info.kind !== "connector" && info.kind !== "package" && info.components.some((c) => c.type_kind !== "type" && !c.protected) ? "diagram" : "icon";
   renderTree();
   renderVariables();
   showInspector(null);
@@ -782,7 +789,7 @@ async function start() {
   const hash = decodeURIComponent(location.hash.slice(1));
   // for automated checks
   const w = window as unknown as { daedalus: Record<string, unknown> };
-  w.daedalus = { api, simulate, openClass, plot, timings, anim: () => anim, animData: () => animData, setSimView, togglePlot: (n: string) => togglePlot(n, summary!.vars.find((v) => v.name === n)!) };
+  w.daedalus = { api, simulate, openClass, plot, linear, setView: (v: typeof view) => { view = v; return showView(); }, timings, anim: () => anim, animData: () => animData, setSimView, togglePlot: (n: string) => togglePlot(n, summary!.vars.find((v) => v.name === n)!) };
   await load(bundledLibrary(), "Daedalus library", await bundledResources());
   const msl = loadMsl();
   w.daedalus.msl = msl;
