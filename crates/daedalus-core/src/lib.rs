@@ -4,6 +4,7 @@ pub mod backend;
 pub mod codegen;
 pub mod expr;
 pub mod flat;
+pub mod fmi;
 pub mod frontend;
 pub mod linalg;
 pub mod linearize;

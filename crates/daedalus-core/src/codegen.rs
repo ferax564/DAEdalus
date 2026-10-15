@@ -12,7 +12,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 pub type Slot = u32;
 
 /// One tape instruction. Operands are register indices.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub enum Ins {
     Copy(Slot, Slot),
     Neg(Slot, Slot),
@@ -45,7 +45,7 @@ pub enum Ins {
 }
 
 /// A compiled run-time `while` loop: registers `0..n` hold the state.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ProgCode {
     pub n: usize,
     pub n_regs: usize,
@@ -57,14 +57,14 @@ pub struct ProgCode {
 }
 
 /// A call of a loop program: the registers (of the calling tape) holding its arguments.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SiteCode {
     pub prog: u32,
     pub args: Vec<Slot>,
 }
 
 /// An algebraic loop: Newton iteration on the tear variables.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct NewtonBlock {
     pub tears: Vec<Slot>,
     /// Computes inner (torn) variables and the residuals.
@@ -82,7 +82,7 @@ pub struct NewtonBlock {
     pub bounds: Vec<(f64, f64)>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct WhenCode {
     /// Condition slots per branch.
     pub conds: Vec<Slot>,
@@ -96,7 +96,7 @@ pub struct WhenCode {
     pub at_initial: Vec<bool>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum Action {
     Assign(Slot, Slot),
     Reinit(Slot, Slot),
@@ -105,7 +105,7 @@ pub enum Action {
 }
 
 /// Register file layout.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Layout {
     pub nv: usize,
     pub pre0: usize,
@@ -117,7 +117,7 @@ pub struct Layout {
 }
 
 /// The compiled model.
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Model {
     pub name: String,
     pub vars: Vec<Variable>,

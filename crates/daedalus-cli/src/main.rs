@@ -3,6 +3,8 @@
 use daedalus_core::backend::Options;
 use daedalus_core::frontend::Library;
 use daedalus_core::sim::{Method, SimOptions};
+mod fmu;
+
 use std::path::Path;
 use std::process::ExitCode;
 use std::time::Instant;
@@ -21,6 +23,8 @@ COMMANDS:
   linearize   linearize around the initial point (or --at T): the state-space
               matrices A, B, C, D of der(x) = A x + B u, y = C x + D u for the
               states x, top-level inputs u and outputs y
+  fmu         export an FMI 2.0 FMU (Model Exchange and Co-Simulation) to -o
+              (default <Model>.fmu); needs the runtime libdaedalus_fmi.so
   test-library  translate and simulate every model with an experiment
                 annotation under --model (a package), each in its own
                 process with a time limit; prints a report
@@ -51,6 +55,8 @@ OPTIONS:
                           model linearized_model, to linearized_model.mo
                           unless -o is given)
   --jacobian J            linearize: exact | fd (central differences)
+  --fmi-lib FILE          fmu: the FMI runtime library (default: next to this
+                          executable, or $DAEDALUS_FMI_LIB)
   --timeout S             per-model time limit for test-library (default 60)
 ";
 
@@ -87,6 +93,7 @@ fn run() -> anyhow::Result<()> {
     let mut timeout = 60.0f64;
     let mut lin_at: Option<f64> = None;
     let mut format = String::from("text");
+    let mut fmi_lib: Option<std::path::PathBuf> = None;
     let mut jac_method = daedalus_core::linearize::JacobianMethod::Exact;
     let mut i = 1;
     let next = |i: &mut usize| -> anyhow::Result<String> {
@@ -149,6 +156,7 @@ fn run() -> anyhow::Result<()> {
             "--no-tearing" => opts.tearing = false,
             "--jobs" => jobs = next(&mut i)?.parse::<usize>()?.max(1),
             "--timeout" => timeout = next(&mut i)?.parse()?,
+            "--fmi-lib" => fmi_lib = Some(next(&mut i)?.into()),
             "--at" => lin_at = Some(next(&mut i)?.parse()?),
             "--format" => format = next(&mut i)?,
             "--jacobian" => {
@@ -392,6 +400,18 @@ fn run() -> anyhow::Result<()> {
                 }
                 None => print!("{text}"),
             }
+            Ok(())
+        }
+        "fmu" => {
+            let m = with_all_files(&mut lib, |l| daedalus_core::translate(l, &model, &opts))?;
+            for w in &m.warnings {
+                eprintln!("warning: {w}");
+            }
+            let out = output
+                .clone()
+                .unwrap_or_else(|| format!("{}.fmu", m.name.replace('.', "_")));
+            fmu::export(&m, std::path::Path::new(&out), fmi_lib.as_deref())?;
+            eprintln!("wrote {out}");
             Ok(())
         }
         "test-library" => {
