@@ -37,6 +37,8 @@ pub struct Workspace {
     results: Option<Results>,
     /// Classes whose registered library files are parsed already: (class, full).
     ensured: std::collections::HashSet<(String, bool)>,
+    /// Translation reused by [`Workspace::simulate_run`] (sweeps): (model, compiled).
+    compiled: Option<(String, daedalus_core::codegen::Model)>,
 }
 
 fn to_json<T: Serialize>(v: &T) -> String {
@@ -84,12 +86,14 @@ impl Workspace {
     #[wasm_bindgen(js_name = setDocument)]
     pub fn set_document(&mut self, uri: &str, text: &str) -> String {
         self.ensured.clear();
+        self.compiled = None;
         to_json(&self.lib.set_document(uri, text))
     }
 
     #[wasm_bindgen(js_name = removeDocument)]
     pub fn remove_document(&mut self, uri: &str) {
         self.ensured.clear();
+        self.compiled = None;
         self.lib.remove_document(uri);
     }
 
@@ -100,6 +104,7 @@ impl Workspace {
     #[wasm_bindgen(js_name = addLibraryFile)]
     pub fn add_library_file(&mut self, prefix: &str, rel: &str, text: &str) {
         self.ensured.clear();
+        self.compiled = None;
         if let Some(dir) = rel.strip_suffix("package.order") {
             let class = lazy::class_for_path(&format!("{dir}package.mo"));
             self.lib.add_package_order(&class, text);
@@ -122,6 +127,7 @@ impl Workspace {
     #[wasm_bindgen(js_name = loadAll)]
     pub fn load_all(&mut self) {
         self.ensured.clear();
+        self.compiled = None;
         self.lib.load_all();
     }
 
@@ -309,5 +315,104 @@ impl Workspace {
             let _ = r.write_csv(&mut out, if sel.is_empty() { None } else { Some(&sel) });
         }
         String::from_utf8(out).unwrap_or_default()
+    }
+}
+
+/// Sweeps and experiments: runs that reuse one translation.
+#[wasm_bindgen]
+impl Workspace {
+    /// Simulate `model` like [`Workspace::simulate`], but keep the translation for the next
+    /// call: run-time overrides (free Real parameters in `params`) reuse it, other overrides
+    /// are applied as a modifier and translated again. Returns a small JSON summary (no
+    /// variable list); trajectories are fetched with [`Workspace::values`].
+    #[wasm_bindgen(js_name = simulateRun)]
+    pub fn simulate_run(&mut self, model: &str, options: &str) -> String {
+        let load_ms = self.ensure(model, Some(true));
+        let t0 = now_ms();
+        let mut cached = true;
+        if self.compiled.as_ref().is_none_or(|(n, _)| n != model) {
+            cached = false;
+            match daedalus_core::translate(&self.lib, model, &Default::default()) {
+                Ok(m) => self.compiled = Some((model.to_string(), m)),
+                Err(e) => {
+                    self.results = None;
+                    return to_json(
+                        &serde_json::json!({"ok": false, "error": format!("{e:#}"), "model": model}),
+                    );
+                }
+            }
+        }
+        let base = &self.compiled.as_ref().unwrap().1;
+        let mut opts = SimOptions::from_model(base);
+        if let Ok(serde_json::Value::Object(o)) = serde_json::from_str::<serde_json::Value>(options)
+        {
+            let mut b = serde_json::to_value(&opts).unwrap_or_default();
+            if let serde_json::Value::Object(b) = &mut b {
+                for (k, v) in o {
+                    b.insert(k, v);
+                }
+            }
+            if let Ok(o2) = serde_json::from_value(b) {
+                opts = o2;
+            }
+        }
+        if let Err(e) =
+            daedalus_core::sweep::check_names(base, opts.params.iter().map(|(n, _)| n.as_str()))
+        {
+            self.results = None;
+            return to_json(&serde_json::json!({"ok": false, "error": e, "model": model}));
+        }
+        let (runtime, structural) =
+            daedalus_core::sweep::split_overrides(base, &opts.params, false);
+        let modified;
+        let m = if structural.is_empty() {
+            base
+        } else {
+            let base = base.clone();
+            match daedalus_core::sweep::translate_with_modifiers(
+                &mut self.lib,
+                model,
+                &structural,
+                Some(&base),
+                &Default::default(),
+            ) {
+                Ok(m) => {
+                    modified = m;
+                    &modified
+                }
+                Err(e) => {
+                    self.results = None;
+                    return to_json(
+                        &serde_json::json!({"ok": false, "error": format!("{e:#}"), "model": model}),
+                    );
+                }
+            }
+        };
+        opts.params = runtime;
+        let translate_ms = now_ms() - t0;
+        let t1 = now_ms();
+        let (res, stats, error) = match simulate(m, opts) {
+            Ok((r, mut s)) => {
+                s.init_ms = 0.0;
+                s.sim_ms = now_ms() - t1;
+                (r, Some(s), None)
+            }
+            Err(e) => (e.partial.unwrap_or_default(), None, Some(e.message)),
+        };
+        let out = serde_json::json!({
+            "ok": error.is_none(),
+            "error": error,
+            "model": model,
+            "points": res.time.len(),
+            "log": res.log,
+            "warnings": m.warnings,
+            "translate_ms": translate_ms,
+            "load_ms": load_ms,
+            "cached": cached && structural.is_empty(),
+            "retranslated": structural.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>(),
+            "stats": stats,
+        });
+        self.results = Some(res);
+        to_json(&out)
     }
 }

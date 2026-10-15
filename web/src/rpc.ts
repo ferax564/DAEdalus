@@ -28,15 +28,34 @@ function call<T>(op: string, ...args: unknown[]): Promise<T> {
   });
 }
 
+/**
+ * The documents and library bundle loaded into the worker, so that other workers (the
+ * experiment pool, see pool.ts) can load the same sources. `seq` increases with every change.
+ */
+export const sources = {
+  seq: 0,
+  /** Latest text of each document (null: removed) and the change it came with. */
+  docs: new Map<string, { text: string | null; seq: number }>(),
+  bundle: null as { base: string; prefix: string; seq: number } | null,
+};
+
 export const api = {
-  setDocuments: (docs: [string, string][]) => call<Record<string, string[]>>("setDocuments", docs),
+  setDocuments: (docs: [string, string][]) => {
+    const seq = ++sources.seq;
+    for (const [uri, text] of docs) sources.docs.set(uri, { text, seq });
+    return call<Record<string, string[]>>("setDocuments", docs);
+  },
   /** Register a library bundle (`<base>manifest.json`) for on-demand parsing; null when the site has none. */
   loadBundle: (base: string, prefix: string, progress?: (p: BundleProgress) => void) => {
     onProgress = progress ?? null;
+    sources.bundle = { base, prefix, seq: ++sources.seq };
     return call<BundleInfo | null>("loadBundle", base, prefix);
   },
   libraryStats: () => call<{ files: number; parsed: number }>("libraryStats"),
-  removeDocument: (uri: string) => call<void>("removeDocument", uri),
+  removeDocument: (uri: string) => {
+    sources.docs.set(uri, { text: null, seq: ++sources.seq });
+    return call<void>("removeDocument", uri);
+  },
   classTree: () => call<ClassEntry[]>("classTree"),
   classInfo: (path: string) => call<ClassInfo | null>("classInfo", path),
   documentText: (uri: string) => call<string | null>("documentText", uri),

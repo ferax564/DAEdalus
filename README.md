@@ -140,6 +140,54 @@ The page is laid out like Dymola:
 - **Simulate** compiles the class in the worker and fills the variable browser;
 - ticking a variable plots it.
 
+## Experiments: sweeps, runs and comparison
+
+`daedalus sweep` translates a model once and simulates it for every combination of
+parameter values, one run per thread:
+
+```sh
+# 3 x 3 grid over spring rate and bump height, on all cores; peak body travel and acceleration
+./target/release/daedalus sweep library/Daedalus -m Daedalus.Examples.QuarterCar.BumpComparison \
+    -s linear.c_spring=lin:20e3:40e3:3 -s bump.h=0.03,0.05,0.07 \
+    --vars linear.body.s,linear.a_body --stats max,min -o runs/   # runs/run_001.csv ... runs/summary.csv
+```
+
+- Values: a list `1,2,3`, `lin:START:STOP:N` or `log:START:STOP:N`.
+- `--grouped` runs the n-th values of all parameters together (Dymola's grouped
+  sweep) instead of the full grid.
+- `-o FILE.csv` writes all runs into one CSV (`run, parameters, time, vars`);
+  `-o DIR` writes one file per run (`--format csv|mat`) and `summary.csv`.
+- `--stats` picks the summary columns per kept variable: `initial`, `final`,
+  `min`, `max`, `mean` (time average) or `at=T`.
+- Free Real parameters change at run time on the shared compiled model. Other
+  parameters (Integer, Boolean, computed ones; possibly structural, such as array
+  sizes) are applied as a modifier on a wrapper class and translated once per
+  distinct value, which is slower; `--retranslate` forces that for all.
+
+In the workbench, every simulation is stored as a run (model, overrides,
+settings, time and the plotted variables) in the **Runs** pane, kept in the
+browser's IndexedDB across reloads. Runs can be renamed, pinned and deleted.
+
+- **Overlay** plots the variables of the active subplot for every selected run;
+  the legend shows the run and the parameter values that differ.
+- **Diff B − A** plots the newer of two selected runs minus the older one,
+  interpolated on the union of their time grids.
+- **Sweep…** picks one or more editable parameters with list, linear or log
+  values, grid or grouped, and the variables to keep. The runs fan out over a pool
+  of `hardwareConcurrency - 1` Web Workers (at most 8), each with its own
+  WebAssembly workspace and the same sources; a worker translates once and reuses
+  the translation for every run. Progress, cancel, a summary table and a plot of a
+  scalar result (final value, max, min, mean) against a parameter follow; the
+  runs are overlaid in the plot.
+- **Share link** copies a URL such as
+  `#Daedalus.Examples.QuarterCar.BumpComparison?p.bump.h=0.07&p.linear.c_spring=40000&stop=1.5&plot=linear.body.s`
+  that reopens the model, applies the overrides and settings, simulates it and
+  plots the variables. A plain `#Model.Name` still just opens the model.
+
+The pool (`web/src/pool.ts`, `pool().run(model, options, vars)`) is generic, so
+other analyses can use it. `web/scripts/e2e-experiments.mjs` checks all of this in
+Chromium with Playwright against a running dev server.
+
 ## Examples
 
 The `Daedalus.Examples` package rebuilds six technical blog posts from Modelon

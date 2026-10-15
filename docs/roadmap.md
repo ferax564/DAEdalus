@@ -41,6 +41,11 @@
   - icon, diagram and text views;
   - simulation setup and variable browser;
   - plot window.
+- Experiments: `daedalus sweep` (grid or grouped parameter sweeps on all cores,
+  structural parameters translated again per value, summary table); in the
+  workbench, stored runs (IndexedDB) with overlay and diff, sweeps over a pool
+  of Web Workers with a summary table and a scalar-vs-parameter plot, and
+  shareable links that reopen and run a model with its overrides.
 - CI: Rust tests, a simulation of every example, a 2000-mass scalability smoke
   test, and the WebAssembly and workbench build.
 

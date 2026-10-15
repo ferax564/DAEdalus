@@ -8,6 +8,7 @@ import { PlotWindow, displayUnit, interp } from "./plot";
 import { bundledLibrary, readPicked } from "./library";
 import { initAssistant } from "./assistant";
 import { drawIcon, newCtx, SVG_NS, systemExtent, IDENTITY, el } from "./graphics";
+import * as experiments from "./experiments";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -366,6 +367,7 @@ async function simulate() {
     setMode("simulation");
     renderVariables();
     refreshXSelect();
+    experiments.recordSimulation(name, settings(), s, cache.time, cache.cols);
   } catch (e) {
     log(String(e), "err");
   } finally {
@@ -536,6 +538,7 @@ async function togglePlot(name: string, v: VarSummary) {
   const x = sp.xName ? cache!.cols.get(sp.xName)! : cache!.time;
   plot.toggle({ name, unit: v.unit, x, y });
   renderVariables();
+  experiments.noteSeries(summaryPath, name, v.unit, cache!.time, y);
 }
 
 function refreshXSelect() {
@@ -553,7 +556,7 @@ $("plot-x").onchange = async () => {
   sp.xName = xName;
   sp.xUnit = xName ? summary?.vars.find((v) => v.name === xName)?.unit : undefined;
   if (xName) await fetchSeries([xName]);
-  for (const s of sp.series) s.x = xName ? cache!.cols.get(xName)! : cache!.time;
+  for (const s of sp.series) if (!s.run) s.x = xName ? cache!.cols.get(xName)! : cache!.time;
   plot.draw();
 };
 $("plot-new").onclick = () => plot.addSubplot();
@@ -652,7 +655,9 @@ async function loadMsl(): Promise<boolean> {
 const timings: { interactive?: number; mslBrowsable?: number } = {};
 
 async function start() {
-  const hash = decodeURIComponent(location.hash.slice(1));
+  // `#Model.Name`, or a shared run `#Model.Name?p.k=2&stop=3&plot=y` (experiments.ts)
+  const share = experiments.parseShare(location.hash);
+  const hash = share.model;
   // for automated checks
   const w = window as unknown as { daedalus: Record<string, unknown> };
   w.daedalus = { api, simulate, openClass, plot, timings, togglePlot: (n: string) => togglePlot(n, summary!.vars.find((v) => v.name === n)!) };
@@ -680,10 +685,42 @@ async function start() {
   }
   await openClass(hash || "Daedalus.Examples.TorqueConverter.Launch");
   timings.interactive = performance.now();
+  if (share.run && hash) await restoreRun(hash, share.params, share.options, share.plot);
 }
 start();
 void interp;
 window.addEventListener("hashchange", () => {
-  const h = decodeURIComponent(location.hash.slice(1));
-  if (h && h !== current?.path) openClass(h);
+  const sh = experiments.parseShare(location.hash);
+  const h = sh.model;
+  if (sh.run && h) restoreRun(h, sh.params, sh.options, sh.plot);
+  else if (h && h !== current?.path) openClass(h);
 });
+
+// ---------------------------------------------------------------- experiments
+/** Open `model` with these overrides and settings, simulate it and plot `vars`. */
+async function restoreRun(model: string, params: [string, number][], options: SimSettings, vars: string[]) {
+  if (current?.path !== model) await openClass(model);
+  if (current?.path !== model) return;
+  overrides.clear();
+  for (const [n, v] of params) overrides.set(n, v);
+  const field = (id: string, v: unknown) => (($(id) as HTMLInputElement).value = v === undefined ? "" : String(v));
+  field("set-stop", options.stop_time);
+  field("set-n", options.intervals);
+  field("set-tol", options.tolerance);
+  field("set-method", options.method);
+  await simulate();
+  for (const n of vars) {
+    const v = summary?.vars.find((x) => x.name === n);
+    if (v && !plot.has(n)) await togglePlot(n, v);
+  }
+}
+experiments.initExperiments({
+  plot,
+  model: () => current?.path ?? null,
+  summary: () => (summary ? { summary, model: summaryPath } : null),
+  settings,
+  log,
+  showPlot: () => setMode("simulation"),
+  restore: restoreRun,
+});
+((window as unknown as { daedalus?: Record<string, unknown> }).daedalus ??= {}).experiments = experiments;
