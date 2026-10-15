@@ -302,7 +302,7 @@ class Model:
     @staticmethod
     def _children(n) -> list[int]:
         op = n[0]
-        if op in ("const", "time", "var"):
+        if op in ("const", "time", "var", "pre"):
             return []
         if op in ("neg",):
             return [n[1]]
@@ -325,6 +325,9 @@ class Model:
             return ca.SX(_num(n[1]))
         if op == "time":
             return self.t
+        if op == "pre":
+            # pre() of a discrete variable: its value after initialization (no events).
+            return ca.SX(self.variables[n[1]].value)
         if op == "neg":
             return -v[n[1]]
         if op == "add":

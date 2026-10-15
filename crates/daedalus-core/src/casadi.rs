@@ -17,7 +17,8 @@
 //! Every other variable is an expression of those, so a cost or constraint can
 //! refer to any model variable by name. Event relations become plain comparisons
 //! (`if_else` in CasADi); when-clauses are not part of the continuous problem, so
-//! discrete variables keep their initial values.
+//! discrete variables, and `pre()` of non-continuous variables, keep their
+//! initial values.
 //!
 //! The document also holds the values of all variables after DAEdalus'
 //! own initialization at the start time: consistent initial states and guesses.
@@ -50,6 +51,7 @@ enum Def {
 struct Nodes<'a> {
     arena: &'a Arena,
     der_of: &'a [Option<VarId>],
+    vars: &'a [crate::flat::Variable],
     map: FxHashMap<ExprId, usize>,
     out: Vec<Value>,
 }
@@ -80,7 +82,13 @@ impl Nodes<'_> {
             let k = |c: ExprId| self.map[&c];
             let node = match self.arena.node(id) {
                 Node::Const(b) => json!(["const", f64_json(f64::from_bits(b))]),
-                Node::Var(v) | Node::Pre(v) => json!(["var", v]),
+                Node::Var(v) => json!(["var", v]),
+                // Without events the left limit of a continuous variable is the variable
+                // itself; anything else keeps the value it had after initialization.
+                Node::Pre(v) => match self.vars[v as usize].kind {
+                    VarKind::Continuous => json!(["var", v]),
+                    _ => json!(["pre", v]),
+                },
                 Node::Der(v) => match self.der_of.get(v as usize).copied().flatten() {
                     Some(d) => json!(["var", d]),
                     None => bail!("der() of a variable without a derivative variable"),
@@ -173,6 +181,7 @@ pub fn export(sys: System, opts: &SimOptions) -> Result<Value> {
     let mut nodes = Nodes {
         arena: &sys.arena,
         der_of: &sys.der_of,
+        vars: &sys.vars,
         map: FxHashMap::default(),
         out: Vec::new(),
     };

@@ -113,6 +113,20 @@ def simulate(
     return Trajectory(model, t_grid, np.array(X), np.array(Z), np.array(U), p)
 
 
+def consistent_z(model: Model, t, x, u, p, z_guess=None) -> np.ndarray:
+    """Algebraic variables solving ``alg = 0`` at each row of ``t, x, u`` (rows of ``z``)."""
+    t = np.asarray(t, dtype=float)
+    if model.nz == 0:
+        return np.zeros((len(t), 0))
+    zf = _alg_solver(model)
+    z = model.z0.copy() if z_guess is None else np.asarray(z_guess, dtype=float)
+    out = []
+    for k in range(len(t)):
+        z = np.array(zf(z, ca.vertcat(t[k], x[k], u[k], p))).ravel()
+        out.append(z)
+    return np.array(out)
+
+
 def _alg_solver(model: Model):
     """Newton solver for ``alg(t, x, z, u, p) = 0`` in ``z``."""
     if model.nz == 0:

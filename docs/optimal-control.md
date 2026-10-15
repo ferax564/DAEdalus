@@ -54,7 +54,8 @@ initialization. These values give a consistent initial state, and guesses for
 - Tables become piecewise polynomials with the same interpolation and
   extrapolation as the simulator.
 - `when`-clauses are not part of a continuous optimization problem. They are
-  left out with a warning, and discrete variables keep their initial values.
+  left out with a warning. Discrete variables, and `pre()` of non-continuous
+  variables, keep their initial values.
 - `delay()`, clocked equations and functions with `while`-loops are reported
   as unsupported.
 

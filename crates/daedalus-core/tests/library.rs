@@ -178,7 +178,7 @@ fn casadi_export_of_aileron_servo() {
         let n = n.as_array().unwrap();
         let op = n[0].as_str().unwrap();
         let children: &[serde_json::Value] = match op {
-            "const" | "time" | "var" => &[],
+            "const" | "time" | "var" | "pre" => &[],
             "f1" => &n[2..],
             "f2" | "cmp" => &n[2..],
             "interp" | "interp_der" => &n[3..],

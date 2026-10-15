@@ -104,7 +104,15 @@ def test_mpc_reduces_body_acceleration():
     mpc.minimize(
         o.integral(m["a_body"] ** 2) + 10 * o.integral((m["travel"] / 0.03) ** 2) + o.integral((m["F_act"] / 2500) ** 2)
     )
-    closed = mpc.run(0.5)
+    seen = []
+
+    def plant(x, u, t):  # the model with a heavier body: the result must be this loop
+        x = dc.simulate(m, [t, t + 0.01], u=u[None, :], p=m.params(m_body=440), x0=x).x[-1]
+        seen.append(x)
+        return x
+
+    closed = mpc.run(0.5, plant=plant)
+    np.testing.assert_allclose(closed.x[1:], np.array(seen))
     passive = dc.simulate(m, closed.t, u=np.zeros((len(closed.t) - 1, 1)))
     rms = lambda y: np.sqrt(np.mean(y**2))
     assert rms(closed["a_body"]) < 0.8 * rms(passive["a_body"])

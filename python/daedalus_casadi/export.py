@@ -63,7 +63,12 @@ def export(
     which also changes the initialization the export carries. The JSON document is
     kept at ``output`` when given.
     """
-    out = Path(output) if output else Path(tempfile.mkstemp(suffix=".json")[1])
+    if output:
+        out = Path(output)
+    else:
+        fd, name = tempfile.mkstemp(suffix=".json")
+        os.close(fd)
+        out = Path(name)
     cmd = [daedalus_binary(), "export-casadi", *_sources(sources), "-m", model, "-o", str(out), *_params(params)]
     r = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if r.returncode != 0:

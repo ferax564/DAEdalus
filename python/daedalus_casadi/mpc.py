@@ -16,7 +16,7 @@ import numpy as np
 
 from .model import Model
 from .ocp import OCP, Solution
-from .simulate import Trajectory, simulate
+from .simulate import Trajectory, consistent_z, simulate
 
 
 class MPC:
@@ -110,7 +110,7 @@ class MPC:
         x = m.x0.copy() if x0 is None else np.asarray(x0, dtype=float)
         n = round((t_end - t) / self.dt)
         ts = t + self.dt * np.arange(n + 1)
-        us = []
+        xs, us = [x.copy()], []
         for k in range(n):
             u = self.step(x, ts[k])
             us.append(u)
@@ -118,7 +118,13 @@ class MPC:
                 x = np.asarray(plant(x, u, ts[k]), dtype=float)
             else:
                 x = simulate(m, ts[k : k + 2], u=u[None, :], p=p_plant, x0=x).x[-1]
+            xs.append(x.copy())
             if callback is not None:
                 callback(k, ts[k], x, u)
+        # The closed loop as it ran: the states the plant produced, with the inputs
+        # held over each interval (the last one repeated at the final time).
         us = np.array(us).reshape(n, m.nu)
-        return simulate(m, ts, u=us, p=p_plant, x0=m.x0 if x0 is None else x0)
+        u_mesh = np.vstack([us, us[-1:]]) if n else np.tile(m.u0, (1, 1))
+        p = m.p0 if p_plant is None else np.asarray(p_plant, dtype=float)
+        zs = consistent_z(m, ts, np.array(xs), u_mesh, p)
+        return Trajectory(m, ts, np.array(xs), zs, u_mesh, p)
