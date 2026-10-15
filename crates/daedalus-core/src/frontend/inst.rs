@@ -231,6 +231,12 @@ pub struct Flattener<'a, 't> {
     /// first leaf variable.
     conn_count: FxHashMap<VarId, usize>,
     counting_connects: bool,
+    /// Stream variables of connectors, and the connector instance owning each
+    /// variable declared directly in a connector.
+    stream_vars: FxHashSet<VarId>,
+    leaf_owner: FxHashMap<VarId, InstId>,
+    /// `inStream(s)` requests: stream variable -> variable standing for the mixed value.
+    in_stream: IndexMap<VarId, VarId>,
     pending: Vec<PendingVar<'a>>,
     env_cache: FxHashMap<ClassId, Rc<Env>>,
     const_cache: FxHashMap<(ClassId, String), Val>,
@@ -287,6 +293,9 @@ impl<'a, 't> Flattener<'a, 't> {
             class_mods: FxHashMap::default(),
             conn_count: FxHashMap::default(),
             counting_connects: false,
+            stream_vars: FxHashSet::default(),
+            leaf_owner: FxHashMap::default(),
+            in_stream: IndexMap::new(),
             pending: Vec::new(),
             env_cache: FxHashMap::default(),
             const_cache: FxHashMap::default(),
@@ -649,6 +658,7 @@ impl<'a, 't> Flattener<'a, 't> {
             self.translate_instance(i as InstId)
                 .with_context(|| format!("in component '{}'", self.inst_name(i as InstId)))?;
         }
+        self.finish_streams();
         self.finish_connections();
         self.lower_clocks()?;
         self.finish_discrete();
@@ -1175,6 +1185,12 @@ impl<'a, 't> Flattener<'a, 't> {
                     self.expandable_vars.push(vid);
                 }
                 self.var_by_name.insert(vname, vid);
+                if self.insts[inst as usize].is_connector {
+                    self.leaf_owner.insert(vid, inst);
+                    if matches!(comp.connection, ast::Connection::Stream(_)) {
+                        self.stream_vars.insert(vid);
+                    }
+                }
                 if is_flow && self.insts[inst as usize].is_connector {
                     self.connector_flows.push(vid);
                 }
@@ -1241,7 +1257,7 @@ impl<'a, 't> Flattener<'a, 't> {
             } else {
                 format!("{}[{}]", full, index_str(&dims, k))
             };
-            let cm = if n > 1 {
+            let cm = if !dims.is_empty() {
                 select_mod_element(&m, k, n)
             } else {
                 m.clone()
@@ -1698,6 +1714,179 @@ impl<'a, 't> Flattener<'a, 't> {
         }
     }
 
+    /// The variable standing for `inStream(s)`; its equation is added with the connections.
+    fn in_stream_var(&mut self, s: VarId) -> VarId {
+        if let Some(&v) = self.in_stream.get(&s) {
+            return v;
+        }
+        let name = format!("$inStream.{}", self.model.vars[s as usize].name);
+        let mut v = Variable::new(name, VarKind::Continuous, VarType::Real);
+        v.generated = true;
+        v.is_protected = true;
+        v.start = self.model.vars[s as usize].start;
+        v.nominal = self.model.vars[s as usize].nominal;
+        let id = self.model.add_var(v);
+        self.in_stream.insert(s, id);
+        id
+    }
+
+    /// The flow variable of the connector holding stream variable `s`.
+    fn stream_flow(&self, s: VarId) -> Option<VarId> {
+        let owner = *self.leaf_owner.get(&s)?;
+        self.insts[owner as usize]
+            .comps
+            .values()
+            .find_map(|c| match c {
+                Comp::Var(v) if self.model.vars[*v as usize].is_flow => Some(*v),
+                _ => None,
+            })
+    }
+
+    /// The variable of connector `owner` with the same field path as stream variable `s`.
+    fn stream_peer(&self, s: VarId, owner: InstId) -> Option<VarId> {
+        let so = *self.leaf_owner.get(&s)?;
+        let sname = &self.model.vars[s as usize].name;
+        let suffix = sname.strip_prefix(&self.insts[so as usize].prefix)?;
+        let name = format!("{}{}", self.insts[owner as usize].prefix, suffix);
+        self.var_by_name.get(&name).copied()
+    }
+
+    /// Equations of the stream connectors (MLS 15.2): `inStream` values of inside
+    /// connectors and the stream variables of outside connectors, both mixed from
+    /// the other connectors of the connection set weighted by their outflow.
+    fn finish_streams(&mut self) {
+        let origin = self.model.origin("stream connection");
+        // Connection sets of flow variables.
+        let points: Vec<ConnPoint> = self.conn_parent.keys().copied().collect();
+        let mut sets: FxHashMap<ConnPoint, Vec<ConnPoint>> = FxHashMap::default();
+        for p in points {
+            let r = self.find(p);
+            sets.entry(r).or_default().push(p);
+        }
+        for set in sets.values_mut() {
+            set.sort_by_key(|p| (p.var, p.inside));
+        }
+        let set_of = |this: &mut Self, p: ConnPoint| -> Vec<ConnPoint> {
+            if this.conn_parent.contains_key(&p) {
+                let r = this.find(p);
+                sets.get(&r).cloned().unwrap_or_else(|| vec![p])
+            } else {
+                vec![p]
+            }
+        };
+        let eps = 1e-10;
+        // `stream var of connector at point q`, `outflow weight of q into the set`, value.
+        let mut done: FxHashSet<VarId> = FxHashSet::default();
+        let mut outside_done: FxHashSet<VarId> = FxHashSet::default();
+        let mut k = 0;
+        while k < self.in_stream.len() {
+            let (s, ph) = self.in_stream.get_index(k).map(|(a, b)| (*a, *b)).unwrap();
+            k += 1;
+            if !done.insert(s) {
+                continue;
+            }
+            let Some(f) = self.stream_flow(s) else {
+                let a = self.model.arena.var(ph);
+                let b = self.model.arena.var(s);
+                self.model.equations.push(Equation {
+                    lhs: a,
+                    rhs: b,
+                    origin,
+                });
+                continue;
+            };
+            let me = ConnPoint {
+                var: f,
+                inside: true,
+            };
+            let set = set_of(self, me);
+            let rhs = self.stream_mix(s, &set, Some(me), eps);
+            let a = self.model.arena.var(ph);
+            self.model.equations.push(Equation {
+                lhs: a,
+                rhs,
+                origin,
+            });
+            // Outside connectors of this set get their stream variable defined here.
+            for q in set.clone() {
+                if q.inside || !outside_done.insert(q.var) {
+                    continue;
+                }
+                let Some(&qo) = self.leaf_owner.get(&q.var) else {
+                    continue;
+                };
+                let Some(sq) = self.stream_peer(s, qo) else {
+                    continue;
+                };
+                let rhs = self.stream_mix(s, &set, Some(q), eps);
+                let a = self.model.arena.var(sq);
+                self.model.equations.push(Equation {
+                    lhs: a,
+                    rhs,
+                    origin,
+                });
+            }
+        }
+    }
+
+    /// Mixing rule of stream variable `s` (field path) over connection set `set`,
+    /// leaving out point `skip`.
+    fn stream_mix(
+        &mut self,
+        s: VarId,
+        set: &[ConnPoint],
+        skip: Option<ConnPoint>,
+        eps: f64,
+    ) -> ExprId {
+        let others: Vec<ConnPoint> = set.iter().copied().filter(|p| Some(*p) != skip).collect();
+        // (value, flow, sign): an inside connector supplies its own stream variable when
+        // its flow is negative; an outside one supplies the parent's inStream when its flow
+        // is positive.
+        let mut terms: Vec<(ExprId, ExprId)> = Vec::new();
+        for q in &others {
+            let Some(&qo) = self.leaf_owner.get(&q.var) else {
+                continue;
+            };
+            let Some(sq) = self.stream_peer(s, qo) else {
+                continue;
+            };
+            let val = if q.inside {
+                self.model.arena.var(sq)
+            } else {
+                let v = self.in_stream_var(sq);
+                self.model.arena.var(v)
+            };
+            let fl = self.model.arena.var(q.var);
+            let out = if q.inside {
+                self.model.arena.neg(fl)
+            } else {
+                fl
+            };
+            terms.push((val, out));
+        }
+        let a = &mut self.model.arena;
+        match terms.len() {
+            0 => match skip {
+                // Unconnected: inStream(s) = s.
+                Some(p) if p.inside => a.var(s),
+                _ => a.var(s),
+            },
+            1 => terms[0].0,
+            _ => {
+                let e = a.constant(eps);
+                let mut num = Arena::ZERO;
+                let mut den = Arena::ZERO;
+                for (val, out) in terms {
+                    let w = a.f2(Fn2::Max, out, e);
+                    let t = a.mul(w, val);
+                    num = a.add(num, t);
+                    den = a.add(den, w);
+                }
+                a.div(num, den)
+            }
+        }
+    }
+
     /// `cardinality(c)`: connect equations naming connector `c`.
     fn cardinality(&mut self, arg: &'a E, scope: &Scope, ctx: &mut Ctx) -> Result<usize> {
         let (E::ComponentReference(cr), Some(inst)) = (arg, scope.inst) else {
@@ -1848,7 +2037,7 @@ impl<'a, 't> Flattener<'a, 't> {
                 Ok(Val::Rec(fields))
             }
             Val::Rec(_) => Ok(v.clone()),
-            _ => bail!("expected record value"),
+            other => bail!("expected record value, found {}", other.kind()),
         }
     }
 
@@ -2472,6 +2661,10 @@ impl<'a, 't> Flattener<'a, 't> {
             }
         }
         for (va, vb) in pa.into_iter().zip(pb) {
+            // Stream variables are not equated; inStream() mixes them (MLS 15).
+            if self.stream_vars.contains(&va) || self.stream_vars.contains(&vb) {
+                continue;
+            }
             // Parameters and constants in connectors (the phase number m of a plug) are not
             // connection variables.
             if matches!(
@@ -4537,6 +4730,43 @@ impl<'a, 't> Flattener<'a, 't> {
             "Integer" | "Real" | "Boolean" => return Ok(arg!(0)),
             "String" => return Ok(Val::Str(String::new())),
             "assert" | "terminate" | "print" => return Ok(Val::S(Arena::ZERO)),
+            "inStream" | "actualStream" => {
+                let v = arg!(0);
+                let (dims, xs) = v.elems()?;
+                let mut out = Vec::with_capacity(xs.len());
+                for x in xs {
+                    let Node::Var(sv) = self.model.arena.node(x) else {
+                        bail!("{name}() expects a stream variable of a connector");
+                    };
+                    if !self.stream_vars.contains(&sv) {
+                        bail!(
+                            "{name}(): '{}' is not a stream variable",
+                            self.model.vars[sv as usize].name
+                        );
+                    }
+                    let ins = self.in_stream_var(sv);
+                    let r = if name == "inStream" {
+                        self.model.arena.var(ins)
+                    } else {
+                        // actualStream(h) = if m_flow > 0 then inStream(h) else h
+                        let f = self
+                            .stream_flow(sv)
+                            .ok_or_else(|| anyhow!("stream connector without flow variable"))?;
+                        let a = &mut self.model.arena;
+                        let fv = a.var(f);
+                        let c = a.cmp(Cmp::Gt, fv, Arena::ZERO);
+                        let iv = a.var(ins);
+                        let sv = a.var(sv);
+                        a.if_(c, iv, sv)
+                    };
+                    out.push(r);
+                }
+                return Ok(if dims.is_empty() {
+                    Val::S(out[0])
+                } else {
+                    Val::A(dims, out)
+                });
+            }
             "cardinality" => {
                 let arg = pos
                     .first()
