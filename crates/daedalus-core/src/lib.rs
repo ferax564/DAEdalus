@@ -5,6 +5,8 @@ pub mod codegen;
 pub mod expr;
 pub mod flat;
 pub mod fmi;
+#[cfg(all(feature = "fmu", not(target_arch = "wasm32")))]
+pub mod fmu;
 pub mod frontend;
 pub mod linalg;
 pub mod linearize;

@@ -48,6 +48,39 @@ jobs:
           python3 tools/gen_chain.py 2000 > /tmp/chain.mo
           ./target/release/daedalus simulate library/Daedalus /tmp/chain.mo -m Chain --stop 0.2 -o /tmp/chain.mat
 
+  python:
+    name: Python package (maturin wheel and pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            crates/daedalus-py -> target
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build CLI and FMI runtime (used by the FMU and CLI comparison tests)
+        run: |
+          cargo build --release -p daedalus-cli -p daedalus-fmi
+          echo "$PWD/target/release" >> "$GITHUB_PATH"
+      - name: Build the wheel
+        run: |
+          python3 -m pip install --quiet maturin
+          maturin build --release -m crates/daedalus-py/Cargo.toml --out dist
+      - name: Install and test
+        env:
+          DAEDALUS_FMI_LIB: ${{ github.workspace }}/target/release/libdaedalus_fmi.so
+        run: |
+          python3 -m pip install --quiet dist/*.whl pytest pandas fmpy
+          cd crates/daedalus-py && python3 -m pytest -v
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-wheel
+          path: dist/*.whl
+
   web:
     name: WebAssembly and workbench build
     runs-on: ubuntu-latest

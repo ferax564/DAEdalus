@@ -7,11 +7,9 @@ license.workspace = true
 name = "daedalus"
 path = "src/main.rs"
 [dependencies]
-daedalus-core = { path = "../daedalus-core" }
+daedalus-core = { path = "../daedalus-core", features = ["fmu"] }
 anyhow = { workspace = true }
 rumoca-ir-ast = { workspace = true }
 rumoca-core = { workspace = true }
 serde_json = { workspace = true }
 serde = { workspace = true }
-bincode = "1.3"
-zip = { version = "2", default-features = false, features = ["deflate"] }
