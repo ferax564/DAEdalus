@@ -5,6 +5,7 @@ pub mod calibrate;
 pub mod casadi;
 pub mod codegen;
 pub mod expr;
+pub mod external;
 pub mod flat;
 pub mod fmi;
 #[cfg(all(feature = "fmu", not(target_arch = "wasm32")))]
@@ -28,6 +29,8 @@ pub mod sweep;
 pub mod structure;
 pub mod uq;
 pub mod steady;
+pub mod table1;
+pub mod table2;
 
 /// Flatten, analyse and compile `model` from `lib` into an executable model.
 pub fn translate(

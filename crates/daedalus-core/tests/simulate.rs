@@ -135,6 +135,14 @@ fn clocked_partitions() {
 }
 
 #[test]
+fn break_under_time_varying_condition() {
+    let r = run("break.mo", "B.Test", 1.0, Method::Bdf);
+    for (t, y) in [(0.1, 0.0), (0.3, 1.0), (0.6, 3.0), (0.8, 6.0), (1.0, 10.0)] {
+        assert_eq!(r.at("y", t).unwrap(), y, "t = {t}");
+    }
+}
+
+#[test]
 fn return_and_break_under_runtime_conditions() {
     let r = run("functions_control.mo", "FnTest", 1.0, Method::Bdf);
     // firstIdx({time > 0.3, time > 0.6, true}): 3 before 0.3, then 1
@@ -165,4 +173,115 @@ fn function_arguments_and_partial_application() {
         2f64.sqrt(),
         1e-9
     ));
+}
+
+/// Values of `var` just after each of the first ticks of a clock with period `h`,
+/// compared with a hand-computed sequence.
+fn ticks(r: &Results, var: &str, h: f64, expected: &[f64]) {
+    let got: Vec<f64> = (0..expected.len())
+        .map(|k| r.at(var, (k as f64 + 0.5) * h).unwrap())
+        .collect();
+    assert_eq!(got, expected, "{var}");
+}
+
+#[test]
+fn state_machine_reference_example() {
+    // ModelicaReference.StateMachines on the default clock (1 s).
+    let r = run("statemachines.mo", "SM.Reference", 12.0, Method::Bdf);
+    let v = [2., 4., 6., 5., 4., 3., 2., 1., 0., 2., 4., 6.];
+    ticks(&r, "v", 1.0, &v);
+}
+
+#[test]
+fn state_machine_immediate_delayed_reset() {
+    // a -> b when ticksInState() >= 3, b -> a (delayed) when ticksInState() >= 2.
+    let r = run("statemachines.mo", "SM.TwoStates", 1.2, Method::Bdf);
+    ticks(&r, "y", 0.1, &[1., 2., -1., -1., 1., 2., -1., -1., 1., 2.]);
+    ticks(&r, "z", 0.1, &[0., 0., 3., 4., 0., 0., 7., 8., 0., 0.]);
+    // Without reset the local counter of `a` continues.
+    let r = run("statemachines.mo", "SM.TwoStatesNoReset", 1.2, Method::Bdf);
+    ticks(&r, "y", 0.1, &[1., 2., -1., -1., 3., 4., -1., -1., 5., 6.]);
+    // A delayed transition out of `a` takes effect one tick later.
+    let r = run("statemachines.mo", "SM.TwoStatesDelayed", 1.2, Method::Bdf);
+    ticks(&r, "y", 0.1, &[1., 2., 3., -1., -1., 1., 2., 3., -1., -1.]);
+}
+
+#[test]
+fn state_machine_priorities_time_and_synchronize() {
+    let r = run("statemachines.mo", "SM.Priorities", 8.0, Method::Bdf);
+    ticks(&r, "y", 1.0, &[10., 10., 11., 10., 12., 10., 12., 10.]);
+    let r = run("statemachines.mo", "SM.Timed", 3.0, Method::Bdf);
+    ticks(&r, "y", 0.25, &[1., 1., 1., 2., 2., 1., 1., 1., 2., 2., 1.]);
+    let r = run("statemachines.mo", "SM.Sync", 8.0, Method::Bdf);
+    ticks(&r, "y", 1.0, &[1., 1., 2., 3., 1., 1., 2., 3.]);
+}
+
+#[test]
+fn state_machine_hierarchical() {
+    let r = run("statemachines.mo", "SM.Hierarchical", 12.0, Method::Bdf);
+    let v = [1., 2., 2., 2., 100., 101., 101., 101., 101., 100., 101.];
+    ticks(&r, "v", 1.0, &v);
+    ticks(
+        &r,
+        "outer1.c",
+        1.0,
+        &[1., 2., 3., 4., 4., 1., 2., 3., 4., 4., 1.],
+    );
+    // Re-entered without reset: the inner machine resumes in `hold`.
+    let r = run(
+        "statemachines.mo",
+        "SM.HierarchicalNoReset",
+        12.0,
+        Method::Bdf,
+    );
+    ticks(&r, "v", 1.0, &[1., 2., 2., 2., 100., 100., 100., 100.]);
+    ticks(
+        &r,
+        "outer1.c",
+        1.0,
+        &[1., 2., 3., 4., 4., 5., 5., 6., 6., 7.],
+    );
+}
+
+#[test]
+fn state_machine_mls_example() {
+    // MLS 17.4: hierarchical and parallel state machines.
+    let r = run(
+        "statemachines.mo",
+        "SM.HierarchicalAndParallel",
+        30.0,
+        Method::Bdf,
+    );
+    let mut v = vec![2., 4., 6., 5., 4., 3., 2., 1., 0., 0.];
+    v.extend([2., 4., 6., 5., 4., 3., 2., 1., 0., 0., 0., 0.]);
+    v.extend([5., 10., 15., 20., 2., 4., 6., 5.]);
+    ticks(&r, "v", 1.0, &v);
+    let mut count = vec![0.; 9];
+    count.extend([1.; 10]);
+    count.extend([2.; 7]);
+    count.extend([0.; 4]);
+    ticks(&r, "state1.count", 1.0, &count);
+    let mut i: Vec<f64> = (1..=21).map(f64::from).collect();
+    i.extend([21., 21., 21., 21., 21., 1., 2., 3., 4.]);
+    ticks(&r, "state1.stateX.i", 1.0, &i);
+}
+
+#[test]
+fn state_machine_errors() {
+    let src = std::fs::read_to_string(format!(
+        "{}/tests/models/statemachines.mo",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .unwrap();
+    let mut lib = Library::new();
+    assert!(lib.set_document("statemachines.mo", &src).is_empty());
+    let err = |model: &str| {
+        daedalus_core::translate(&lib, model, &Default::default())
+            .err()
+            .map(|e| format!("{e:#}"))
+            .unwrap_or_default()
+    };
+    assert!(err("SM.ImmediateLoop").contains("algebraic loop"));
+    assert!(err("SM.TicksInStateInState").contains("transition conditions"));
+    assert!(err("SM.SamePriority").contains("different priorities"));
 }

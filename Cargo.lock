@@ -284,6 +284,8 @@ dependencies = [
  "anyhow",
  "bincode",
  "indexmap",
+ "libc",
+ "miniz_oxide 0.8.9",
  "rumoca-core",
  "rumoca-ir-ast",
  "rumoca-phase-parse",

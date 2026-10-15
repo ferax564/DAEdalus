@@ -467,6 +467,10 @@ pub fn compile(flat: FlatModel, opts: &Options) -> Result<System> {
                         WhenAction::Assign(_, e)
                         | WhenAction::Reinit(_, e)
                         | WhenAction::Assert(e, _) => roots.push(*e),
+                        WhenAction::Effect(c, e) => {
+                            roots.push(*c);
+                            roots.push(*e);
+                        }
                         WhenAction::Terminate(_) => {}
                     }
                 }

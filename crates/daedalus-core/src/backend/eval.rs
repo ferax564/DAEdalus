@@ -51,6 +51,7 @@ pub fn eval(a: &Arena, root: ExprId, vals: &Values, memo: &mut FxHashMap<ExprId,
             Node::Pre(v) => Some((vals.pre)(v)),
             Node::Time => Some(vals.time),
             Node::Initial => Some(if vals.initial { 1.0 } else { 0.0 }),
+            Node::Terminal => Some(0.0),
             Node::Rel(r) if vals.rel.is_some() => Some((vals.rel.unwrap())(r)),
             _ => None,
         };
@@ -81,8 +82,8 @@ pub fn eval(a: &Arena, root: ExprId, vals: &Values, memo: &mut FxHashMap<ExprId,
             Node::F2(f, ..) => eval_f2(f, g(0), g(1)),
             Node::Cmp(op, ..) => f64::from(op.eval(g(0), g(1))),
             Node::Rel(r) => f64::from(a.relations[r as usize].op.eval(g(0), g(1))),
-            Node::Interp(t, c, _) => a.tables[t as usize].interp(c as usize, g(0)),
-            Node::InterpDer(t, c, _) => a.tables[t as usize].slope(c as usize, g(0)),
+            Node::Interp(vk, ..) => a.eval_lookup(vk, g(0), g(1)),
+            Node::Interp2(tk, ..) => a.tables2[(tk >> 5) as usize].eval(tk & 31, g(0), g(1)),
             // no history here: the undelayed value
             Node::Delay(k, _) => (vals.var)(a.delays[k as usize]),
             Node::Call(c, out) => {
@@ -105,6 +106,16 @@ pub const MAX_LOOP_ITERATIONS: usize = 10_000_000;
 
 /// Run loop program `p` from the initial state `args`; returns the final state.
 pub fn run_prog(a: &Arena, p: u32, args: &[f64]) -> Vec<f64> {
+    if let Some(nc) = &a.progs[p as usize].native
+        && nc.f.impure()
+    {
+        let mut out = Vec::new();
+        if let Err(e) = crate::external::eval(nc, args, &mut out, &mut a.ext.borrow_mut()) {
+            a.ext.borrow_mut().log.push(e);
+            out = vec![f64::NAN; nc.n_out];
+        }
+        return out;
+    }
     let key = (p, args.iter().map(|x| x.to_bits()).collect::<Vec<u64>>());
     if let Some(v) = a.prog_cache.borrow().get(&key) {
         return v.to_vec();
@@ -120,6 +131,14 @@ pub fn run_prog(a: &Arena, p: u32, args: &[f64]) -> Vec<f64> {
 
 fn run_prog_uncached(a: &Arena, p: u32, args: &[f64]) -> Vec<f64> {
     let prog = &a.progs[p as usize];
+    if let Some(nc) = &prog.native {
+        let mut out = Vec::new();
+        if let Err(e) = crate::external::eval(nc, args, &mut out, &mut a.ext.borrow_mut()) {
+            a.ext.borrow_mut().log.push(e);
+            out = vec![f64::NAN; nc.n_out];
+        }
+        return out;
+    }
     let mut x = args.to_vec();
     for _ in 0..MAX_LOOP_ITERATIONS {
         let xs = x.clone();
@@ -147,6 +166,9 @@ fn run_prog_uncached(a: &Arena, p: u32, args: &[f64]) -> Vec<f64> {
 
 /// Finite-difference partial derivative of output `out` with respect to argument `k`.
 pub fn call_partial(a: &Arena, p: u32, args: &[f64], out: u32, k: u32) -> f64 {
+    if a.progs[p as usize].is_impure() {
+        return 0.0;
+    }
     let f0 = run_prog(a, p, args)[out as usize];
     let mut ap = args.to_vec();
     let h = f64::EPSILON.sqrt() * ap[k as usize].abs().max(1.0);

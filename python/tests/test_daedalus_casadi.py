@@ -62,7 +62,7 @@ def test_tables():
         "data": [0, 0, 1, 1, 1, 3, 2, 2],
         "extrapolation": 0,
         "smoothness": 0,
-        "slopes": [],
+        "spline": [],
         "shift": 0.0,
         "start": None,
     }
@@ -75,6 +75,38 @@ def test_tables():
     f = ca.Function("f", [x], [table_expr(tab, 1, x)])
     assert float(f(-1)) == pytest.approx(-1)
     assert float(f(3)) == pytest.approx(1)
+    # constant segments extrapolate linearly from the edge segments
+    tab["smoothness"] = 1
+    f = ca.Function("f", [x], [table_expr(tab, 1, x)])
+    assert float(f(0.5)) == pytest.approx(0)
+    assert float(f(-1)) == pytest.approx(-1)
+    assert float(f(3)) == pytest.approx(1)
+
+
+def test_spline_tables():
+    import casadi as ca
+
+    # y = x^2 as a cubic spline: on segment k, y = y_k + (v + 2 x_k) v, v = x - x_k
+    xs = [0.0, 1.0, 2.0, 3.0]
+    tab = {
+        "rows": 4,
+        "cols": 2,
+        "data": [v for xk in xs for v in (xk, xk * xk)],
+        "extrapolation": 1,
+        "smoothness": 2,
+        "spline": [v for xk in xs[:-1] for v in (0.0, 0.0, 0.0, 0.0, 1.0, 2 * xk)],
+        "shift": 0.0,
+        "start": None,
+    }
+    x = ca.SX.sym("x")
+    y = table_expr(tab, 1, x)
+    f = ca.Function("f", [x], [y, ca.jacobian(y, x), ca.jacobian(ca.jacobian(y, x), x)])
+    for xi in [0.3, 1.5, 2.9]:
+        v, d, d2 = (float(o) for o in f(xi))
+        assert (v, d, d2) == pytest.approx((xi * xi, 2 * xi, 2.0))
+    # linear extrapolation with the end slopes
+    assert float(f(-1)[0]) == pytest.approx(0.0)
+    assert float(f(4)[0]) == pytest.approx(9.0 + 6.0)
 
 
 def test_minimum_time_ocp():

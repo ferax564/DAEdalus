@@ -8,6 +8,7 @@ pub mod inspect;
 pub mod inst;
 pub mod lazy;
 pub mod overconstrained;
+pub mod tablefile;
 pub mod tree;
 
 use crate::flat::FlatModel;
@@ -136,13 +137,45 @@ impl Library {
         tree::ClassTree::build(&docs)
     }
 
+    /// Directory of each top-level package (the one holding its `package.mo`, or the
+    /// file defining it), for `modelica://` URIs.
+    pub fn resource_roots(
+        &self,
+        tree: &tree::ClassTree<'_>,
+    ) -> rustc_hash::FxHashMap<String, String> {
+        let mut m = rustc_hash::FxHashMap::default();
+        let dir = |uri: &str| {
+            let u = uri.replace('\\', "/");
+            u.rsplit_once('/').map(|(d, _)| d.to_string())
+        };
+        for l in &self.lazy {
+            if !l.class.contains('.')
+                && let Some(d) = dir(&l.path.to_string_lossy())
+            {
+                m.insert(l.class.clone(), d);
+            }
+        }
+        for (name, &id) in &tree.node(tree::ROOT).children {
+            if let Some(d) = self
+                .docs
+                .get(tree.node(id).source)
+                .and_then(|d| dir(&d.uri))
+            {
+                m.insert(name.clone(), d);
+            }
+        }
+        m
+    }
+
     /// Flatten `model` (full dotted path) into a [`FlatModel`].
     pub fn flatten(&self, model: &str) -> Result<FlatModel> {
         let tree = self.tree();
         let id = tree
             .find_path(model)
             .ok_or_else(|| anyhow!("model '{model}' not found"))?;
+        let roots = self.resource_roots(&tree);
         let mut f = inst::Flattener::new(&tree);
+        f.resource_roots = roots.clone();
         let first = f.flatten(id);
         if !f.oc_log.used {
             first?;
@@ -160,6 +193,7 @@ impl Library {
         }
         drop(f);
         let mut f = inst::Flattener::new(&tree);
+        f.resource_roots = roots;
         f.oc_answers = Some(answers);
         f.flatten(id)?;
         Ok(f.model)
