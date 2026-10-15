@@ -832,10 +832,25 @@ impl<'a, 't> Flattener<'a, 't> {
                     v.start = Some(Arena::ZERO);
                     let n = self.model.add_var(v);
                     self.when_assigned.insert(n);
+                    // The time of the last tick, so that `interval()` is the time
+                    // since the previous tick (zero at the first one).
+                    let mut tv =
+                        Variable::new(format!("$clock{k}.t"), VarKind::Discrete, VarType::Real);
+                    tv.generated = true;
+                    tv.is_protected = true;
+                    tv.start = Some(Arena::ZERO);
+                    let tl = self.model.add_var(tv);
+                    self.when_assigned.insert(tl);
                     let a = &mut self.model.arena;
                     let idx = a.pre(n);
                     let inc = a.add(idx, Arena::ONE);
-                    (c, idx, vec![WhenAction::Assign(n, inc)], None)
+                    let now = a.time();
+                    let last = a.pre(tl);
+                    let since = a.sub(now, last);
+                    let first = a.cmp(Cmp::Eq, idx, Arena::ZERO);
+                    let h = a.if_(first, Arena::ZERO, since);
+                    let acts = vec![WhenAction::Assign(n, inc), WhenAction::Assign(tl, now)];
+                    (c, idx, acts, Some(h))
                 }
             };
             for p in parts {

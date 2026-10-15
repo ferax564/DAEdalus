@@ -254,6 +254,7 @@ pub struct Flattener<'a, 't> {
     connector_flows: Vec<VarId>,
     /// `semiLinear(x, s, h)` calls on plain variables: (result, x, s, h).
     semi_linear: Vec<(ExprId, VarId, VarId, ExprId)>,
+    homotopy_var: Option<VarId>,
     /// Translated parameter bindings (lazy; for structural evaluation).
     param_values: FxHashMap<VarId, f64>,
     binding_done: FxHashSet<VarId>,
@@ -326,6 +327,7 @@ impl<'a, 't> Flattener<'a, 't> {
             conn_flow: FxHashMap::default(),
             connector_flows: Vec::new(),
             semi_linear: Vec::new(),
+            homotopy_var: None,
             param_values: FxHashMap::default(),
             binding_done: FxHashSet::default(),
             binding_mods: FxHashMap::default(),
@@ -1139,8 +1141,23 @@ impl<'a, 't> Flattener<'a, 't> {
         };
         // Dimensions
         let mut dims = Vec::new();
+        // A field of a record bound as a whole takes the bound field's size, also when its
+        // declared size depends on a field the binding overrides (`rcData[nRC]`).
+        let hint = self
+            .dim_hints
+            .get(&format!(
+                "{}{}",
+                dot(&self.insts[inst as usize].prefix),
+                name
+            ))
+            .cloned();
         for s in &comp.shape_expr {
             match s {
+                ast::Subscript::Expression(_)
+                    if let Some(&d) = hint.as_ref().and_then(|h| h.get(dims.len())) =>
+                {
+                    dims.push(d);
+                }
                 ast::Subscript::Expression(e) => {
                     let v = self.eval_structural(e, &scope)?;
                     dims.push(v.round().max(0.0) as usize);
@@ -1409,13 +1426,18 @@ impl<'a, 't> Flattener<'a, 't> {
             } else {
                 m.clone()
             };
+            let mut bound_src = None;
             if let Some(v) = &cm.value
                 && matches!(v.expr, E::ComponentReference(_))
                 && let Ok(Val::Inst(src)) = self.translate_scoped(v, &mut Ctx::default())
             {
                 self.collect_dim_hints(src, &cprefix);
+                bound_src = Some(src);
             }
             let child = self.instantiate(tc, cprefix, &cm, tenv.clone(), Some(inst))?;
+            if let Some(src) = bound_src {
+                self.alias_param_fields(child, src);
+            }
             if !matches!(var_prefix, Variability::Empty) {
                 self.propagate_variability(child, &var_prefix);
             }
@@ -1612,6 +1634,36 @@ impl<'a, 't> Flattener<'a, 't> {
     // ------------------------------------------------------------------
     // Pass 2: translation
     // ------------------------------------------------------------------
+
+    /// Parameter fields of a record bound as a whole to `src` take `src`'s fields as their
+    /// bindings right away, so sizes declared from them (`resistor[cellData.nRC]`) see the
+    /// bound values rather than the record's defaults.
+    fn alias_param_fields(&mut self, child: InstId, src: InstId) {
+        let comps: Vec<(String, Comp)> = self.insts[child as usize]
+            .comps
+            .iter()
+            .map(|(k, c)| (k.clone(), c.clone()))
+            .collect();
+        let o = self.model.origin("record binding");
+        for (n, c) in comps {
+            let Some(sc) = self.insts[src as usize].comps.get(&n).cloned() else {
+                continue;
+            };
+            match (c, sc) {
+                (Comp::Var(cv), Comp::Var(sv))
+                    if matches!(
+                        self.model.vars[cv as usize].kind,
+                        VarKind::Parameter | VarKind::Constant
+                    ) =>
+                {
+                    let e = self.model.arena.var(sv);
+                    self.bind_var(cv, e, o);
+                }
+                (Comp::Inst(ci), Comp::Inst(si)) => self.alias_param_fields(ci, si),
+                _ => {}
+            }
+        }
+    }
 
     /// Record the array sizes of instance `src`'s fields under `prefix` (see `dim_hints`).
     fn collect_dim_hints(&mut self, src: InstId, prefix: &str) {
@@ -1898,6 +1950,29 @@ impl<'a, 't> Flattener<'a, 't> {
             }
             _ => Ok(()),
         }
+    }
+
+    /// The homotopy parameter shared by every `homotopy()` call.
+    fn homotopy_lambda(&mut self) -> ExprId {
+        let v = match self.homotopy_var {
+            Some(v) => v,
+            None => {
+                let mut v = Variable::new(
+                    crate::flat::HOMOTOPY_LAMBDA.to_string(),
+                    VarKind::Parameter,
+                    VarType::Real,
+                );
+                v.generated = true;
+                v.is_protected = true;
+                v.binding = Some(Arena::ONE);
+                v.start = Some(Arena::ONE);
+                let id = self.model.add_var(v);
+                self.binding_done.insert(id);
+                self.homotopy_var = Some(id);
+                id
+            }
+        };
+        self.model.arena.var(v)
     }
 
     /// The variable standing for `inStream(s)`; its equation is added with the connections.
@@ -4964,11 +5039,32 @@ impl<'a, 't> Flattener<'a, 't> {
                     .find(|(n, _)| *n == "actual")
                     .map(|(_, e)| *e)
                     .or(pos.first().copied());
-                return self.translate(
+                let simplified = named
+                    .iter()
+                    .find(|(n, _)| *n == "simplified")
+                    .map(|(_, e)| *e)
+                    .or(pos.get(1).copied());
+                let a = self.translate(
                     actual.ok_or_else(|| anyhow!("homotopy: missing actual"))?,
                     scope,
                     ctx,
-                );
+                )?;
+                let Some(simplified) = simplified else {
+                    return Ok(a);
+                };
+                let s = self.translate(simplified, scope, ctx)?;
+                // `lambda*actual + (1 - lambda)*simplified`; initialization walks lambda
+                // from 0 to 1 (homotopy continuation), simulation runs at lambda = 1.
+                let l = self.homotopy_lambda();
+                return self.zip2(a, s, &mut |ar, x, y| {
+                    if x == y {
+                        return x;
+                    }
+                    let lx = ar.mul(l, x);
+                    let ml = ar.sub(Arena::ONE, l);
+                    let ly = ar.mul(ml, y);
+                    ar.add(lx, ly)
+                });
             }
             "delay" => {
                 let x = arg!(0);

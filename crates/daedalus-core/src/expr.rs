@@ -1559,6 +1559,9 @@ pub fn eval_f1(f: Fn1, x: f64) -> f64 {
 #[inline]
 pub fn eval_f2(f: Fn2, x: f64, y: f64) -> f64 {
     match f {
+        // atan2 of a signed zero pair is 0 rather than ±π, so a vanishing phasor reads
+        // as angle 0 whatever the sign of its zero parts.
+        Fn2::Atan2 if x == 0.0 && y == 0.0 => 0.0,
         Fn2::Atan2 => x.atan2(y),
         Fn2::Min => x.min(y),
         Fn2::Max => x.max(y),

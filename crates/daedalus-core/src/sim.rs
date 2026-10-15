@@ -46,8 +46,8 @@ pub struct SimOptions {
     pub max_step: f64,
     /// Store values just before and after events.
     pub store_events: bool,
-    /// Most rows stored at events; 0 means as many as there are output points (at least
-    /// 2000), so a model with dense switching does not blow up the result file.
+    /// Most rows stored at events; 0 means about 50 million values' worth (at least as many
+    /// rows as output points), so a large model with dense switching keeps a bounded file.
     /// `usize::MAX` keeps every event.
     #[serde(default)]
     pub max_event_rows: usize,
@@ -439,6 +439,53 @@ impl<'m> Simulation<'m> {
         Ok(())
     }
 
+    /// Solve the initial equations. With `homotopy()` in the model, start from the
+    /// simplified equations (lambda = 0) and continue to the actual ones (lambda = 1),
+    /// each solve starting from the last solution; fall back to a direct solve.
+    fn solve_init(&mut self) -> Result<(), String> {
+        let m = self.rt.m;
+        let lambda = m
+            .vars
+            .iter()
+            .position(|v| v.name == crate::flat::HOMOTOPY_LAMBDA && v.kind == VarKind::Parameter);
+        if let Some(l) = lambda {
+            let saved = self.rt.r.clone();
+            let mut ok = true;
+            let mut at = 0.0f64;
+            let mut h = 0.1f64;
+            self.rt.r[l] = 0.0;
+            self.rt.run(&m.init);
+            if self.rt.error.take().is_some() {
+                ok = false;
+            }
+            while ok && at < 1.0 {
+                let next = (at + h).min(1.0);
+                let before = self.rt.r.clone();
+                self.rt.r[l] = next;
+                self.rt.run(&m.init);
+                if self.rt.error.take().is_some()
+                    || self.rt.r[..m.layout.nv].iter().any(|x| x.is_nan())
+                {
+                    self.rt.r = before;
+                    h /= 4.0;
+                    if h < 1e-4 {
+                        ok = false;
+                    }
+                } else {
+                    at = next;
+                    h = (h * 2.0).min(0.25);
+                }
+            }
+            if ok {
+                return Ok(());
+            }
+            self.rt.r = saved;
+            self.rt.r[l] = 1.0;
+        }
+        self.rt.run(&m.init);
+        self.check_newton("initialization")
+    }
+
     pub fn initialize(&mut self) -> Result<(), String> {
         let m = self.rt.m;
         let t0 = self.opts.start_time;
@@ -447,8 +494,7 @@ impl<'m> Simulation<'m> {
         self.rt.r[m.layout.initial] = 1.0;
         self.rt.run(&m.starts);
         self.rt.save_pre();
-        self.rt.run(&m.init);
-        self.check_newton("initialization")?;
+        self.solve_init()?;
         for &(v, p) in &m.pre_init {
             self.rt.r[m.layout.pre0 + v as usize] = self.rt.r[p as usize];
         }
@@ -558,6 +604,11 @@ impl<'m> Simulation<'m> {
                 max_step = b.d;
             }
         }
+        // Without states nothing limits the step: still look for crossings at least once
+        // per output interval.
+        if n == 0 && dt > 0.0 && dt < max_step {
+            max_step = dt;
+        }
         let rtol = o.tolerance;
         let atol = o.tolerance;
         let mut solver: Box<dyn Integrator> = match o.method {
@@ -587,7 +638,10 @@ impl<'m> Simulation<'m> {
         let event_budget = if o.max_event_rows > 0 {
             o.max_event_rows
         } else {
-            ((span / dt).ceil() as usize).max(2000)
+            // About 50 million stored values of event rows, and never fewer rows than
+            // output points: every event of a small model, a bounded file for a large one.
+            let per_row = rec.stored.len().max(1);
+            ((span / dt).ceil() as usize).max(50_000_000 / per_row)
         };
         let mut event_rows = 0usize;
         solver.reset(&mut self.rt, t, &x);
@@ -614,6 +668,11 @@ impl<'m> Simulation<'m> {
             let t_lim = match self.delay_events.first() {
                 Some(&te) if te < o.stop_time => te,
                 _ => o.stop_time,
+            };
+            let t_lim = if n == 0 {
+                t_lim.min(t + max_step)
+            } else {
+                t_lim
             };
             let tn = solver.step(&mut self.rt, t_lim)?;
             let tp = solver.t_prev();
@@ -705,6 +764,8 @@ impl<'m> Simulation<'m> {
                 if !time_event {
                     self.stats.state_events += 1;
                 }
+                // The row before the event sees the left values of delayed jumps.
+                self.rt.delay_right = false;
                 solver.interpolate(te, &mut xi);
                 self.rt.rhs(te, &xi, &mut x);
                 let store = o.store_events && event_rows < event_budget;
@@ -720,6 +781,7 @@ impl<'m> Simulation<'m> {
                     }
                 }
                 self.record_delays();
+                self.rt.delay_right = true;
                 self.event_iteration()?;
                 self.check_newton("event")?;
                 self.record_delays();
@@ -817,10 +879,10 @@ impl<'m> Simulation<'m> {
             return tb; // no crossing at tb any more (should not happen)
         }
         if ra != lat {
-            if ga.abs() <= self.hysteresis(i) {
-                return tb; // still inside the hysteresis band at the start
-            }
-            return ta; // already crossed at the start (e.g. right after an event)
+            // Already crossed at the start: right after an event, or the step ended
+            // within the hysteresis band just past the switching point (a sample
+            // instant hit exactly) and the relation has since moved clearly past it.
+            return ta;
         }
         let mut side = 0;
         for _ in 0..100 {

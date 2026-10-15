@@ -905,10 +905,18 @@ pub struct DelayBuf {
 
 impl DelayBuf {
     /// Value at `tq` (linear between recorded points, constant outside them).
-    pub fn at(&self, tq: f64) -> Option<f64> {
+    /// At a recorded jump (both values stored at one instant, give or take rounding of
+    /// `time - delayTime`) this is the left value, or the right one when `right`.
+    pub fn at(&self, tq: f64, right: bool) -> Option<f64> {
         let n = self.t.len();
         if n == 0 {
             return None;
+        }
+        let tol = 1e-12 * tq.abs().max(1.0);
+        let lo = self.t.partition_point(|&t| t < tq - tol);
+        let hi = self.t.partition_point(|&t| t <= tq + tol);
+        if hi > lo + 1 {
+            return Some(if right { self.v[hi - 1] } else { self.v[lo] });
         }
         let i = self.t.partition_point(|&t| t <= tq);
         if i == 0 {
@@ -1356,6 +1364,8 @@ pub struct Runtime<'m> {
     entry: Vec<f64>,
     piv: Vec<usize>,
     pub error: Option<NewtonError>,
+    /// `delay()` reads the right value at a delayed jump (set while events are handled).
+    pub delay_right: bool,
 }
 
 impl<'m> Runtime<'m> {
@@ -1383,6 +1393,7 @@ impl<'m> Runtime<'m> {
             entry: Vec::new(),
             piv: Vec::new(),
             error: None,
+            delay_right: true,
         }
     }
 
@@ -1435,7 +1446,9 @@ impl<'m> Runtime<'m> {
                         b.d_max = dl;
                     }
                     let tq = r[self.m.layout.time] - dl;
-                    r[d as usize] = b.at(tq).unwrap_or(r[self.m.delays[k as usize] as usize]);
+                    r[d as usize] = b
+                        .at(tq, self.delay_right)
+                        .unwrap_or(r[self.m.delays[k as usize] as usize]);
                 }
                 Ins::Call(d, site, out) => {
                     let v = site_value(

@@ -35,8 +35,8 @@ OPTIONS:
   --tol TOL               relative tolerance (default 1e-6)
   --method M              bdf | dopri5 | rk4 | euler
   --step H                fixed step size
-  --store-events E        rows at events: all | none | N (default: as many
-                          as output points)
+  --store-events E        rows at events: all | none | N (default: about
+                          50 million values, at least the output points)
   -p, --param NAME=VALUE  parameter override (repeatable)
   -o, --output FILE       result file (.mat Dymola format, or .csv)
   --vars a,b,c            variables written to CSV / printed

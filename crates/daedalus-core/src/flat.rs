@@ -35,6 +35,9 @@ pub enum StateSelect {
     Always,
 }
 
+/// Name of the parameter that blends `homotopy(actual, simplified)` during initialization.
+pub const HOMOTOPY_LAMBDA: &str = "$homotopy.lambda";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Variable {
     pub name: String,
