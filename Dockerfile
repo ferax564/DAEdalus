@@ -30,6 +30,8 @@ COPY web/scripts ./scripts
 RUN node scripts/fetch-msl.mjs
 COPY web ./
 COPY library /src/library
+# MSL conformance results for the scoreboard page (scripts/copy-conformance.mjs).
+COPY docs/conformance /src/docs/conformance
 COPY --from=wasm /out ./src/wasm
 RUN npm run build
 

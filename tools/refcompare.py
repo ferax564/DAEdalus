@@ -21,13 +21,19 @@ MSL_DIR is a checkout of ModelicaStandardLibrary (with Modelica/,
 ModelicaServices/ and Complex.mo); REF_DIR a checkout of MAP-LIB_ReferenceResults
 at the matching tag. With --baseline, the exit status is non-zero when a model
 that passed in the baseline no longer passes.
+
+The JSON file holds {meta, summary, results}. meta records where the numbers
+came from (generated_at, commit, msl_version, tolerance); files written before
+meta existed are still accepted as --baseline.
 """
 
 import argparse
 import concurrent.futures as cf
 import csv
+import datetime
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -176,6 +182,32 @@ def run_one(args, model):
     return res
 
 
+def source_commit():
+    """The DAEdalus commit being measured: $GITHUB_SHA in CI, else HEAD of the
+    checkout this script lives in; None when neither is available."""
+    sha = os.environ.get("GITHUB_SHA")
+    if sha:
+        return sha
+    try:
+        p = subprocess.run(
+            ["git", "rev-parse", "HEAD"], capture_output=True, text=True, timeout=10,
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return (p.stdout.strip() or None) if p.returncode == 0 else None
+
+
+def msl_version(msl):
+    """The version annotation of MSL_DIR/Modelica/package.mo, if readable."""
+    try:
+        with open(os.path.join(msl, "Modelica", "package.mo"), encoding="utf-8", errors="replace") as f:
+            m = re.search(r'\bversion\s*=\s*"([^"]+)"', f.read())
+    except OSError:
+        return None
+    return m.group(1) if m else None
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--daedalus", required=True)
@@ -187,7 +219,18 @@ def main():
     ap.add_argument("--json")
     ap.add_argument("--markdown")
     ap.add_argument("--baseline")
+    ap.add_argument("--msl-version", help="recorded in the JSON (default: read from MSL_DIR/Modelica/package.mo)")
     args = ap.parse_args()
+    meta = {
+        "generated_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "commit": source_commit(),
+        "msl_version": args.msl_version or msl_version(args.msl),
+        "tolerance": TOL,
+        "method": "csv-compare style tube: half-width tolerance*(time span) in time, tolerance*(signal range) in value",
+        "reference": "MAP-LIB_ReferenceResults (Dymola-generated)",
+        "filter": args.filter,
+        "timeout": args.timeout,
+    }
 
     models = list_models(args.ref, args.filter)
     results = []
@@ -208,12 +251,13 @@ def main():
     print(json.dumps(summary))
     if args.json:
         with open(args.json, "w") as f:
-            json.dump({"summary": summary, "results": results}, f, indent=1)
+            json.dump({"meta": meta, "summary": summary, "results": results}, f, indent=1)
     if args.markdown:
         write_markdown(args.markdown, summary, results)
     if args.baseline:
         with open(args.baseline) as f:
-            base = {r["model"]: r["status"] for r in json.load(f)["results"]}
+            # Only "results" is read, so baselines written before "meta" still work.
+            base = {r["model"]: r.get("status") for r in json.load(f).get("results", [])}
         now = {r["model"]: r["status"] for r in results}
         lost = sorted(m for m, s in base.items() if s == "pass" and now.get(m) not in (None, "pass"))
         if lost:
