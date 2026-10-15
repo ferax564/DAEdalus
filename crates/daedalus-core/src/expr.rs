@@ -947,6 +947,48 @@ impl Arena {
         l
     }
 
+    /// Whether a [`Node::Local`] (a loop-program variable) occurs in `root`.
+    pub fn mentions_local(&self, root: ExprId) -> bool {
+        let mut seen = rustc_hash::FxHashSet::default();
+        let mut stack = vec![root];
+        let mut ch = Vec::new();
+        while let Some(id) = stack.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
+            if matches!(self.node(id), Node::Local(_)) {
+                return true;
+            }
+            ch.clear();
+            self.children(id, &mut ch);
+            stack.extend(ch.iter().copied());
+        }
+        false
+    }
+
+    /// Partial derivative `kind` of 2-D table `t`, one-sided on grid lines by the
+    /// direction `(du1, du2)` the abscissae move in (the cell left of a grid line when
+    /// `du < 0`), as the C `getDerValue` / `getDer2Value` choose the cell.
+    pub fn interp2_sided(
+        &mut self,
+        t: u32,
+        kind: u32,
+        u1: ExprId,
+        u2: ExprId,
+        du1: ExprId,
+        du2: ExprId,
+    ) -> ExprId {
+        use crate::table2::kind as k2;
+        let l1 = self.cmp(Cmp::Lt, du1, Self::ZERO);
+        let l2 = self.cmp(Cmp::Lt, du2, Self::ZERO);
+        let at = |a: &mut Self, s: u32| a.interp2(t, kind | s, u1, u2);
+        let (rr, lr) = (at(self, 0), at(self, k2::LEFT1));
+        let (rl, ll) = (at(self, k2::LEFT2), at(self, k2::LEFT1 | k2::LEFT2));
+        let right1 = self.if_(l2, rl, rr);
+        let left1 = self.if_(l2, ll, lr);
+        self.if_(l1, left1, right1)
+    }
+
     /// True if `root` references the leaf `target`.
     pub fn contains(&self, root: ExprId, target: Node) -> bool {
         let mut found = false;
@@ -1123,16 +1165,6 @@ impl Arena {
                     let (t, k) = (tk >> k2::BITS, tk & ((1 << k2::BITS) - 1));
                     let (du1, du2) = (d(0), d(1));
                     let first = k & 7 == k2::VALUE;
-                    let l1 = if first {
-                        self.cmp(Cmp::Lt, du1, Self::ZERO)
-                    } else {
-                        Self::ZERO
-                    };
-                    let l2 = if first {
-                        self.cmp(Cmp::Lt, du2, Self::ZERO)
-                    } else {
-                        Self::ZERO
-                    };
                     let mut r = Self::ZERO;
                     for (dim, du) in [(0, du1), (1, du2)] {
                         if self.is_zero(du) {
@@ -1142,12 +1174,7 @@ impl Arena {
                             continue;
                         };
                         let p = if first {
-                            let at = |a: &mut Self, s: u32| a.interp2(t, pk | s, u1, u2);
-                            let (rr, lr) = (at(self, 0), at(self, k2::LEFT1));
-                            let (rl, ll) = (at(self, k2::LEFT2), at(self, k2::LEFT1 | k2::LEFT2));
-                            let right1 = self.if_(l2, rl, rr);
-                            let left1 = self.if_(l2, ll, lr);
-                            self.if_(l1, left1, right1)
+                            self.interp2_sided(t, pk, u1, u2, du1, du2)
                         } else {
                             self.interp2(t, pk, u1, u2)
                         };

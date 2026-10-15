@@ -39,6 +39,7 @@ package Ext
     Integer rngState[33];
   algorithm
     rngState := testState();
+    rngState[1] := rngState[1] + seed - 5;
     setInternalState(rngState, seed);
     id := seed;
   end initializeImpureRandom;
@@ -151,6 +152,18 @@ package Ext
       print("done");
     end when;
   end Impure;
+
+  // ModelicaRandom.c has one global impure generator: a second, different seed
+  // would invalidate the first id.
+  model TwoSeeds
+    parameter Integer id1 = initializeImpureRandom(5);
+    parameter Integer id2 = initializeImpureRandom(6);
+    discrete Real r(start = 0, fixed = true);
+  algorithm
+    when sample(0.1, 0.1) then
+      r := impureRandom(id1) + impureRandom(id2);
+    end when;
+  end TwoSeeds;
 
   // FFT of 1 + 2*cos(w*k) + 0.5*sin(2*w*k), w = 2*pi/8, scaled by time.
   model FFT

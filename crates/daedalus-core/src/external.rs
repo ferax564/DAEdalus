@@ -470,11 +470,34 @@ pub fn real_fft(u: &[f64]) -> (Vec<f64>, Vec<f64>) {
 // Time, process id, file system
 // ----------------------------------------------------------------------------
 
-/// `[ms, sec, min, hour, day, mon, year]` of the current (UTC) time.
+/// `[ms, sec, min, hour, day, mon, year]` of the current local time (as C
+/// `localtime`); UTC where the time zone is not available (WebAssembly, non-Unix).
 pub fn local_time() -> [i32; 7] {
     let t = crate::backend::web_time_now();
     let secs = t.floor() as i64;
     let ms = ((t - t.floor()) * 1000.0) as i32;
+    #[cfg(all(unix, not(target_arch = "wasm32")))]
+    {
+        let tt = secs as libc::time_t;
+        // SAFETY: `localtime_r` writes only into `tm`, which outlives the call.
+        let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+        if !unsafe { libc::localtime_r(&tt, &mut tm) }.is_null() {
+            return [
+                ms,
+                tm.tm_sec,
+                tm.tm_min,
+                tm.tm_hour,
+                tm.tm_mday,
+                tm.tm_mon + 1,
+                tm.tm_year + 1900,
+            ];
+        }
+    }
+    utc_fields(secs, ms)
+}
+
+/// `[ms, sec, min, hour, day, mon, year]` of `secs` since 1970 in UTC.
+fn utc_fields(secs: i64, ms: i32) -> [i32; 7] {
     let days = secs.div_euclid(86_400);
     let rem = secs.rem_euclid(86_400);
     let (h, mi, s) = (rem / 3600, (rem % 3600) / 60, rem % 60);
@@ -1148,6 +1171,30 @@ mod tests {
             assert_eq!(matio::read(&f, "B", true).unwrap(), (1, 2, vec![1.0, 2.0]));
             let _ = std::fs::remove_file(&f);
         }
+    }
+
+    #[test]
+    fn calendar_fields() {
+        assert_eq!(utc_fields(0, 0), [0, 0, 0, 0, 1, 1, 1970]);
+        assert_eq!(utc_fields(1_700_000_000, 5), [5, 20, 13, 22, 14, 11, 2023]);
+        assert_eq!(utc_fields(951_782_400, 0), [0, 0, 0, 0, 29, 2, 2000]);
+        // local time differs from UTC by whole minutes
+        let (l, u) = (local_time(), {
+            let t = crate::backend::web_time_now();
+            utc_fields(t.floor() as i64, 0)
+        });
+        assert!(
+            (l[1] - u[1]).abs() <= 1 || (l[1] - u[1]).abs() >= 58,
+            "{l:?} {u:?}"
+        );
+    }
+
+    #[test]
+    fn empty_quoted_string_is_not_a_token() {
+        // As ModelicaStrings_scanString: token_length 0 takes the error path, returning
+        // "" and nextIndex = startIndex.
+        assert_eq!(scan_string(r#"  "" x"#, 1), (1, String::new()));
+        assert_eq!(scan_string(r#" "a" "#, 1), (5, "a".into()));
     }
 
     #[test]

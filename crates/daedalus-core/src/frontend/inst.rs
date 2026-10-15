@@ -337,9 +337,11 @@ pub struct Flattener<'a, 't> {
     /// Condition of the time-varying `if` branches being executed (for effects).
     effect_path: Option<ExprId>,
     /// Hidden state of the impure random number generator (`initializeImpureRandom`),
-    /// and whether `setInternalState` defined it.
+    /// and the state `setInternalState` defined it from.
     rng_vars: Option<Vec<VarId>>,
-    rng_set: bool,
+    rng_set: Option<Vec<ExprId>>,
+    /// 1-D table objects with `extrapolation = NoExtrapolation` (arena table ids).
+    no_extrap_tables: FxHashSet<u32>,
     /// Programs of the pure native external functions, shared by all calls.
     native_progs: FxHashMap<crate::external::NativeCall, u32>,
     /// Directory of each top-level package, for `modelica://` URIs.
@@ -400,7 +402,8 @@ impl<'a, 't> Flattener<'a, 't> {
             effects: Vec::new(),
             effect_path: None,
             rng_vars: None,
-            rng_set: false,
+            rng_set: None,
+            no_extrap_tables: FxHashSet::default(),
             native_progs: FxHashMap::default(),
             resource_roots: FxHashMap::default(),
         }
@@ -6844,6 +6847,9 @@ impl<'a, 't> Flattener<'a, 't> {
                     );
                 }
                 let id = self.model.arena.add_table(t);
+                if extrap == 4 {
+                    self.no_extrap_tables.insert(id);
+                }
                 self.ext_tables.push((id, columns));
                 Val::S(
                     self.model
@@ -6864,6 +6870,11 @@ impl<'a, 't> Flattener<'a, 't> {
                     _ => Arena::ZERO,
                 };
                 let o = if time { 5 } else { 3 };
+                if !time && self.no_extrap_tables.contains(&t) {
+                    let tb = &self.model.arena.tables[t as usize];
+                    let (lo, hi) = (tb.at(0, 0), tb.at(tb.rows - 1, 0));
+                    self.range_assert(x, lo, hi, "u");
+                }
                 let a = &mut self.model.arena;
                 let v = match fun {
                     "getValue" => a.table_lookup(t, c, tkind::VALUE, x, ne),
@@ -6961,6 +6972,38 @@ impl<'a, 't> Flattener<'a, 't> {
         Ok((d[0], d[1], data))
     }
 
+    /// `extrapolation = NoExtrapolation` of 2-D table `t`: inputs outside the grid are
+    /// an error, as in C (asserted at run time).
+    fn no_extrapolation2(&mut self, t: u32, u1: ExprId, u2: ExprId) {
+        let tb = &self.model.arena.tables2[t as usize];
+        if tb.extrapolation != crate::table2::NO_EXTRAPOLATION {
+            return;
+        }
+        let (lo, hi) = (tb.min_abscissa(), tb.max_abscissa());
+        self.range_assert(u1, lo[0], hi[0], "u1");
+        self.range_assert(u2, lo[1], hi[1], "u2");
+    }
+
+    /// A run-time assertion `lo <= u <= hi` (a table input without extrapolation).
+    /// Inside a function compiled as a loop program the input is local: not asserted.
+    fn range_assert(&mut self, u: ExprId, lo: f64, hi: f64, name: &str) {
+        let a = &mut self.model.arena;
+        if a.as_const(u).is_some_and(|x| x >= lo && x <= hi) || a.mentions_local(u) {
+            return;
+        }
+        let (l, h) = (a.constant(lo), a.constant(hi));
+        let c1 = a.cmp(Cmp::Ge, u, l);
+        let c2 = a.cmp(Cmp::Le, u, h);
+        let c = a.f2(Fn2::And, c1, c2);
+        self.model.asserts.push((
+            c,
+            format!(
+                "Extrapolation error: the table input {name} must be in [{lo}, {hi}] \
+                 (extrapolation = NoExtrapolation)"
+            ),
+        ));
+    }
+
     /// `ModelicaStandardTables_CombiTable2D_*`: lookups become [`Node::Interp2`] nodes.
     fn standard_table2(&mut self, fun: &str, args: Vec<Val>) -> Result<Vec<Val>> {
         let num = |f: &mut Self, v: &Val, what: &str| -> Result<f64> {
@@ -7007,15 +7050,18 @@ impl<'a, 't> Flattener<'a, 't> {
             }
             "getValue" => {
                 let t = handle(self, &args[0])?;
-                Val::S(self.model.arena.interp2(t, k2::VALUE, arg(1)?, arg(2)?))
+                let (u1, u2) = (arg(1)?, arg(2)?);
+                self.no_extrapolation2(t, u1, u2);
+                Val::S(self.model.arena.interp2(t, k2::VALUE, u1, u2))
             }
             "getDerValue" => {
                 // (tableID, u1, u2, der_u1, der_u2)
                 let t = handle(self, &args[0])?;
                 let (u1, u2, du1, du2) = (arg(1)?, arg(2)?, arg(3)?, arg(4)?);
+                self.no_extrapolation2(t, u1, u2);
                 let a = &mut self.model.arena;
-                let p1 = a.interp2(t, k2::D1, u1, u2);
-                let p2 = a.interp2(t, k2::D2, u1, u2);
+                let p1 = a.interp2_sided(t, k2::D1, u1, u2, du1, du2);
+                let p2 = a.interp2_sided(t, k2::D2, u1, u2, du1, du2);
                 let t1 = a.mul(p1, du1);
                 let t2 = a.mul(p2, du2);
                 Val::S(a.add(t1, t2))
@@ -7025,6 +7071,7 @@ impl<'a, 't> Flattener<'a, 't> {
                 let t = handle(self, &args[0])?;
                 let (u1, u2) = (arg(1)?, arg(2)?);
                 let (d1, d2, dd1, dd2) = (arg(3)?, arg(4)?, arg(5)?, arg(6)?);
+                self.no_extrapolation2(t, u1, u2);
                 let a = &mut self.model.arena;
                 let two = a.constant(2.0);
                 let d12 = a.mul(d1, d2);
@@ -7039,7 +7086,7 @@ impl<'a, 't> Flattener<'a, 't> {
                     (k2::D1, dd1),
                     (k2::D2, dd2),
                 ] {
-                    let p = a.interp2(t, k, u1, u2);
+                    let p = a.interp2_sided(t, k, u1, u2, d1, d2);
                     let term = a.mul(p, w);
                     acc = a.add(acc, term);
                 }
@@ -7268,9 +7315,20 @@ impl<'a, 't> Flattener<'a, 't> {
                 if st.len() != 33 {
                     bail!("the impure random number generator needs a state of 33 integers");
                 }
+                // ModelicaRandom.c keeps one global generator: each call replaces its
+                // state, and impureRandom fails for the ids of the earlier calls. The
+                // state is set once here, by initialization.
                 let vars = self.impure_rng_vars();
-                if !self.rng_set {
-                    self.rng_set = true;
+                if let Some(prev) = &self.rng_set {
+                    if *prev != st {
+                        bail!(
+                            "initializeImpureRandom is called more than once with different \
+                             seeds: the impure random number generator has a single global \
+                             state (one GlobalSeed per model)"
+                        );
+                    }
+                } else {
+                    self.rng_set = Some(st.clone());
                     let o = self.model.origin("initializeImpureRandom");
                     for (v, e) in vars.iter().zip(st) {
                         let lhs = self.model.arena.var(*v);
@@ -7406,7 +7464,7 @@ impl<'a, 't> Flattener<'a, 't> {
     /// first `impureRandom`).
     fn finish_impure_rng(&mut self) {
         if let Some(vs) = &self.rng_vars
-            && !self.rng_set
+            && self.rng_set.is_none()
         {
             for &v in vs {
                 let var = &mut self.model.vars[v as usize];

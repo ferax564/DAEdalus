@@ -10,6 +10,10 @@ use daedalus_core::results::Results;
 use daedalus_core::sim::{Method, SimOptions, simulate};
 
 fn run(model: &str, stop: f64, interval: f64) -> Results {
+    try_run(model, stop, interval).unwrap()
+}
+
+fn try_run(model: &str, stop: f64, interval: f64) -> Result<Results, String> {
     let path = format!("{}/tests/models/tables.mo", env!("CARGO_MANIFEST_DIR"));
     let text = std::fs::read_to_string(&path).unwrap();
     let mut lib = Library::new();
@@ -23,7 +27,7 @@ fn run(model: &str, stop: f64, interval: f64) -> Results {
         interval,
         ..SimOptions::from_model(&m)
     };
-    simulate(&m, opts).map_err(|e| e.message).unwrap().0
+    simulate(&m, opts).map(|r| r.0).map_err(|e| e.message)
 }
 
 fn check(r: &Results, name: &str, t: f64, want: f64, tol: f64) {
@@ -150,4 +154,29 @@ fn periodic_time_table_with_jumps() {
     check(&r, "t.y", 1.95, 0.0, 1e-9);
     check(&r, "t.y", 2.5, -2.0, 1e-9);
     check(&r, "dy", 2.5, -20.0 / 3.0, 1e-9);
+}
+
+#[test]
+fn derivative_on_a_grid_line_takes_the_side_moved_into() {
+    // As C getDerValue: der_u1 < 0 takes the cell left of the grid line u1 = 1.
+    let r = run("TablesTest.DerOnGridLine", 1.0, 0.1);
+    check(&r, "dy", 0.2, -0.3, 1e-12);
+    check(&r, "dy", 0.8, 0.6, 1e-12);
+    check(&r, "dyConst", 0.0, -1.0, 1e-12);
+}
+
+#[test]
+fn no_extrapolation_is_an_error_outside_the_table() {
+    for model in [
+        "TablesTest.NoExtrapolation2D",
+        "TablesTest.NoExtrapolation1D",
+    ] {
+        // inside the table range: fine
+        let r = run(model, 1.0, 0.1);
+        assert_eq!(r.time.last().copied(), Some(1.0));
+        let e = try_run(model, 2.0, 0.1)
+            .err()
+            .unwrap_or_else(|| panic!("{model}: no error"));
+        assert!(e.contains("Extrapolation error"), "{model}: {e}");
+    }
 }

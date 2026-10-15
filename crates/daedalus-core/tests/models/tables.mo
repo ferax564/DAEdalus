@@ -71,6 +71,16 @@ package TablesTest
   external "C" y = ModelicaStandardTables_CombiTable2D_getValue(tableID, u1, u2);
   end getTable2DValue;
 
+  function getTable2DDerValue
+    input ExternalCombiTable2D tableID;
+    input Real u1;
+    input Real u2;
+    input Real der_u1;
+    input Real der_u2;
+    output Real der_y;
+  external "C" der_y = ModelicaStandardTables_CombiTable2D_getDerValue(tableID, u1, u2, der_u1, der_u2);
+  end getTable2DDerValue;
+
   function getTable2DAbscissaUmin
     input ExternalCombiTable2D tableID;
     output Real uMin[2];
@@ -220,4 +230,23 @@ package TablesTest
       extrapolation = 3);
     Real dy = der(t.y);
   end PeriodicTime;
+
+  model DerOnGridLine "getDerValue on the grid line u1 = 1, where the slope in u1 changes"
+    // z = 0, 1, 3 at u1 = 0, 1, 2 (independent of u2): slope 1 left of u1 = 1, 2 right
+    parameter ExternalCombiTable2D tableID = ExternalCombiTable2D("NoName", "NoName",
+      [0, 0, 1; 0, 0, 0; 1, 1, 1; 2, 3, 3], 1, 2);
+    Real du = time - 0.5;
+    Real dy = getTable2DDerValue(tableID, 1, 0.5, du, 0);
+    Real dyConst = getTable2DDerValue(tableID, 1, 0.5, -1, 0);
+  end DerOnGridLine;
+
+  model NoExtrapolation2D "extrapolation = NoExtrapolation: u1 leaves [0, 1] at time 1"
+    Table2D t(table = [0, 0, 1; 0, 0, 1; 1, 2, 3], extrapolation = 4, u1 = time, u2 = 0.5);
+  end NoExtrapolation2D;
+
+  model NoExtrapolation1D "extrapolation = NoExtrapolation: u leaves [0, 1] at time 1"
+    parameter ExternalCombiTable1D tableID = ExternalCombiTable1D("NoName", "NoName",
+      [0, 0; 1, 2], {2}, 1, 4);
+    Real y = getTable1DValue(tableID, 1, time);
+  end NoExtrapolation1D;
 end TablesTest;

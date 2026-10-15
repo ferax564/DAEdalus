@@ -77,6 +77,18 @@ fn impure_random_draws_in_order() {
 }
 
 #[test]
+fn impure_random_has_one_global_state() {
+    let path = format!("{}/tests/models/external.mo", env!("CARGO_MANIFEST_DIR"));
+    let text = std::fs::read_to_string(&path).unwrap();
+    let mut lib = Library::new();
+    assert!(lib.set_document(&path, &text).is_empty());
+    let e = daedalus_core::translate(&lib, "Ext.TwoSeeds", &Default::default())
+        .err()
+        .expect("two different seeds must be rejected");
+    assert!(format!("{e:#}").contains("single global"), "{e:#}");
+}
+
+#[test]
 fn real_fft_amplitudes_and_phases() {
     let r = run("Ext.FFT", 1.0);
     let tol = 1e-12;
