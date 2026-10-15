@@ -29,5 +29,10 @@ export default defineConfig({
   plugins: [devDocs()],
   server: { fs: { allow: [".."] } },
   worker: { format: "es" },
-  build: { target: "es2022", chunkSizeWarningLimit: 4096 },
+  build: {
+    target: "es2022",
+    chunkSizeWarningLimit: 4096,
+    // Two pages: the workbench and the MSL accuracy scoreboard.
+    rollupOptions: { input: { main: "index.html", scoreboard: "scoreboard.html" } },
+  },
 });

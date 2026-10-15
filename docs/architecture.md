@@ -9,8 +9,10 @@ DAEdalus goes from Modelica source text to results in five stages:
                 own inst.)
 ```
 
-All of it lives in `daedalus-core`. The CLI (`daedalus-cli`) and the browser
-workbench (`daedalus-wasm` plus `web/`) are thin layers on top. The design goal
+All of it lives in `daedalus-core`. The CLI (`daedalus-cli`), the browser
+workbench (`daedalus-wasm` plus `web/`) and the Python package (`daedalus-py`,
+PyO3) are thin layers on top; FMU writing is `daedalus_core::fmu` (feature `fmu`),
+shared by the CLI and Python. The design goal
 is that compile time and run time both stay close to linear in model size.
 
 ## What we took from whom

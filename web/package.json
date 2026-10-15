@@ -7,8 +7,9 @@
   "scripts": {
     "wasm": "cargo build -p daedalus-wasm --profile release-wasm --target wasm32-unknown-unknown --manifest-path ../Cargo.toml && wasm-bindgen --target web --out-dir src/wasm ${CARGO_TARGET_DIR:-../target}/wasm32-unknown-unknown/release-wasm/daedalus_wasm.wasm",
     "msl": "node scripts/fetch-msl.mjs",
-    "dev": "vite",
-    "build": "tsc --noEmit && vite build && node scripts/build-docs.mjs",
+    "conformance": "node scripts/copy-conformance.mjs",
+    "dev": "node scripts/copy-conformance.mjs && vite",
+    "build": "node scripts/copy-conformance.mjs && tsc --noEmit && vite build && node scripts/build-docs.mjs",
     "docs": "node scripts/build-docs.mjs",
     "preview": "vite preview",
     "test": "tsc --noEmit"

@@ -30,7 +30,8 @@ COPY web/scripts ./scripts
 RUN node scripts/fetch-msl.mjs
 COPY web ./
 COPY library /src/library
-# The documentation site in docs/ is rendered to dist/docs/ and served at /docs/.
+# The documentation site in docs/ is rendered to dist/docs/ and served at /docs/;
+# docs/conformance feeds the scoreboard page (scripts/copy-conformance.mjs).
 COPY docs /src/docs
 COPY --from=wasm /out ./src/wasm
 RUN npm run build

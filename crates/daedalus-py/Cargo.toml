@@ -1,0 +1,29 @@
+[package]
+name = "daedalus-py"
+description = "Python bindings for DAEdalus: translate, simulate and linearize Modelica models"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/ferax564/DAEdalus"
+publish = false
+
+# Built with maturin (see pyproject.toml), not as part of the cargo workspace: the root
+# Cargo.toml excludes this crate so `cargo build/test --workspace` needs no Python.
+[workspace]
+
+[lib]
+name = "_daedalus"
+crate-type = ["cdylib"]
+
+[dependencies]
+daedalus-core = { path = "../daedalus-core", features = ["fmu"] }
+pyo3 = { version = "0.30.1", features = ["abi3-py39"] }
+numpy = "0.30.0"
+serde = "1"
+serde_json = "1"
+anyhow = "1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
