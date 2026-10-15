@@ -20,6 +20,7 @@ environment for the Modelica language. It is built for speed and scale:
   - icon, diagram and text views of each class
   - a variable browser
   - a plot window with display units
+  - a 3-D animation view of Modelica.Mechanics.MultiBody models
   - simulation setup
 
 All compilation runs in a Web Worker.
@@ -32,7 +33,30 @@ All compilation runs in a Web Worker.
 > Status: under active development. See [docs/architecture.md](docs/architecture.md),
 > [docs/examples.md](docs/examples.md) and [docs/roadmap.md](docs/roadmap.md).
 
+## Install
+
+Prebuilt binaries for Linux (x86_64), macOS (Apple Silicon and Intel) and
+Windows (x86_64) are attached to each [GitHub Release](https://github.com/ferax564/DAEdalus/releases).
+Each archive holds the `daedalus` CLI, the FMI runtime it bundles into FMUs, and
+the `library/Daedalus` example library:
+
+```sh
+tar xzf daedalus-v0.1.0-x86_64-unknown-linux-gnu.tar.gz
+cd daedalus-v0.1.0-x86_64-unknown-linux-gnu
+./daedalus simulate library/Daedalus -m Daedalus.Examples.LandingGear.SinkRates -o sink.mat
+```
+
+On macOS, clear the download quarantine first with
+`xattr -dr com.apple.quarantine <folder>`, since the binaries are not notarized.
+The release also carries the `daedalus-casadi` Python wheel
+(`pip install daedalus_casadi-*.whl`). It drives the CLI, so put the extracted
+folder on `PATH` (or set `DAEDALUS_BIN` to the executable); it then finds the
+`library/Daedalus` shipped next to it, or `DAEDALUS_LIB` if set. Maintainers cut a release by pushing a
+tag that matches the workspace version, for example `git tag v0.1.0 && git push origin v0.1.0`.
+
 ## Quick start
+
+From source:
 
 ```sh
 cargo build --release
@@ -49,6 +73,9 @@ cargo build --release
 
 # Run every model with an experiment annotation, each in its own process
 ./target/release/daedalus test-library library/Daedalus -m Daedalus
+
+# Export the index-reduced DAE for CasADi (optimal control, MPC, estimation)
+./target/release/daedalus export-casadi library/Daedalus -m Daedalus.Examples.OptimalControl.AileronServo -o servo.json
 
 # Linear state-space model der(x) = A x + B u, y = C x + D u around the initial
 # point (or after simulating to --at T); --format text | json | mo
@@ -177,7 +204,10 @@ The page is laid out like Dymola:
 - the package browser is on the left;
 - the class you open shows in Icon, Diagram or Text view;
 - **Simulate** compiles the class in the worker and fills the variable browser;
-- ticking a variable plots it.
+- ticking a variable plots it;
+- a model with MultiBody shapes also gets an **Animation** view: a 3-D
+  replay with STL/OBJ meshes, studio lighting, camera presets, follow and
+  chase cameras, part selection with X-ray, and WebM recording.
 
 ## Examples
 
@@ -186,6 +216,27 @@ and Claytex: torque converters, landing-gear drop tests, an aileron actuator,
 a quarter car with a hydraulic damper, vehicle-efficiency sensitivity, and
 coast-down road-load fitting. Each model cites its source post. Results and
 assumptions are in [docs/examples.md](docs/examples.md).
+
+## Optimal control, MPC and estimation
+
+`daedalus export-casadi` hands a translated model to [CasADi](https://web.casadi.org):
+the system after alias elimination, index reduction and tearing, as a
+semi-explicit index-1 DAE. The `daedalus_casadi` Python package in `python/`
+builds on it with:
+- direct-collocation optimal control;
+- model predictive control;
+- moving horizon estimation of states and parameters.
+
+Costs and constraints refer to model variables by their Modelica names.
+
+```sh
+pip install casadi numpy matplotlib
+python python/examples/ocp_aileron.py            # minimum-time aileron move: 41.7 ms
+python python/examples/mpc_active_suspension.py  # MPC with bump preview: -35 % body acceleration
+python python/examples/mhe_coastdown.py          # Cd and crr from a noisy coast-down
+```
+
+See [docs/optimal-control.md](docs/optimal-control.md).
 
 ## Performance
 
@@ -211,7 +262,9 @@ of the EV model, which take 109k steps.
 | `crates/daedalus-py` | Python package `daedalus` (PyO3, built with maturin; not a cargo workspace member) |
 | `crates/daedalus-fmi` | FMI 2.0 runtime (`fmi2*` C functions) of exported FMUs |
 | `library/Daedalus` | Component library (Blocks, Mechanics, Hydraulics, Vehicle) and the examples |
+| `library/MultiBodyVehicle` | 3-D suspensions (double wishbone with external or pushrod springs, MacPherson, multilink), test rigs (K&C, seven-post) and full-car manoeuvres on MSL `Modelica.Mechanics.MultiBody` (needs MSL 4.1.0) |
 | `web` | Browser workbench (TypeScript, Vite, CodeMirror) |
+| `python` | `daedalus_casadi`: CasADi optimal control, MPC and MHE on exported models |
 | `tools` | Benchmark generator, coast-down fit, FMU check (FMPy) |
 
 Modelica is a registered trademark of the Modelica Association. DAEdalus is not

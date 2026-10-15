@@ -60,6 +60,8 @@ package LandingGear "Oleo-pneumatic landing gear drop test (after Modelon)"
     Tr.Components.Fixed ground;
     Tr.Sources.ConstantForce lift(f_constant=liftFactor*(M_sprung + m_unsprung)*9.81);
     Real loadFactor(unit="1") "Ground reaction / weight";
+    parameter Real y_vis=0 "Lateral position in the 3-D animation" annotation (Dialog(tab="Animation"));
+    Daedalus.Visualizers.LandingGear vis(y0=y_vis, R_tyre=R_tyre, z_axle=axle.s, z_top=sprung.s) "3-D animation (draws only)";
     Units.Force F_ground;
     Units.Energy E_kinetic0 = 0.5*(M_sprung + m_unsprung)*v_sink^2;
   equation
@@ -83,9 +85,10 @@ package LandingGear "Oleo-pneumatic landing gear drop test (after Modelon)"
 
   model SinkRates "Drop tests at 2.0, 3.05 (limit) and 3.66 m/s (reserve energy)"
     extends Daedalus.Icons.Example;
-    DropTest low(v_sink=2.0);
+    Daedalus.Visualizers.World world "Animation: z up";
+    DropTest low(v_sink=2.0, y_vis=2.6);
     DropTest limit(v_sink=3.05);
-    DropTest reserve(v_sink=3.66);
+    DropTest reserve(v_sink=3.66, y_vis=-2.6);
     annotation (experiment(StopTime=1.5, Interval=0.001, Tolerance=1e-7), Documentation(info="<html>
 <p>Source: Modelon, <i>Aircraft landing gear design</i>,
 <a href=\"https://www.modelon.com/blog/aircraft-landing-gear-design/\">modelon.com/blog</a>.</p>
