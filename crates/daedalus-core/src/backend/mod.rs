@@ -36,7 +36,7 @@ pub enum Block {
     },
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
 pub enum AliasKind {
     /// `var = sign * of`
     Var { of: VarId, sign: f64 },
@@ -51,7 +51,7 @@ pub struct Alias {
     pub expr: ExprId,
 }
 
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, serde::Deserialize)]
 pub struct Stats {
     pub flat_variables: usize,
     pub flat_equations: usize,
@@ -449,6 +449,10 @@ pub fn compile(flat: FlatModel, opts: &Options) -> Result<System> {
                         WhenAction::Assign(_, e)
                         | WhenAction::Reinit(_, e)
                         | WhenAction::Assert(e, _) => roots.push(*e),
+                        WhenAction::Effect(c, e) => {
+                            roots.push(*c);
+                            roots.push(*e);
+                        }
                         WhenAction::Terminate(_) => {}
                     }
                 }

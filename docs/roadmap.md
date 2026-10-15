@@ -27,6 +27,13 @@
 **Tooling**
 - CLI: `check`, `flatten`, `dump`, `simulate`, and `test-library` (parallel,
   one process per model, with a time limit).
+- `linearize`: exact state-space matrices A, B, C, D (forward-mode tangents of
+  the tape, implicit differentiation of algebraic loops) at the initial point or
+  after simulating to a time; text, JSON or an OpenModelica-style
+  `linearized_model`.
+- `fmu`: FMI 2.0 export, Model Exchange and Co-Simulation in one FMU (linux64),
+  with a model-independent runtime library and the compiled model as a resource;
+  validated with FMPy in CI.
 - Browser workbench:
   - package browser;
   - icon, diagram and text views;
@@ -82,5 +89,13 @@ function and MATLAB v7.3 (HDF5) files are not.
 
 - Graphical editing: drag components from the browser, draw connections, edit
   parameters in a dialog, and write the result back to the text.
-- Animation of mechanical models, and an FMU export (FMI 3 co-simulation).
+- Animation of mechanical models.
+
+### FMI
+
+- FMU export for other platforms (Windows, macOS: build `daedalus-fmi` there),
+  `fmi2GetDirectionalDerivative` from the tape's forward-mode tangents, FMU state
+  get/set, and time events for table breakpoints in Model Exchange (a jump in a
+  time table without an event can stall an importer's integrator).
+- FMI 3.0 and FMU import.
 - Persisted experiments, and result comparison across runs.

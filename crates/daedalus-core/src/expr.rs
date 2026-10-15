@@ -161,6 +161,8 @@ pub enum Node {
     Interp2(u32, ExprId, ExprId),
     /// Integration-time `initial()` flag (1 during initialization, else 0).
     Initial,
+    /// `terminal()` flag (1 only at the terminal event, when the simulation ends).
+    Terminal,
     /// Synchronous operator with up to two operands (unused operands are `ZERO`).
     Clk(ClkOp, ExprId, ExprId),
     /// `delay(x, d)`: the value of the hidden variable [`Arena::delays`]`[k]` at
@@ -185,6 +187,26 @@ pub struct LoopProg {
     pub n: usize,
     pub cond: ExprId,
     pub next: Vec<ExprId>,
+    /// A natively implemented external function instead of a loop: the call's
+    /// arguments go in, `native.n_out` results come out (`n`, `cond` and `next` unused).
+    pub native: Option<crate::external::NativeCall>,
+}
+
+impl LoopProg {
+    /// A native external function as a program.
+    pub fn native(call: crate::external::NativeCall) -> LoopProg {
+        LoopProg {
+            n: call.n_out,
+            cond: Arena::ZERO,
+            next: Vec::new(),
+            native: Some(call),
+        }
+    }
+
+    /// An impure native function: executed at every call, never folded or cached.
+    pub fn is_impure(&self) -> bool {
+        self.native.as_ref().is_some_and(|c| c.f.impure())
+    }
 }
 
 /// One call of a loop program: its initial state.
@@ -224,6 +246,11 @@ pub struct Arena {
     call_intern: FxHashMap<CallSite, u32>,
     /// Results of interpreted loop-program runs, by program and arguments.
     pub prog_cache: std::cell::RefCell<FxHashMap<(u32, Vec<u64>), Rc<[f64]>>>,
+    /// State of impure external functions evaluated at translation time.
+    pub ext: std::cell::RefCell<crate::external::ExtState>,
+    /// Leaves of the arguments of each call site, for [`Arena::visit_leaves`]: many
+    /// expressions read outputs of one call on large arguments.
+    call_leaves: std::cell::RefCell<FxHashMap<u32, Rc<[Node]>>>,
 }
 
 #[inline]
@@ -310,6 +337,10 @@ impl Arena {
 
     pub fn initial(&mut self) -> ExprId {
         self.intern_node(Node::Initial)
+    }
+
+    pub fn terminal(&mut self) -> ExprId {
+        self.intern_node(Node::Terminal)
     }
 
     pub fn neg(&mut self, a: ExprId) -> ExprId {
@@ -614,6 +645,10 @@ impl Arena {
     /// Output `out` of loop program `prog` started from `args` (folded when the
     /// arguments are constants).
     pub fn call(&mut self, prog: u32, args: Vec<ExprId>, out: u32) -> ExprId {
+        if self.progs[prog as usize].is_impure() {
+            let c = self.call_site(prog, args);
+            return self.intern_node(Node::Call(c, out));
+        }
         if let Some(vals) = args
             .iter()
             .map(|&a| self.as_const(a))
@@ -640,7 +675,8 @@ impl Arena {
             | Node::Pre(_)
             | Node::Time
             | Node::Local(_)
-            | Node::Initial => {}
+            | Node::Initial
+            | Node::Terminal => {}
             Node::Call(c, _) | Node::CallD(c, _) => {
                 out.extend_from_slice(&self.calls[c as usize].args)
             }
@@ -685,7 +721,8 @@ impl Arena {
             | Node::Pre(_)
             | Node::Time
             | Node::Local(_)
-            | Node::Initial => id,
+            | Node::Initial
+            | Node::Terminal => id,
             Node::Call(c, out) => {
                 let prog = self.calls[c as usize].prog;
                 self.call(prog, ch.to_vec(), out)
@@ -838,8 +875,33 @@ impl Arena {
         false
     }
 
+    /// Whether `root` calls an impure external function.
+    pub fn contains_impure(&self, root: ExprId) -> bool {
+        if !self.progs.iter().any(|p| p.is_impure()) {
+            return false;
+        }
+        let mut seen = rustc_hash::FxHashSet::default();
+        let mut stack = vec![root];
+        let mut ch = Vec::new();
+        while let Some(id) = stack.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
+            if let Node::Call(c, _) = self.node(id)
+                && self.progs[self.calls[c as usize].prog as usize].is_impure()
+            {
+                return true;
+            }
+            ch.clear();
+            self.children(id, &mut ch);
+            stack.extend(ch.iter().copied());
+        }
+        false
+    }
+
     pub fn visit_leaves(&self, root: ExprId, f: &mut dyn FnMut(Node)) {
         let mut seen = rustc_hash::FxHashSet::default();
+        let mut seen_calls = rustc_hash::FxHashSet::default();
         let mut stack = vec![root];
         let mut ch = Vec::new();
         while let Some(id) = stack.pop() {
@@ -850,12 +912,39 @@ impl Arena {
             match n {
                 Node::Var(_) | Node::Der(_) | Node::Pre(_) | Node::Time => f(n),
                 Node::Delay(..) => f(Node::Time),
+                Node::Call(c, _) | Node::CallD(c, _) => {
+                    if seen_calls.insert(c) {
+                        for &l in self.call_leaves(c).iter() {
+                            f(l);
+                        }
+                    }
+                    continue;
+                }
                 _ => {}
             }
             ch.clear();
             self.children(id, &mut ch);
             stack.extend(ch.iter().copied());
         }
+    }
+
+    /// The distinct leaves of the arguments of call site `c`.
+    fn call_leaves(&self, c: u32) -> Rc<[Node]> {
+        if let Some(l) = self.call_leaves.borrow().get(&c) {
+            return l.clone();
+        }
+        let mut set = rustc_hash::FxHashSet::default();
+        let mut leaves = Vec::new();
+        for &a in &self.calls[c as usize].args {
+            self.visit_leaves(a, &mut |n| {
+                if set.insert(n) {
+                    leaves.push(n);
+                }
+            });
+        }
+        let l: Rc<[Node]> = leaves.into();
+        self.call_leaves.borrow_mut().insert(c, l.clone());
+        l
     }
 
     /// True if `root` references the leaf `target`.
@@ -897,6 +986,7 @@ impl Arena {
             match n {
                 Node::Const(_)
                 | Node::Initial
+                | Node::Terminal
                 | Node::Rel(_)
                 | Node::Cmp(..)
                 | Node::Local(_)
@@ -1182,6 +1272,7 @@ impl Arena {
             }
             Node::Time => s.push_str("time"),
             Node::Initial => s.push_str("initial()"),
+            Node::Terminal => s.push_str("terminal()"),
             Node::Neg(a) => paren(s, 4, &mut |s| {
                 s.push('-');
                 self.render_into(a, name, s, 5);
@@ -1287,7 +1378,15 @@ impl Arena {
                 let _ = write!(s, "$local{k}");
             }
             Node::Call(c, out) | Node::CallD(c, out) => {
-                let _ = write!(s, "$loop{}[{}](", self.calls[c as usize].prog, out);
+                let prog = self.calls[c as usize].prog;
+                match &self.progs[prog as usize].native {
+                    Some(nc) => {
+                        let _ = write!(s, "{}[{}](", crate::external::describe(nc), out);
+                    }
+                    None => {
+                        let _ = write!(s, "$loop{}[{}](", prog, out);
+                    }
+                }
                 for (i, &a) in self.calls[c as usize].args.iter().enumerate() {
                     if i > 0 {
                         s.push_str(", ");

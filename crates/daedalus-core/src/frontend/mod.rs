@@ -30,6 +30,9 @@ pub struct Library {
     /// Library files registered for on-demand parsing, by path and by class.
     pub lazy: Vec<lazy::LazyFile>,
     lazy_index: rustc_hash::FxHashMap<String, usize>,
+    lazy_cache: lazy::ScanCache,
+    /// `package.order` of registered packages: member names in browsing order.
+    pub package_orders: rustc_hash::FxHashMap<String, Vec<String>>,
 }
 
 impl Library {
@@ -42,6 +45,7 @@ impl Library {
     pub fn set_document(&mut self, uri: &str, text: &str) -> Vec<String> {
         let doc = parse_document(uri, text);
         let errors = doc.errors.clone();
+        self.lazy_edited(uri, text);
         self.insert(doc);
         errors
     }
@@ -57,6 +61,9 @@ impl Library {
 
     pub fn remove_document(&mut self, uri: &str) {
         self.docs.retain(|d| d.uri != uri);
+        if let Some(i) = self.lazy_file_of(uri) {
+            self.lazy[i].loaded = false;
+        }
     }
 
     /// Load a directory tree (package.mo / package.order layout or loose .mo files).
@@ -129,28 +136,31 @@ impl Library {
         tree::ClassTree::build(&docs)
     }
 
-    /// The directory of each loaded top-level package (the directory holding its
-    /// `package.mo`, or the file of a single-file package): the root of its
-    /// `modelica://Package/...` resources.
-    pub fn resource_roots(&self) -> rustc_hash::FxHashMap<String, String> {
+    /// Directory of each top-level package (the one holding its `package.mo`, or the
+    /// file defining it), for `modelica://` URIs.
+    pub fn resource_roots(
+        &self,
+        tree: &tree::ClassTree<'_>,
+    ) -> rustc_hash::FxHashMap<String, String> {
         let mut m = rustc_hash::FxHashMap::default();
-        let dir = |p: &std::path::Path| {
-            p.parent()
-                .map(|d| d.to_string_lossy().to_string())
-                .unwrap_or_default()
+        let dir = |uri: &str| {
+            let u = uri.replace('\\', "/");
+            u.rsplit_once('/').map(|(d, _)| d.to_string())
         };
-        for f in &self.lazy {
-            if !f.class.contains('.') {
-                m.insert(f.class.clone(), dir(&f.path));
+        for l in &self.lazy {
+            if !l.class.contains('.')
+                && let Some(d) = dir(&l.path.to_string_lossy())
+            {
+                m.insert(l.class.clone(), d);
             }
         }
-        for d in &self.docs {
-            if d.ast.within.as_ref().is_some_and(|w| !w.name.is_empty()) {
-                continue;
-            }
-            for name in d.ast.classes.keys() {
-                m.entry(name.to_string())
-                    .or_insert_with(|| dir(std::path::Path::new(&d.uri)));
+        for (name, &id) in &tree.node(tree::ROOT).children {
+            if let Some(d) = self
+                .docs
+                .get(tree.node(id).source)
+                .and_then(|d| dir(&d.uri))
+            {
+                m.insert(name.clone(), d);
             }
         }
         m
@@ -162,7 +172,7 @@ impl Library {
         let id = tree
             .find_path(model)
             .ok_or_else(|| anyhow!("model '{model}' not found"))?;
-        let roots = self.resource_roots();
+        let roots = self.resource_roots(&tree);
         let mut f = inst::Flattener::new(&tree);
         f.resource_roots = roots.clone();
         let first = f.flatten(id);

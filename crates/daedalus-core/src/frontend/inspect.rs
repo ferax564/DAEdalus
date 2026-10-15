@@ -129,12 +129,132 @@ fn find_annotation<'e>(ann: &'e [ast::Expression], name: &str) -> Option<&'e ast
 }
 
 /// The package tree of everything loaded, in declaration order.
+///
+/// Library files registered from memory and not parsed yet appear through their outline
+/// (see [`super::lazy`]), so a whole library can be browsed before it is parsed.
 pub fn class_tree(lib: &Library) -> Vec<ClassEntry> {
     let tree = lib.tree();
     let root = tree.node(ROOT);
-    let mut kids: Vec<ClassId> = root.order.clone();
-    kids.sort_by_key(|&c| tree.node(c).name.to_lowercase());
-    kids.into_iter().map(|c| entry(&tree, c, 0)).collect()
+    if lib.lazy.iter().all(|f| f.outline.is_empty()) {
+        let mut kids: Vec<ClassId> = root.order.clone();
+        kids.sort_by_key(|&c| tree.node(c).name.to_lowercase());
+        return kids.into_iter().map(|c| entry(&tree, c, 0)).collect();
+    }
+    let mut m = Merged::default();
+    // Outlines of registered files first, packages before their members; they stand
+    // for the file's classes whether it is parsed or not.
+    let mut files: Vec<usize> = (0..lib.lazy.len())
+        .filter(|&i| !lib.lazy[i].outline.is_empty())
+        .collect();
+    files.sort_by_key(|&i| lib.lazy[i].class.matches('.').count());
+    for i in files {
+        let f = &lib.lazy[i];
+        for c in &f.outline {
+            let path = if c.rel.is_empty() {
+                f.class.clone()
+            } else {
+                format!("{}.{}", f.class, c.rel)
+            };
+            m.add(&path, |name| ClassEntry {
+                name,
+                path: path.clone(),
+                kind: c.kind.to_string(),
+                partial: c.partial,
+                description: c.description.clone(),
+                runnable: c.experiment && !c.partial,
+                children: Vec::new(),
+            });
+        }
+    }
+    // Then everything parsed that the outlines do not cover (other documents).
+    let mut stack: Vec<ClassId> = root.order.iter().rev().copied().collect();
+    while let Some(id) = stack.pop() {
+        let mut e = entry(&tree, id, 64);
+        e.children.clear();
+        let path = e.path.clone();
+        m.add(&path, |_| e);
+        stack.extend(tree.node(id).order.iter().rev().copied());
+    }
+    m.finish(&lib.package_orders)
+}
+
+/// The package tree assembled from outlines and parsed classes.
+#[derive(Default)]
+struct Merged {
+    nodes: Vec<(ClassEntry, Vec<usize>)>,
+    by_path: rustc_hash::FxHashMap<String, usize>,
+    roots: Vec<usize>,
+}
+
+impl Merged {
+    /// A package placeholder for a path no outline or document defines.
+    fn package(&mut self, path: &str) -> usize {
+        self.add(path, |name| ClassEntry {
+            name,
+            path: path.to_string(),
+            kind: "package".into(),
+            partial: false,
+            description: String::new(),
+            runnable: false,
+            children: Vec::new(),
+        })
+    }
+
+    fn add(&mut self, path: &str, make: impl FnOnce(String) -> ClassEntry) -> usize {
+        if let Some(&i) = self.by_path.get(path) {
+            return i;
+        }
+        let (parent, name) = match path.rsplit_once('.') {
+            Some((p, n)) => (Some(self.package(p)), n),
+            None => (None, path),
+        };
+        let i = self.nodes.len();
+        self.nodes.push((make(name.to_string()), Vec::new()));
+        self.by_path.insert(path.to_string(), i);
+        match parent {
+            Some(p) => self.nodes[p].1.push(i),
+            None => self.roots.push(i),
+        }
+        i
+    }
+
+    fn finish(mut self, orders: &rustc_hash::FxHashMap<String, Vec<String>>) -> Vec<ClassEntry> {
+        fn build(
+            m: &mut Merged,
+            i: usize,
+            orders: &rustc_hash::FxHashMap<String, Vec<String>>,
+        ) -> ClassEntry {
+            let mut kids = std::mem::take(&mut m.nodes[i].1);
+            if let Some(o) = orders.get(&m.nodes[i].0.path) {
+                let pos = |k: &usize| {
+                    let n = &m.nodes[*k].0.name;
+                    o.iter().position(|x| x == n).unwrap_or(usize::MAX)
+                };
+                kids.sort_by_key(pos);
+            }
+            let children = kids.into_iter().map(|k| build(m, k, orders)).collect();
+            let mut e = std::mem::replace(
+                &mut m.nodes[i].0,
+                ClassEntry {
+                    name: String::new(),
+                    path: String::new(),
+                    kind: String::new(),
+                    partial: false,
+                    description: String::new(),
+                    runnable: false,
+                    children: Vec::new(),
+                },
+            );
+            e.children = children;
+            e
+        }
+        let mut roots = std::mem::take(&mut self.roots);
+        roots.sort_by_key(|&r| self.nodes[r].0.name.to_lowercase());
+        roots
+            .into_iter()
+            .map(|r| build(&mut self, r, orders))
+            .collect()
+    }
 }
 
 fn entry(tree: &ClassTree, id: ClassId, depth: usize) -> ClassEntry {

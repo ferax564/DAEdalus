@@ -133,3 +133,44 @@ fn clocked_partitions() {
     assert!(close(r.at("x", 0.1).unwrap(), x1, 1e-6));
     assert!(close(r.at("u", 0.15).unwrap(), -2.0 * x1, 1e-6));
 }
+
+#[test]
+fn break_under_time_varying_condition() {
+    let r = run("break.mo", "B.Test", 1.0, Method::Bdf);
+    for (t, y) in [(0.1, 0.0), (0.3, 1.0), (0.6, 3.0), (0.8, 6.0), (1.0, 10.0)] {
+        assert_eq!(r.at("y", t).unwrap(), y, "t = {t}");
+    }
+}
+
+#[test]
+fn return_and_break_under_runtime_conditions() {
+    let r = run("functions_control.mo", "FnTest", 1.0, Method::Bdf);
+    // firstIdx({time > 0.3, time > 0.6, true}): 3 before 0.3, then 1
+    assert_eq!(r.at("k", 0.1).unwrap(), 3.0);
+    assert_eq!(r.at("k", 0.9).unwrap(), 1.0);
+    // break at a translation-time condition ends the loop (not just the iteration)
+    assert_eq!(r.final_value("s").unwrap(), 6.0);
+    // break at a run-time condition: count up while y <= 10*time
+    assert_eq!(r.at("d", 0.1).unwrap(), 2.0);
+    assert_eq!(r.at("d", 0.45).unwrap(), 5.0);
+    // early return keeps the value assigned before it
+    assert_eq!(r.at("r", 0.1).unwrap(), 10.0);
+    assert_eq!(r.at("r", 0.4).unwrap(), 30.0);
+    assert_eq!(r.at("r", 0.9).unwrap(), 2.0);
+}
+
+#[test]
+fn function_arguments_and_partial_application() {
+    let r = run("function_args.mo", "FunctionArgs", 1.0, Method::Bdf);
+    assert!(close(
+        r.final_value("fixedRoot").unwrap(),
+        2f64.sqrt(),
+        1e-9
+    ));
+    assert!(close(r.at("movingRoot", 0.5).unwrap(), 1.5f64.sqrt(), 1e-9));
+    assert!(close(
+        r.final_value("movingRoot").unwrap(),
+        2f64.sqrt(),
+        1e-9
+    ));
+}
