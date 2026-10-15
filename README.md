@@ -81,7 +81,8 @@ The page is laid out like Dymola:
 - **Simulate** compiles the class in the worker and fills the variable browser;
 - ticking a variable plots it;
 - a model with MultiBody shapes also gets an **Animation** view: a 3-D
-  replay with playback, speed and a camera that follows the moving parts.
+  replay with STL/OBJ meshes, studio lighting, camera presets, follow and
+  chase cameras, part selection with X-ray, and WebM recording.
 
 ## Examples
 
@@ -113,7 +114,7 @@ of the EV model, which take 109k steps.
 | `crates/daedalus-cli` | `daedalus` command line tool |
 | `crates/daedalus-wasm` | WebAssembly bindings used by the workbench |
 | `library/Daedalus` | Component library (Blocks, Mechanics, Hydraulics, Vehicle) and the examples |
-| `library/MultiBodyVehicle` | 3-D suspension and full-car examples on MSL `Modelica.Mechanics.MultiBody` (needs MSL 4.1.0) |
+| `library/MultiBodyVehicle` | 3-D suspensions (double wishbone with external or pushrod springs, MacPherson, multilink), test rigs (K&C, seven-post) and full-car manoeuvres on MSL `Modelica.Mechanics.MultiBody` (needs MSL 4.1.0) |
 | `web` | Browser workbench (TypeScript, Vite, CodeMirror) |
 | `tools` | Benchmark generator, coast-down fit |
 

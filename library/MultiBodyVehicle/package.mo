@@ -15,6 +15,13 @@ library runs in DAEdalus and in OpenModelica with the same results.</p>
     (y-z plane) of the car. The double wishbone closes its loop analytically with a
     <code>JointRRR</code>; the MacPherson strut closes it with a
     <code>RevolutePlanarLoopConstraint</code>.</li>
+<li><b>Components.DoubleWishbonePushrod</b>: the double wishbone with a pushrod, a bell-crank
+    rocker and an inboard coil-over (internal spring).</li>
+<li><b>Components.Multilink</b>: an elasto-kinematic five-link corner: a free upright held by five
+    stiff links (<b>Components.CompliantLink</b>) and a coil-over.</li>
+<li><b>Components.WheelPad</b> and <b>Components.AeroLoader</b>: the posts of a seven-post rig.</li>
+<li><b>Visuals</b>: animation-only parts (wheel, wishbones, body shell) that draw the CAD meshes in
+    <code>Resources/Shapes</code>.</li>
 <li><b>Components.Tyre</b>: a point-contact tyre with a vertical spring-damper that can lift off,
     a simplified Pacejka lateral force and rolling resistance, applied at the contact patch.</li>
 <li><b>Components.Vehicle</b>: a free 6-DOF sprung body on four double-wishbone corners

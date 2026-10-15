@@ -195,14 +195,29 @@ MSL=path/to/ModelicaStandardLibrary   # git clone -b v4.1.0 https://github.com/m
 In the workbench, load the MSL folders and `library/MultiBodyVehicle` with
 **Library**. After **Simulate**, the **Animation** view replays the model in
 3-D, like Dymola's animation window. It draws every MultiBody shape found in
-the result: the default joint, body and spring shapes, plus the tyres, rims,
-body shell and bump that the library adds with `Visualizers.FixedShape`.
-These visuals do not change the dynamics.
+the result: the default joint, body and spring shapes, and CAD meshes (STL or
+OBJ files referenced as `modelica://...` shape types). The library ships meshes
+for a treaded tyre, a five-spoke rim, brake disc and caliper, an open-wheel
+body and a road bump in `Resources/Shapes` (made by `generate.py` there). The
+view has studio lighting, camera presets (Iso, Front, Side, Rear, Top),
+follow and chase cameras, click-to-select with X-ray, and records a WebM
+video. The visuals do not change the dynamics.
 
 Components:
-- `DoubleWishbone`: a short-long-arm corner from hardpoints, with a coil-over on
-  the lower arm and a steerable upright. The loop is closed analytically by a
-  `JointRRR`, so a corner adds one state pair and no constraint equations.
+- `DoubleWishbone`: a short-long-arm corner from hardpoints, with an external
+  coil-over on the lower arm and a steerable upright. The loop is closed
+  analytically by a `JointRRR`, so a corner adds one state pair and no
+  constraint equations.
+- `DoubleWishbonePushrod`: the same linkage with an internal spring: a pushrod
+  from the lower arm turns a bell-crank rocker that compresses a coil-over
+  lying across the chassis. A second `JointRRR` closes the pushrod loop, so it
+  still has one state pair.
+- `Multilink`: a five-link rear corner (two upper links, two lower links, toe
+  link) built elasto-kinematically: the upright is a free body and each link is
+  a `CompliantLink`, a stiff axial spring with ball-joint ends (10 kN/mm).
+- `WheelPad` and `AeroLoader`: the hydraulic wheel pad and the pull-down
+  actuator of a post rig. `Tyre(usePad=true)` stands on a pad, and
+  `Vehicle(onRig=true)` puts all four tyres on pads.
 - `MacPherson`: a strut on a top-mount hinge with a lower control arm, closed by
   a `RevolutePlanarLoopConstraint`.
 - `Tyre`: a point contact that can lift off, with a Pacejka-type lateral force
@@ -216,9 +231,13 @@ Components:
 | --- | --- | ---: | ---: |
 | SuspensionKinematics | Camber, track change and motion ratio over ±75 mm travel, double wishbone vs MacPherson | 6 | 0.4 s |
 | QuarterCarBump | 3-D corner vs a 1-D quarter car with the equivalent wheel rate over a 50 mm bump | 10 | 0.4 s |
-| StepSteer | 2° front-wheel step at 72 km/h | 24 | 2.1 s |
-| LaneChange | One-period sine steer, 2° peak, at 72 km/h | 24 | 2.6 s |
-| BumpLeft | Left wheels cross a 50 mm bump at 36 km/h | 24 | 2.6 s |
+| StepSteer | 2° front-wheel step at 72 km/h | 28 | 2.1 s |
+| LaneChange | One-period sine steer, 2° peak, at 72 km/h | 28 | 2.6 s |
+| BumpLeft | Left wheels cross a 50 mm bump at 36 km/h | 28 | 2.6 s |
+| PushrodVsCoilOver | External coil-over vs pushrod, rocker and internal coil-over over ±75 mm | 6 | 0.2 s |
+| MultilinkRig | Five-link corner on one wheel pad, ±70 mm bounce | 15 | 0.1 s |
+| KCRig | Front axle with pushrod corners and anti-roll bar on two pads: bounce, roll, steer | 14 | 0.7 s |
+| SevenPostRig | Full car on four wheel pads and three aero loaders: heave, pitch, roll, warp | 36 | 3.2 s |
 
 Results:
 - **Kinematics.** The double wishbone gains 2.2° negative camber at +73 mm
@@ -235,9 +254,25 @@ Results:
 - **One-sided bump.** The front-left and rear-left wheels travel 47 and
   52 mm, 0.26 s apart. The body rolls 0.6°, and each left tyre leaves the road
   for about 40 ms behind the crest.
+- **Pushrod vs coil-over.** The outboard coil-over has a near-constant 0.65
+  motion ratio. The rocker gives a rising rate: 0.70 in full rebound, 0.82 at
+  design and 1.00 at full bump, so the wheel rate doubles from 15 to 30 kN/m
+  over the travel with one linear spring.
+- **Multilink.** −20°/m camber gain (+1.0° at −60 mm, −1.5° at +60 mm), and
+  bump steer within 0.05° in kinematics; with the bushes loaded the toe stays
+  between −0.44° and +0.06°. Under the static 3.4 kN load the links give
+  0.24° of compliance toe-out.
+- **K&C rig.** In bounce the bar does not twist and the wheel gains −1.1°
+  camber at +43 mm. In roll (±27 mm per side) the bar carries ±475 N·m and the
+  pad loads split 5.8 / 2.0 kN.
+- **Seven-post rig.** The 3.3 kN of aero load lowers the body 42 mm. The
+  12 mm, 1.5 Hz pad bursts excite ±18 mm of body heave, ±0.8° of pitch and
+  ±1.8° of roll, all near resonance. Warp barely moves the body (±0.4° roll)
+  but swings each tyre load by about ±470 N.
 
-All five match OpenModelica 1.26.1 running the same models on MSL 4.1.0:
-the 98th-percentile difference is below 0.04 % of each signal's range. The
+All nine match OpenModelica 1.26.1 running the same models on MSL 4.1.0:
+the 98th-percentile difference is below 0.04 % of each signal's range
+(below 0.01 % for the four rigs). The
 only larger point errors are single samples at tyre lift-off and touchdown.
 In OpenModelica the full-car examples take 7 to 16 s of simulation time,
 against 1.1 to 2.0 s in DAEdalus (including the animation shapes).
