@@ -80,6 +80,8 @@ pub struct NewtonBlock {
     pub names: Vec<String>,
     /// Constant `min`/`max` bounds of the tears (Newton steps are clipped to them).
     pub bounds: Vec<(f64, f64)>,
+    /// The block's unknowns (tears and inner variables) with a declared start value.
+    pub started: Vec<Slot>,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -542,7 +544,15 @@ fn compile_blocks(
                                 | Ins::CallD(..)
                         )
                     });
+                let started = tears
+                    .iter()
+                    .copied()
+                    .chain(inner.iter().map(|(v, _)| *v))
+                    .filter(|&v| names[v as usize].start.is_some())
+                    .map(|v| v as Slot)
+                    .collect();
                 newton.push(NewtonBlock {
+                    started,
                     plain_linear,
                     bounds,
                     tears: tears.clone(),
@@ -1393,6 +1403,10 @@ pub struct Runtime<'m> {
     entry: Vec<f64>,
     piv: Vec<usize>,
     pub error: Option<NewtonError>,
+    /// Set while the initial equations are solved (see `newton_init`).
+    pub init_mode: bool,
+    /// Largest Newton step relative to `1 + |tear|` (0: unlimited).
+    step_cap: f64,
     /// `delay()` reads the right value at a delayed jump (set while events are handled).
     pub delay_right: bool,
 }
@@ -1424,6 +1438,8 @@ impl<'m> Runtime<'m> {
             entry: Vec::new(),
             piv: Vec::new(),
             error: None,
+            init_mode: false,
+            step_cap: 0.0,
             delay_right: true,
         }
     }
@@ -1543,10 +1559,82 @@ impl<'m> Runtime<'m> {
         best_x.clear();
         entry.clear();
         entry.extend(b.tears.iter().map(|&t| self.r[t as usize]));
-        self.newton_iterate(bi, work, piv, &mut weights, &mut best_x, &entry);
+        if self.init_mode && !b.linear {
+            self.newton_init(bi, work, piv, &mut weights, &mut best_x, &entry);
+        } else {
+            self.newton_iterate(bi, work, piv, &mut weights, &mut best_x, &entry);
+        }
         self.weights = weights;
         self.best_x = best_x;
         self.entry = entry;
+    }
+
+    /// Initial equations: a nonlinear block whose Newton solution lands far from the
+    /// start values of its tears (a suspension arm folded over instead of the design
+    /// position: start positions of a mechanism's loop are often all zero, and full
+    /// Newton steps from there can jump to another assembly branch) is solved again with
+    /// the steps limited to a fraction of each tear's size, which follows the residual
+    /// down to a nearer root. The root nearest the start values is kept.
+    fn newton_init(
+        &mut self,
+        bi: usize,
+        work: &mut [f64],
+        piv: &mut Vec<usize>,
+        weights: &mut Vec<f64>,
+        best_x: &mut Vec<f64>,
+        entry: &[f64],
+    ) {
+        let m = self.m;
+        let b = &m.newton[bi];
+        let (err0, fail0) = (self.error.clone(), self.newton_stats.failures);
+        // Values on entry: the start values, as nothing has solved the block yet.
+        let x0: Vec<f64> = b.started.iter().map(|&s| self.r[s as usize]).collect();
+        let dist = |rt: &Runtime| {
+            b.started
+                .iter()
+                .zip(&x0)
+                .map(|(&s, &x)| (rt.r[s as usize] - x).abs() / (1.0 + x.abs()))
+                .fold(0.0f64, f64::max)
+        };
+        self.newton_iterate(bi, work, piv, weights, best_x, entry);
+        let ok = self.newton_stats.failures == fail0;
+        let d = dist(self);
+        if ok && d <= 0.5 {
+            return;
+        }
+        let mut best: Option<(f64, Vec<f64>)> =
+            ok.then(|| (d, b.tears.iter().map(|&t| self.r[t as usize]).collect()));
+        for cap in [0.2, 0.05] {
+            for (i, &t) in b.tears.iter().enumerate() {
+                self.r[t as usize] = entry[i];
+            }
+            let fails = self.newton_stats.failures;
+            self.step_cap = cap;
+            self.newton_iterate(bi, work, piv, weights, best_x, entry);
+            self.step_cap = 0.0;
+            if self.newton_stats.failures == fails {
+                let d = dist(self);
+                if best.as_ref().is_none_or(|(bd, _)| d < *bd) {
+                    best = Some((d, b.tears.iter().map(|&t| self.r[t as usize]).collect()));
+                }
+            }
+        }
+        self.newton_stats.failures = fail0;
+        self.error = err0;
+        match best {
+            Some((_, x)) => {
+                for (i, &t) in b.tears.iter().enumerate() {
+                    self.r[t as usize] = x[i];
+                }
+                self.run(&b.body);
+            }
+            None => {
+                for (i, &t) in b.tears.iter().enumerate() {
+                    self.r[t as usize] = entry[i];
+                }
+                self.newton_iterate(bi, work, piv, weights, best_x, entry);
+            }
+        }
     }
 
     fn newton_iterate(
@@ -1569,7 +1657,7 @@ impl<'m> Runtime<'m> {
         let mut n_forced = 0u32;
         // A linear block normally converges in one step; if it does not (an ill-conditioned
         // or switching system), it continues as a damped Newton iteration.
-        let max_iter = 50;
+        let max_iter = if self.step_cap > 0.0 { 400 } else { 50 };
         for it in 0..max_iter {
             self.run(&b.body);
             let norm = b
@@ -1734,6 +1822,14 @@ impl<'m> Runtime<'m> {
             }
             // Damped update: halve the step while the residual grows.
             let mut lambda = 1.0;
+            if self.step_cap > 0.0 {
+                let r = (0..n)
+                    .map(|i| rhs[i].abs() / (self.step_cap * (1.0 + old[i].abs())))
+                    .fold(0.0, f64::max);
+                if r > 1.0 {
+                    lambda = 1.0 / r;
+                }
+            }
             loop {
                 for (i, &t) in b.tears.iter().enumerate() {
                     let (lo, hi) = b.bounds[i];

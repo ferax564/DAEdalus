@@ -587,7 +587,9 @@ impl<'m> Simulation<'m> {
             self.rt.r = saved;
             self.rt.r[l] = 1.0;
         }
+        self.rt.init_mode = true;
         self.rt.run(&m.init);
+        self.rt.init_mode = false;
         self.check_newton("initialization")
     }
 
