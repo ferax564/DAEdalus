@@ -9,7 +9,9 @@
 //!
 //! On BDF the spectral radius `ρ` of the Jacobian (power iteration, refreshed when
 //! the Jacobian is) tells whether Dopri5 could take the current step: after at least
-//! 20 BDF steps, 15 accepted steps in a row with `h ρ < 1` switch back.
+//! 20 BDF steps, 15 accepted steps in a row with `h ρ < 1` switch back. When the
+//! run turns stiff again within 100 Dopri5 steps, the number of calm steps needed
+//! doubles (up to 960), which stops a ping-pong between the methods.
 //!
 //! Switches happen between steps: the new method restarts from the current point,
 //! and dense output of the last step still comes from the method that took it.
@@ -23,8 +25,13 @@ const STIFF_HITS: u32 = 15;
 const NONSTIFF_RESET: u32 = 6;
 /// Minimum BDF steps before switching back.
 const MIN_STIFF_STEPS: u64 = 20;
-/// Consecutive BDF steps with `h ρ` below [`BACK_LIMIT`] that switch back.
+/// Consecutive BDF steps with `h ρ` below [`BACK_LIMIT`] that switch back. Doubled
+/// (up to [`MAX_CALM_STEPS`]) each time the non-stiff phase that follows is short,
+/// so a model that keeps turning stiff again stays on BDF.
 const CALM_STEPS: u32 = 15;
+const MAX_CALM_STEPS: u32 = 960;
+/// A non-stiff phase shorter than this many steps counts as short.
+const SHORT_PHASE: u64 = 100;
 const BACK_LIMIT: f64 = 1.0;
 /// Switch messages written to the log (later switches are only counted).
 const MAX_LOG: u64 = 20;
@@ -37,6 +44,7 @@ pub struct AutoSwitch {
     iasti: u32,
     nonsti: u32,
     calm: u32,
+    calm_needed: u32,
     steps_in_mode: u64,
     /// Spectral radius of the BDF Jacobian, and the Jacobian count it belongs to.
     rho: f64,
@@ -55,6 +63,7 @@ impl AutoSwitch {
             iasti: 0,
             nonsti: 0,
             calm: 0,
+            calm_needed: CALM_STEPS,
             steps_in_mode: 0,
             rho: 0.0,
             rho_jac: u64::MAX,
@@ -72,20 +81,32 @@ impl AutoSwitch {
         if self.stiff { &self.bdf } else { &self.dopri }
     }
 
-    fn switch(&mut self, rt: &mut Runtime, to_stiff: bool, why: String) {
-        let t = self.active().t();
-        let x = self.active().x().to_vec();
-        self.stiff = to_stiff;
-        if to_stiff {
-            self.bdf.reset(rt, t, &x);
-        } else {
-            self.dopri.reset(rt, t, &x);
+    /// Book-keeping of a switch to `to_stiff`.
+    fn count_switch(&mut self, to_stiff: bool) {
+        if to_stiff && self.switches > 0 {
+            self.calm_needed = if self.steps_in_mode < SHORT_PHASE {
+                (self.calm_needed * 2).min(MAX_CALM_STEPS)
+            } else {
+                CALM_STEPS
+            };
         }
+        self.stiff = to_stiff;
         self.switches += 1;
         self.steps_in_mode = 0;
         self.iasti = 0;
         self.nonsti = 0;
         self.calm = 0;
+    }
+
+    fn switch(&mut self, rt: &mut Runtime, to_stiff: bool, why: String) {
+        let t = self.active().t();
+        let x = self.active().x().to_vec();
+        self.count_switch(to_stiff);
+        if to_stiff {
+            self.bdf.reset(rt, t, &x);
+        } else {
+            self.dopri.reset(rt, t, &x);
+        }
         if self.switches <= MAX_LOG {
             self.log.push(format!(
                 "auto: switched to {} at t = {t} ({why})",
@@ -105,9 +126,7 @@ impl AutoSwitch {
 impl Integrator for AutoSwitch {
     fn reset(&mut self, rt: &mut Runtime, t: f64, x: &[f64]) {
         if let Some(to) = self.pending.take() {
-            self.stiff = to;
-            self.switches += 1;
-            self.steps_in_mode = 0;
+            self.count_switch(to);
         }
         if self.stiff {
             self.bdf.reset(rt, t, x);
@@ -125,10 +144,8 @@ impl Integrator for AutoSwitch {
                     self.dopri.hlamb
                 )
             } else {
-                format!("h ρ(J) = {:.3} on {CALM_STEPS} steps", {
-                    let h = self.bdf.t() - self.bdf.t_prev();
-                    h * self.rho
-                })
+                let h = self.bdf.t() - self.bdf.t_prev();
+                format!("h ρ(J) = {:.3} on {} steps", h * self.rho, self.calm_needed)
             };
             self.switch(rt, to, why);
         }
@@ -159,7 +176,7 @@ impl Integrator for AutoSwitch {
         let h = t - self.bdf.t_prev();
         if h * self.rho < BACK_LIMIT && t < t_max {
             self.calm += 1;
-            if self.calm >= CALM_STEPS && self.steps_in_mode >= MIN_STIFF_STEPS {
+            if self.calm >= self.calm_needed && self.steps_in_mode >= MIN_STIFF_STEPS {
                 self.pending = Some(false);
             }
         } else {
