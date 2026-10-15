@@ -4,11 +4,13 @@
 //! crosses the boundary as JSON strings; trajectories cross as `Float64Array`s so a plot of
 //! a million points costs one copy.
 
-use daedalus_core::frontend::{Library, inspect, lazy};
+use daedalus_core::frontend::{Library, edit, inspect, lazy};
 use daedalus_core::results::Results;
-use daedalus_core::sim::{SimOptions, simulate};
+use daedalus_core::sim::{SimOptions, simulate, simulate_profiled};
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
+
+mod analysis;
 
 #[wasm_bindgen]
 extern "C" {
@@ -37,6 +39,13 @@ pub struct Workspace {
     results: Option<Results>,
     /// Classes whose registered library files are parsed already: (class, full).
     ensured: std::collections::HashSet<(String, bool)>,
+    /// Translation reused by [`Workspace::simulate_run`] (sweeps): (model and state
+    /// overrides, compiled).
+    compiled: Option<(String, daedalus_core::codegen::Model)>,
+    /// Performance profile of the last simulation (JSON), when it was asked for.
+    profile: Option<String>,
+    /// The running analysis (see `analysis.rs`).
+    job: Option<Box<dyn daedalus_core::uq::Job>>,
 }
 
 fn to_json<T: Serialize>(v: &T) -> String {
@@ -77,6 +86,8 @@ struct VarSummary<'a> {
 impl Workspace {
     #[wasm_bindgen(constructor)]
     pub fn new() -> Workspace {
+        #[cfg(target_arch = "wasm32")]
+        daedalus_core::profile::set_clock(|| perf_now() * 1e-3);
         Workspace::default()
     }
 
@@ -84,12 +95,14 @@ impl Workspace {
     #[wasm_bindgen(js_name = setDocument)]
     pub fn set_document(&mut self, uri: &str, text: &str) -> String {
         self.ensured.clear();
+        self.compiled = None;
         to_json(&self.lib.set_document(uri, text))
     }
 
     #[wasm_bindgen(js_name = removeDocument)]
     pub fn remove_document(&mut self, uri: &str) {
         self.ensured.clear();
+        self.compiled = None;
         self.lib.remove_document(uri);
     }
 
@@ -100,6 +113,7 @@ impl Workspace {
     #[wasm_bindgen(js_name = addLibraryFile)]
     pub fn add_library_file(&mut self, prefix: &str, rel: &str, text: &str) {
         self.ensured.clear();
+        self.compiled = None;
         if let Some(dir) = rel.strip_suffix("package.order") {
             let class = lazy::class_for_path(&format!("{dir}package.mo"));
             self.lib.add_package_order(&class, text);
@@ -122,6 +136,7 @@ impl Workspace {
     #[wasm_bindgen(js_name = loadAll)]
     pub fn load_all(&mut self) {
         self.ensured.clear();
+        self.compiled = None;
         self.lib.load_all();
     }
 
@@ -193,7 +208,8 @@ impl Workspace {
     pub fn simulate(&mut self, model: &str, options: &str) -> String {
         let load_ms = self.ensure(model, Some(true));
         let t0 = now_ms();
-        let m = match daedalus_core::translate(&self.lib, model, &Default::default()) {
+        let bopts = backend_options(options);
+        let m = match daedalus_core::translate(&self.lib, model, &bopts) {
             Ok(m) => m,
             Err(e) => {
                 self.results = None;
@@ -218,7 +234,13 @@ impl Workspace {
         }
         let experiment = serde_json::to_value(&m.experiment).ok();
         let t1 = now_ms();
-        let (res, stats, error) = match simulate(&m, opts) {
+        let (r, profile) = simulate_profiled(&m, opts);
+        self.profile = profile.map(|p| {
+            let mut v = serde_json::to_value(&p).unwrap_or_default();
+            v["summary_text"] = p.summary_text().into();
+            to_json(&v)
+        });
+        let (res, stats, error) = match r {
             Ok((r, mut s)) => {
                 s.init_ms = 0.0;
                 s.sim_ms = now_ms() - t1;
@@ -270,6 +292,12 @@ impl Workspace {
         })
     }
 
+    /// JSON performance profile and event log of the last simulation (`null` unless it
+    /// ran with `"profile": true`).
+    pub fn profile(&self) -> String {
+        self.profile.clone().unwrap_or_else(|| "null".into())
+    }
+
     /// Time axis of the last result.
     pub fn time(&self) -> Vec<f64> {
         self.results
@@ -309,5 +337,225 @@ impl Workspace {
             let _ = r.write_csv(&mut out, if sel.is_empty() { None } else { Some(&sel) });
         }
         String::from_utf8(out).unwrap_or_default()
+    }
+
+    /// JSON structure report (see `daedalus_core::structure`), or `{"error": ...}`.
+    /// `options`: `{"jacobian": bool, "at": T, "stop_time", "tolerance", "params",
+    /// "stateOverrides": [[name, tier], ...]}`.
+    pub fn structure(&mut self, model: &str, options: &str) -> String {
+        self.ensure(model, Some(true));
+        let v: serde_json::Value = serde_json::from_str(options).unwrap_or_default();
+        let opts = daedalus_core::structure::StructureOptions {
+            jacobian: v["jacobian"].as_bool().unwrap_or(true),
+            at: v["at"].as_f64(),
+            stop_time: v["stop_time"].as_f64(),
+            tolerance: v["tolerance"].as_f64(),
+            params: serde_json::from_value(v["params"].clone()).unwrap_or_default(),
+            ..Default::default()
+        };
+        let t0 = now_ms();
+        match daedalus_core::structure::structure(
+            &self.lib,
+            model,
+            &backend_options(options),
+            &opts,
+        ) {
+            Ok(r) => {
+                let mut j = serde_json::to_value(&r).unwrap_or_default();
+                j["ok"] = true.into();
+                j["ms"] = (now_ms() - t0).into();
+                j["text"] = r.to_text().into();
+                to_json(&j)
+            }
+            Err(e) => to_json(&serde_json::json!({"ok": false, "error": format!("{e:#}")})),
+        }
+    }
+}
+
+/// Backend options from a JSON options object: `"stateOverrides": [[name, tier], ...]`.
+fn backend_options(options: &str) -> daedalus_core::backend::Options {
+    use daedalus_core::backend::state_select::{StateOverride, parse_tier};
+    let mut o = daedalus_core::backend::Options::default();
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(options)
+        && let Some(list) = v["stateOverrides"].as_array()
+    {
+        for item in list {
+            if let (Some(name), Some(tier)) =
+                (item[0].as_str(), item[1].as_str().and_then(parse_tier))
+            {
+                o.state_overrides.push(StateOverride {
+                    pattern: name.to_string(),
+                    tier,
+                });
+            }
+        }
+    }
+    o
+}
+
+/// Sweeps and experiments: runs that reuse one translation.
+#[wasm_bindgen]
+impl Workspace {
+    /// Simulate `model` like [`Workspace::simulate`], but keep the translation for the next
+    /// call: run-time overrides (free Real parameters in `params`) reuse it, other overrides
+    /// are applied as a modifier and translated again. Returns a small JSON summary (no
+    /// variable list); trajectories are fetched with [`Workspace::values`].
+    #[wasm_bindgen(js_name = simulateRun)]
+    pub fn simulate_run(&mut self, model: &str, options: &str) -> String {
+        let load_ms = self.ensure(model, Some(true));
+        let t0 = now_ms();
+        let mut cached = true;
+        // State-selection overrides change the translation, so they are part of the key.
+        let bopts = backend_options(options);
+        let key = format!("{model}\0{:?}", bopts.state_overrides);
+        if self.compiled.as_ref().is_none_or(|(n, _)| *n != key) {
+            cached = false;
+            match daedalus_core::translate(&self.lib, model, &bopts) {
+                Ok(m) => self.compiled = Some((key, m)),
+                Err(e) => {
+                    self.results = None;
+                    return to_json(
+                        &serde_json::json!({"ok": false, "error": format!("{e:#}"), "model": model}),
+                    );
+                }
+            }
+        }
+        let base = &self.compiled.as_ref().unwrap().1;
+        let mut opts = SimOptions::from_model(base);
+        if let Ok(serde_json::Value::Object(o)) = serde_json::from_str::<serde_json::Value>(options)
+        {
+            let mut b = serde_json::to_value(&opts).unwrap_or_default();
+            if let serde_json::Value::Object(b) = &mut b {
+                for (k, v) in o {
+                    b.insert(k, v);
+                }
+            }
+            if let Ok(o2) = serde_json::from_value(b) {
+                opts = o2;
+            }
+        }
+        if let Err(e) =
+            daedalus_core::sweep::check_names(base, opts.params.iter().map(|(n, _)| n.as_str()))
+        {
+            self.results = None;
+            return to_json(&serde_json::json!({"ok": false, "error": e, "model": model}));
+        }
+        let (runtime, structural) =
+            daedalus_core::sweep::split_overrides(base, &opts.params, false);
+        let modified;
+        let m = if structural.is_empty() {
+            base
+        } else {
+            let base = base.clone();
+            match daedalus_core::sweep::translate_with_modifiers(
+                &mut self.lib,
+                model,
+                &structural,
+                Some(&base),
+                &bopts,
+            ) {
+                Ok(m) => {
+                    modified = m;
+                    &modified
+                }
+                Err(e) => {
+                    self.results = None;
+                    return to_json(
+                        &serde_json::json!({"ok": false, "error": format!("{e:#}"), "model": model}),
+                    );
+                }
+            }
+        };
+        opts.params = runtime;
+        let translate_ms = now_ms() - t0;
+        let t1 = now_ms();
+        let (res, stats, error) = match simulate(m, opts) {
+            Ok((r, mut s)) => {
+                s.init_ms = 0.0;
+                s.sim_ms = now_ms() - t1;
+                (r, Some(s), None)
+            }
+            Err(e) => (e.partial.unwrap_or_default(), None, Some(e.message)),
+        };
+        let out = serde_json::json!({
+            "ok": error.is_none(),
+            "error": error,
+            "model": model,
+            "points": res.time.len(),
+            "log": res.log,
+            "warnings": m.warnings,
+            "translate_ms": translate_ms,
+            "load_ms": load_ms,
+            "cached": cached && structural.is_empty(),
+            "retranslated": structural.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>(),
+            "stats": stats,
+        });
+        self.results = Some(res);
+        to_json(&out)
+    }
+}
+
+fn edit_error(e: impl std::fmt::Display) -> String {
+    to_json(&serde_json::json!({"ok": false, "error": e.to_string()}))
+}
+
+/// Graphical editing: source-preserving edits of a class (see `frontend::edit`).
+#[wasm_bindgen]
+impl Workspace {
+    /// Apply a JSON array of edit ops to class `path` and load the edited document.
+    /// Returns JSON `{"ok", "uri", "text", "added"}` or `{"ok": false, "error"}`.
+    #[wasm_bindgen(js_name = editClass)]
+    pub fn edit_class(&mut self, path: &str, ops: &str) -> String {
+        let ops: Vec<edit::EditOp> = match serde_json::from_str(ops) {
+            Ok(o) => o,
+            Err(e) => return edit_error(format!("bad edit: {e}")),
+        };
+        self.ensure(path, None);
+        match edit::edit_class(&self.lib, path, &ops) {
+            Ok(r) => {
+                self.set_document(&r.uri, &r.text);
+                to_json(
+                    &serde_json::json!({"ok": true, "uri": r.uri, "text": r.text, "added": r.added}),
+                )
+            }
+            Err(e) => edit_error(format!("{e:#}")),
+        }
+    }
+
+    /// Copy class `path` into package `package` of document `uri` (created if missing),
+    /// with its class names written out in full. JSON `{"ok", "uri", "text", "path"}`.
+    #[wasm_bindgen(js_name = duplicateClass)]
+    pub fn duplicate_class(&mut self, path: &str, uri: &str, package: &str) -> String {
+        self.ensure(path, Some(true));
+        let target = self.document_text(uri);
+        match edit::duplicate_class(&self.lib, path, target.as_deref(), package) {
+            Ok((text, new_path)) => {
+                self.set_document(uri, &text);
+                to_json(
+                    &serde_json::json!({"ok": true, "uri": uri, "text": text, "path": new_path}),
+                )
+            }
+            Err(e) => edit_error(format!("{e:#}")),
+        }
+    }
+
+    /// Add an empty model `name` to package `package` of document `uri` (created if
+    /// missing). JSON `{"ok", "uri", "text", "path"}`.
+    #[wasm_bindgen(js_name = newModel)]
+    pub fn new_model(&mut self, uri: &str, package: &str, name: &str) -> String {
+        let target = self.document_text(uri);
+        match edit::new_model(target.as_deref(), package, name) {
+            Ok((text, path)) => {
+                self.set_document(uri, &text);
+                to_json(&serde_json::json!({"ok": true, "uri": uri, "text": text, "path": path}))
+            }
+            Err(e) => edit_error(format!("{e:#}")),
+        }
+    }
+
+    /// JSON: public parameters of a class with units, descriptions and defaults.
+    pub fn parameters(&mut self, path: &str) -> String {
+        self.ensure(path, None);
+        to_json(&edit::parameters(&self.lib, path))
     }
 }
