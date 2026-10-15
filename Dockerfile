@@ -24,6 +24,10 @@ FROM node:22-slim AS web
 WORKDIR /src/web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci
+# The Modelica Standard Library 4.1.0, downloaded from GitHub and packed into
+# public/msl/ (its own layer, so code changes do not download it again).
+COPY web/scripts ./scripts
+RUN node scripts/fetch-msl.mjs
 COPY web ./
 COPY library /src/library
 COPY --from=wasm /out ./src/wasm
