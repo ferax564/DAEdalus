@@ -11,6 +11,8 @@ export interface Series {
   scale?: number;
   offset?: number;
   displayUnit?: string;
+  /** Overlay from a stored run (experiments.ts): kept as is when a new result arrives. */
+  run?: string;
 }
 
 export interface Subplot {
@@ -184,6 +186,7 @@ export class PlotWindow {
     let dropped = false;
     for (const sp of this.subplots) {
       sp.series = sp.series.filter((s) => {
+        if (s.run) return true;
         const d = lookup(s.name);
         if (!d) {
           dropped = true;

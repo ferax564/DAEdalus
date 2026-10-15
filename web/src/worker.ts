@@ -140,6 +140,17 @@ self.onmessage = async (ev: MessageEvent<Req>) => {
         result = b;
         break;
       }
+      case "run": {
+        // One run of an experiment (pool.ts): reuses the translation between calls and
+        // returns the requested trajectories with the summary.
+        const summary = JSON.parse(w.simulateRun(args[0] as string, JSON.stringify(args[1] ?? {})));
+        const names = (args[2] as string[]) ?? [];
+        const time = w.time();
+        const cols = names.map((n) => w.values(n));
+        transfer.push(time.buffer, ...cols.map((c) => c.buffer));
+        result = { summary, time, cols };
+        break;
+      }
       case "resultCsv":
         result = w.resultCsv(args[0] as string);
         break;

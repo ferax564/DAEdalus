@@ -4,6 +4,7 @@ use daedalus_core::backend::Options;
 use daedalus_core::frontend::Library;
 use daedalus_core::sim::{Method, SimOptions};
 mod fmu;
+mod sweep;
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -30,6 +31,8 @@ COMMANDS:
   test-library  translate and simulate every model with an experiment
                 annotation under --model (a package), each in its own
                 process with a time limit; prints a report
+  sweep       simulate once per parameter combination (-s), in parallel
+              threads; prints a summary table (see SWEEP OPTIONS)
 
 SOURCES:
   .mo files or directories (loaded recursively). The bundled Daedalus library
@@ -60,6 +63,22 @@ OPTIONS:
   --fmi-lib FILE          fmu: the FMI runtime library (default: next to this
                           executable, or $DAEDALUS_FMI_LIB)
   --timeout S             per-model time limit for test-library (default 60)
+
+SWEEP OPTIONS:
+  -s, --sweep NAME=VALUES  swept parameter (repeatable); VALUES is a list
+                          1,2,3 or lin:START:STOP:N or log:START:STOP:N
+  --grouped               run the n-th values of all parameters together
+                          (default: full factorial grid)
+  --vars a,b,c            variables kept per run (default: the states)
+  --stats S,...           summary columns per variable: initial | final |
+                          min | max | mean | at=T (default final)
+  -o FILE.csv | DIR       one combined CSV (run, parameters, time, vars), or
+                          a directory with run_001.csv... and summary.csv
+  --format csv | mat      per-run file format in an output directory
+  --summary FILE          write the summary table as CSV
+  --jobs N                parallel threads (default: cores)
+  --retranslate           translate every run again (default only for
+                          non-free, Integer and Boolean parameters)
 ";
 
 fn main() -> ExitCode {
@@ -97,6 +116,12 @@ fn run() -> anyhow::Result<()> {
     let mut format = String::from("text");
     let mut fmi_lib: Option<std::path::PathBuf> = None;
     let mut jac_method = daedalus_core::linearize::JacobianMethod::Exact;
+    let mut sweeps: Vec<String> = Vec::new();
+    let mut grouped = false;
+    let mut stats_spec: Option<String> = None;
+    let mut summary_out: Option<String> = None;
+    let mut retranslate = false;
+    let mut set_format = false;
     let mut i = 1;
     let next = |i: &mut usize| -> anyhow::Result<String> {
         *i += 1;
@@ -160,7 +185,15 @@ fn run() -> anyhow::Result<()> {
             "--timeout" => timeout = next(&mut i)?.parse()?,
             "--fmi-lib" => fmi_lib = Some(next(&mut i)?.into()),
             "--at" => lin_at = Some(next(&mut i)?.parse()?),
-            "--format" => format = next(&mut i)?,
+            "--format" => {
+                format = next(&mut i)?;
+                set_format = true
+            }
+            "-s" | "--sweep" => sweeps.push(next(&mut i)?),
+            "--grouped" => grouped = true,
+            "--stats" => stats_spec = Some(next(&mut i)?),
+            "--summary" => summary_out = Some(next(&mut i)?),
+            "--retranslate" => retranslate = true,
             "--jacobian" => {
                 jac_method = match next(&mut i)?.as_str() {
                     "exact" => daedalus_core::linearize::JacobianMethod::Exact,
@@ -451,6 +484,63 @@ fn run() -> anyhow::Result<()> {
             fmu::export(&m, std::path::Path::new(&out), fmi_lib.as_deref())?;
             eprintln!("wrote {out}");
             Ok(())
+        }
+        "sweep" => {
+            let m = with_all_files(&mut lib, |l| daedalus_core::translate(l, &model, &opts))?;
+            for w in &m.warnings {
+                eprintln!("warning: {w}");
+            }
+            // Simulation options as for `simulate`.
+            let mut o = SimOptions::from_model(&m);
+            if set_start {
+                o.start_time = so.start_time;
+            }
+            if set_stop {
+                o.stop_time = so.stop_time;
+            }
+            if set_tol {
+                o.tolerance = so.tolerance;
+            }
+            if set_method {
+                o.method = so.method;
+            }
+            if so.interval > 0.0 {
+                o.interval = so.interval;
+            } else if set_intervals {
+                o.interval = 0.0;
+            }
+            o.intervals = so.intervals;
+            o.fixed_step = so.fixed_step;
+            o.store_events = so.store_events;
+            o.max_event_rows = so.max_event_rows;
+            o.params = so.params.clone();
+            let stats = stats_spec
+                .as_deref()
+                .unwrap_or("final")
+                .split(',')
+                .map(daedalus_core::sweep::Stat::parse)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| anyhow::anyhow!(e))?;
+            let args = sweep::Args {
+                sweeps: sweeps.clone(),
+                combine: if grouped {
+                    daedalus_core::sweep::Combine::Grouped
+                } else {
+                    daedalus_core::sweep::Combine::Grid
+                },
+                vars: vars.clone(),
+                stats,
+                output: output.clone(),
+                format: if set_format {
+                    format.clone()
+                } else {
+                    "csv".into()
+                },
+                summary: summary_out.clone(),
+                jobs,
+                retranslate,
+            };
+            sweep::run(&mut lib, &model, m, o, &opts, args)
         }
         "test-library" => {
             let mut child_args: Vec<String> = Vec::new();
