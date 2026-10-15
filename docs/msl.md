@@ -7,7 +7,9 @@ extra sources (see [Command line](cli.md#libraries)).
 
 ## Coverage
 
-**441 of the 534** MSL 4.x example models translate and simulate, including:
+**473 of the 534** MSL 4.1.0 example models translate and simulate to the end, and
+**424** of them match the Modelica Association's reference results (see below). They
+include:
 
 - `Mechanics` (Rotational, Translational, MultiBody), `Electrical` (Analog, Digital,
   Machines, QuasiStatic machines, PowerConverters, Batteries), `Thermal`, `Blocks`,
@@ -40,6 +42,8 @@ that passed in the committed baseline stops passing.
 The [scoreboard](https://daedalus.apps.ezkeel.com/scoreboard.html) lists every example
 with its status, the signals that differ and the error text, with a link to open it in
 the workbench.
+
+![The MSL accuracy scoreboard: 424 of 534 examples match the reference results, with a breakdown by package](img/scoreboard.webp)
 
 The baseline is `docs/conformance/msl-4.1.0.json`, made by `tools/refcompare.py`.
 

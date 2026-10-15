@@ -89,6 +89,9 @@ pub struct NewtonBlock {
     pub bounds: Vec<(f64, f64)>,
     /// The block's unknowns (tears and inner variables) with a declared start value.
     pub started: Vec<Slot>,
+    /// Residual equations as text, `0 = ...` (for the performance analyzer; not saved).
+    #[serde(skip)]
+    pub eqs: Vec<String>,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -694,7 +697,23 @@ fn compile_blocks(
                     .filter(|&v| names[v as usize].start.is_some())
                     .map(|v| v as Slot)
                     .collect();
+                let eqs = residuals
+                    .iter()
+                    .map(|&r| {
+                        let mut t = em.arena.render(r, &|v| names[v as usize].name.clone());
+                        if t.len() > 160 {
+                            let mut k = 160;
+                            while !t.is_char_boundary(k) {
+                                k -= 1;
+                            }
+                            t.truncate(k);
+                            t.push('…');
+                        }
+                        format!("0 = {t}")
+                    })
+                    .collect();
                 newton.push(NewtonBlock {
+                    eqs,
                     started,
                     plain_linear,
                     bounds,
@@ -1724,6 +1743,8 @@ pub struct Runtime<'m> {
     step_cap: f64,
     /// `delay()` reads the right value at a delayed jump (set while events are handled).
     pub delay_right: bool,
+    /// Block timing of the performance analyzer (None: not profiling).
+    pub prof: Option<Box<crate::profile::BlockProf>>,
 }
 
 impl<'m> Runtime<'m> {
@@ -1757,6 +1778,7 @@ impl<'m> Runtime<'m> {
             init_mode: false,
             step_cap: 0.0,
             delay_right: true,
+            prof: None,
         }
     }
 
@@ -1817,6 +1839,7 @@ impl<'m> Runtime<'m> {
                         .unwrap_or(r[self.m.delays[k as usize] as usize]);
                 }
                 Ins::Call(d, site, out) => {
+                    let t0 = self.prof.as_mut().map(|p| p.enter());
                     let v = site_value(
                         self.m,
                         &mut self.loops,
@@ -1825,6 +1848,9 @@ impl<'m> Runtime<'m> {
                         &self.r,
                     );
                     self.r[d as usize] = v;
+                    if let (Some(t0), Some(p)) = (t0, self.prof.as_mut()) {
+                        p.leave_call(site as usize, t0);
+                    }
                 }
                 Ins::CallD(d, site, k) => {
                     let v = site_partial(self.m, &mut self.loops, site as usize, k, &self.r);
@@ -1859,11 +1885,16 @@ impl<'m> Runtime<'m> {
     }
 
     fn newton(&mut self, bi: usize) {
+        let t0 = self.prof.as_mut().map(|p| p.enter());
+        let s0 = self.newton_stats;
         let mut work = std::mem::take(&mut self.work);
         let mut piv = std::mem::take(&mut self.piv);
         self.newton_impl(bi, &mut work, &mut piv);
         self.work = work;
         self.piv = piv;
+        if let (Some(t0), Some(p)) = (t0, self.prof.as_mut()) {
+            p.leave_newton(bi, t0, s0, self.newton_stats);
+        }
     }
 
     fn newton_impl(&mut self, bi: usize, work: &mut Vec<f64>, piv: &mut Vec<usize>) {
@@ -2262,11 +2293,15 @@ impl<'m> Runtime<'m> {
 
     /// Evaluate the right-hand side `dx = f(t, x)`.
     pub fn rhs(&mut self, t: f64, x: &[f64], dx: &mut [f64]) {
+        let t0 = self.prof.as_mut().map(|p| p.enter_rhs());
         self.set_time(t);
         self.set_states(x);
         let m = self.m;
         self.run(&m.ode);
         self.get_derivs(dx);
+        if let (Some(t0), Some(p)) = (t0, self.prof.as_mut()) {
+            p.leave_rhs(t0);
+        }
     }
 
     /// Forward-mode (tangent) run of `prog`: recomputes the values in `r` as [`run`]

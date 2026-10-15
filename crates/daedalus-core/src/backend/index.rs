@@ -564,6 +564,9 @@ fn prefer_state_change(w: &mut Work) {
         .filter(|&e| chosen[e])
         .map(|e| alg_eqs[e])
         .collect();
+    if let Some(t) = &mut w.trace {
+        t.state_change_eqs = todo.len();
+    }
     for l in todo {
         let eq = w.eqs[l];
         for v in w.eq_unknowns(&eq) {
@@ -717,6 +720,8 @@ pub fn select_states(w: &mut Work) -> Result<Vec<VarId>> {
                 cols.iter().enumerate().map(|(i, &z)| (z, i)).collect();
             let mut entries: Vec<Vec<(usize, f64)>> = vec![Vec::new(); g.len()];
             let mut entries_p: Vec<Vec<(usize, f64)>> = vec![Vec::new(); g.len()];
+            let mut entries_0: Vec<Vec<(usize, f64)>> = vec![Vec::new(); g.len()];
+            let mut entries_p0: Vec<Vec<(usize, f64)>> = vec![Vec::new(); g.len()];
             for (ri, &e) in g.iter().enumerate() {
                 let eq = w.eqs[e];
                 let r = w.arena.sub(eq.lhs, eq.rhs);
@@ -748,6 +753,8 @@ pub fn select_states(w: &mut Work) -> Result<Vec<VarId>> {
                     let x1 = 1e-4 * at(&point1);
                     entries[ri].push((ci, at(&point0) + x1));
                     entries_p[ri].push((ci, at(&point0p) + x1));
+                    entries_0[ri].push((ci, at(&point0)));
+                    entries_p0[ri].push((ci, at(&point0p)));
                 }
             }
             // H is block diagonal after permutation (one block per group of equations that
@@ -806,9 +813,20 @@ pub fn select_states(w: &mut Work) -> Result<Vec<VarId>> {
                         select_columns_sparse(&h, bcols.len(), rows.len())
                     }
                 };
-                let mut pick = select(&entries_p);
-                if pick.len() < rows.len() {
-                    pick = select(&entries);
+                // Pick at the start values (plus a small perturbation that breaks ties).
+                // When the block is singular at the raw start values but not once the
+                // explicitly defined unknowns are filled in (a mechanism whose rotation
+                // matrices start as zeros), the perturbed pick is arbitrary: pick at the
+                // propagated point instead.
+                let mut pick = select(&entries);
+                if pick.len() < rows.len()
+                    || (select(&entries_0).len() < rows.len()
+                        && select(&entries_p0).len() == rows.len())
+                {
+                    let pp = select(&entries_p);
+                    if pp.len() == rows.len() {
+                        pick = pp;
+                    }
                 }
                 if pick.len() < rows.len() {
                     let names: Vec<&str> = bcols.iter().map(|&c| w.name(cols[c])).collect();
@@ -823,6 +841,15 @@ pub fn select_states(w: &mut Work) -> Result<Vec<VarId>> {
                         names.join(", "),
                         eqs.join("; ")
                     );
+                }
+                if let Some(t) = &mut w.trace {
+                    t.state_sets.push(super::trace::StateSet {
+                        level: k,
+                        eqs: rows.iter().map(|&ri| g[ri]).collect(),
+                        candidates: bcols.iter().map(|&c| cols[c]).collect(),
+                        tiers: btiers.clone(),
+                        dummies: pick.iter().map(|&l| cols[bcols[l]]).collect(),
+                    });
                 }
                 chosen.extend(pick.into_iter().map(|l| bcols[l]));
             }

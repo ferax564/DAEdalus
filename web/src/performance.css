@@ -1,0 +1,42 @@
+/* Performance panel (performance.ts). */
+#plot-pane.perf-mode .tabs > :not(#sim-views) { display: none; }
+#plot-pane.perf-mode #plot, #plot-pane.perf-mode #anim { display: none; }
+.perf { flex: 1; min-height: 0; overflow: auto; padding: 4px 12px 16px; }
+.perf-sec { margin: 8px 0 16px; }
+.perf-sec h3 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted); margin: 6px 0; }
+.perf-sec p { margin: 4px 0 6px; font-size: 12px; }
+.perf-split { display: flex; height: 14px; border-radius: 4px; overflow: hidden; background: var(--grid); }
+.perf-split span { height: 100%; min-width: 1px; }
+.perf-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; margin: 6px 0; color: var(--muted); }
+.perf-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+.perf-stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 4px 12px; margin: 6px 0; }
+.perf-stats .kv { display: flex; flex-direction: column; }
+.perf-stats .k { color: var(--muted); font-size: 11px; }
+.perf-stats .v { font-family: var(--mono); font-size: 12.5px; }
+.perf-hints { margin: 6px 0; padding-left: 18px; }
+.perf-hints li { margin: 2px 0; }
+.perf-plot { position: relative; height: 230px; }
+.perf-strip { display: block; width: 100%; height: 10px; }
+.perf-bars .bar-row { display: grid; grid-template-columns: minmax(120px, 280px) 1fr 52px; align-items: center; gap: 8px; font-size: 12px; padding: 1px 0; }
+.perf-bars .name { font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.perf-bars .track { height: 10px; background: var(--grid); border-radius: 3px; overflow: hidden; }
+.perf-bars .fill { display: block; height: 100%; }
+.perf-bars .val { text-align: right; font-family: var(--mono); }
+.perf-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.perf-table th { text-align: left; color: var(--muted); font-weight: 600; border-bottom: 1px solid var(--line); padding: 3px 6px; position: sticky; top: 0; background: var(--panel); }
+.perf-table td { padding: 2px 6px; border-bottom: 1px solid var(--grid); vertical-align: top; }
+.perf-table td.r { text-align: right; font-variant-numeric: tabular-nums; }
+.perf-table td.bad { color: var(--err); }
+.perf-table .mono, .perf .mono { font-family: var(--mono); font-size: 11.5px; word-break: break-all; }
+.perf-table tr.expandable { cursor: pointer; }
+.perf-table tr.expandable:hover, .perf-table.events tbody tr:hover { background: var(--accent-soft); }
+.perf-table tr.detail td { background: var(--bg); }
+.perf-table .share { display: inline-block; width: 60px; height: 8px; background: var(--grid); border-radius: 2px; overflow: hidden; vertical-align: middle; }
+.perf-table .share .fill { display: block; height: 100%; background: var(--accent); }
+.perf-table tr.chatter td { background: rgba(224, 49, 49, 0.08); }
+.perf-table tr.sel td { background: var(--accent-soft); outline: 1px solid var(--accent); }
+.perf-table.events tbody tr { cursor: pointer; }
+.perf .badge { background: #e03131; color: white; border-radius: 3px; padding: 0 5px; font-size: 11px; }
+.perf-toolbar { display: flex; gap: 10px; align-items: center; margin: 4px 0 6px; flex-wrap: wrap; }
+.perf-toolbar label { display: flex; gap: 4px; align-items: center; color: var(--muted); }
+.perf-filter { width: 200px; }
