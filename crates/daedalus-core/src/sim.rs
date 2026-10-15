@@ -446,12 +446,31 @@ impl<'m> Simulation<'m> {
 
     /// Event iteration at the current time until discrete values settle.
     fn event_iteration(&mut self) -> Result<(), String> {
+        self.rt.hold_samples = true;
+        self.rt.held_samples.clear();
+        let r = self.event_iteration_inner();
+        self.rt.hold_samples = false;
+        self.rt.held_samples.clear();
+        r
+    }
+
+    fn event_iteration_inner(&mut self) -> Result<(), String> {
         let m = self.rt.m;
         let mut hist: Vec<Vec<f64>> = Vec::new();
         for _ in 0..100 {
             self.rt.save_pre();
-            let rel_changed = self.rt.latch_relations();
+            let mut rel_changed = self.rt.latch_relations();
             self.rt.run(&m.ode);
+            // Relations read the algebraics of this same evaluation (`u <= x` right after a
+            // step of `u`): settle them before the when-clauses look at the conditions, so
+            // that a clause fired by the step still sees the values before it in pre().
+            for _ in 0..10 {
+                if !self.rt.latch_relations() {
+                    break;
+                }
+                rel_changed = true;
+                self.rt.run(&m.ode);
+            }
             let mut conds = self.when_conds();
             let prev = std::mem::take(&mut self.cond_prev);
             let fired = self.fire(&conds, &prev);
@@ -514,6 +533,13 @@ impl<'m> Simulation<'m> {
                 a != b && !(a.is_nan() && b.is_nan())
             });
             if !rel_changed && !fired && !disc_changed {
+                if !self.rt.held_samples.is_empty() {
+                    // The event instant is over: sample() turns false again, and what
+                    // depends on it settles in the following iterations.
+                    self.rt.hold_samples = false;
+                    self.rt.held_samples.clear();
+                    continue;
+                }
                 self.rt.save_pre();
                 return Ok(());
             }
@@ -985,6 +1011,27 @@ impl<'m> Simulation<'m> {
         self.delay_events.first().copied()
     }
 
+    /// The earliest pending `sample()` tick after `t`.
+    fn next_sample_time(&self, t: f64) -> Option<f64> {
+        let m = self.rt.m;
+        m.sample_rels
+            .iter()
+            .zip(&m.sample_next)
+            .filter(|&(&i, _)| self.rt.r[m.layout.rel0 + i] == 0.0)
+            .map(|(_, &v)| self.rt.r[v as usize])
+            .filter(|&ts| ts > t)
+            .min_by(f64::total_cmp)
+            .map(|t0| {
+                let ticks = m
+                    .sample_rels
+                    .iter()
+                    .zip(&m.sample_next)
+                    .filter(|&(&i, _)| self.rt.r[m.layout.rel0 + i] == 0.0)
+                    .map(|(_, &v)| self.rt.r[v as usize]);
+                sample_cluster_end(t0, ticks)
+            })
+    }
+
     fn advance(
         &mut self,
         st: &mut Stepper,
@@ -1019,6 +1066,9 @@ impl<'m> Simulation<'m> {
                 Some(&te) if te < t_stop => te,
                 _ => t_stop,
             };
+            // Steps end on the next sample() tick: the states at a time event are then
+            // the step's own solution, not an interpolation across the tick.
+            let t_lim = self.next_sample_time(t).map_or(t_lim, |ts| t_lim.min(ts));
             let t_lim = if n == 0 {
                 t_lim.min(t + max_step)
             } else {
@@ -1055,11 +1105,25 @@ impl<'m> Simulation<'m> {
                 if !crossing.is_empty() {
                     let mut best = tn;
                     let after_event = tp - st.last_event <= 1e-10 * tp.abs().max(1.0);
+                    let mut ticks = Vec::new();
                     for &i in &crossing {
-                        let te = self.locate(&*st.solver, i, tp, best, after_event, &mut st.xi);
+                        // A sample() tick happens at its known time.
+                        let te = match m.sample_rels.iter().position(|&r| r == i) {
+                            Some(k) => {
+                                let te = self.rt.r[m.sample_next[k] as usize].clamp(tp, tn);
+                                ticks.push(te);
+                                te
+                            }
+                            None => self.locate(&*st.solver, i, tp, best, after_event, &mut st.xi),
+                        };
                         if te < best {
                             best = te;
                         }
+                    }
+                    // Ticks of different sample() calls that coincide up to round-off
+                    // are one event, at the latest of them (where all are true).
+                    if ticks.contains(&best) {
+                        best = sample_cluster_end(best, ticks.into_iter());
                     }
                     event_t = Some(best);
                 }
@@ -1375,6 +1439,14 @@ impl Simulation<'_> {
 }
 
 /// Convenience: simulate a compiled model with options.
+/// The latest of the tick times `ticks` that coincide with `t0` up to round-off.
+fn sample_cluster_end(t0: f64, ticks: impl Iterator<Item = f64>) -> f64 {
+    let tol = 1e-12 * t0.abs().max(1e-3);
+    ticks
+        .filter(|&ts| ts >= t0 && ts - t0 <= tol)
+        .fold(t0, f64::max)
+}
+
 pub fn simulate(m: &Model, opts: SimOptions) -> Result<(Results, SimStats), SimError> {
     Simulation::new(m, opts).run()
 }
