@@ -8,6 +8,7 @@ use daedalus_core::frontend::{Library, edit, inspect, lazy};
 use daedalus_core::results::Results;
 use daedalus_core::sim::{SimOptions, simulate, simulate_profiled};
 use serde::Serialize;
+use std::collections::HashMap;
 use wasm_bindgen::prelude::*;
 
 mod analysis;
@@ -67,12 +68,18 @@ struct SimSummary<'a> {
     stats: Option<daedalus_core::sim::SimStats>,
     model_stats: Option<daedalus_core::backend::Stats>,
     experiment: Option<serde_json::Value>,
+    /// Display-unit choices keyed by "unit|displayUnit" (see `units::display_choices`).
+    display: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Serialize)]
 struct VarSummary<'a> {
     name: &'a str,
     unit: &'a str,
+    /// the `displayUnit` attribute
+    display_unit: &'a str,
+    /// `unit` was inferred by the unit checker (none declared)
+    unit_inferred: bool,
     description: &'a str,
     /// "series" | "param" | "alias"
     kind: &'static str,
@@ -185,11 +192,30 @@ impl Workspace {
     /// JSON: translation statistics, or `{"error": ...}`.
     pub fn check(&mut self, model: &str) -> String {
         self.ensure(model, Some(true));
-        match daedalus_core::translate(&self.lib, model, &Default::default()) {
-            Ok(m) => to_json(
-                &serde_json::json!({"ok": true, "stats": m.stats, "warnings": m.warnings, "states": m.states.len()}),
+        let flat = match self.lib.flatten(model) {
+            Ok(f) => f,
+            Err(e) => return to_json(&serde_json::json!({"ok": false, "error": format!("{e:#}")})),
+        };
+        // Unit checking runs on the flat model; its findings are warnings only.
+        let units = daedalus_core::units::check(&flat);
+        let unit_json = serde_json::json!({
+            "issues": units.issues,
+            "declared": units.declared,
+            "inferred": units.inferred.len(),
+            "unknown": units.unknown,
+            "unparsed": units.unparsed,
+        });
+        match daedalus_core::backend::compile(flat, &Default::default()) {
+            Ok(sys) => {
+                let m = daedalus_core::codegen::compile(sys);
+                to_json(
+                    &serde_json::json!({"ok": true, "stats": m.stats, "warnings": m.warnings,
+                    "states": m.states.len(), "units": unit_json}),
+                )
+            }
+            Err(e) => to_json(
+                &serde_json::json!({"ok": false, "error": format!("{e:#}"), "units": unit_json}),
             ),
-            Err(e) => to_json(&serde_json::json!({"ok": false, "error": format!("{e:#}")})),
         }
     }
 
@@ -209,7 +235,23 @@ impl Workspace {
         let load_ms = self.ensure(model, Some(true));
         let t0 = now_ms();
         let bopts = backend_options(options);
-        let m = match daedalus_core::translate(&self.lib, model, &bopts) {
+        // Flatten, infer the units of variables declared without one, then compile.
+        let compiled = self.lib.flatten(model).and_then(|flat| {
+            let report = daedalus_core::units::check(&flat);
+            let mut units: HashMap<String, (String, String, bool)> = HashMap::new();
+            let resolved = daedalus_core::units::resolved_units(&flat, &report);
+            for (i, v) in flat.vars.iter().enumerate() {
+                if let Some(u) = resolved.get(&(i as u32)) {
+                    units.insert(
+                        v.name.clone(),
+                        (u.clone(), v.display_unit.clone(), v.unit.is_empty()),
+                    );
+                }
+            }
+            let sys = daedalus_core::backend::compile(flat, &bopts)?;
+            Ok((daedalus_core::codegen::compile(sys), units))
+        });
+        let (m, units) = match compiled {
             Ok(m) => m,
             Err(e) => {
                 self.results = None;
@@ -255,7 +297,8 @@ impl Workspace {
             .iter()
             .map(|&p| m.vars[p as usize].name.as_str())
             .collect();
-        let vars = r
+        let mut display = serde_json::Map::new();
+        let vars: Vec<VarSummary> = r
             .vars
             .iter()
             .filter(|v| !v.name.starts_with('$'))
@@ -266,9 +309,22 @@ impl Workspace {
                     K::Param(x) => ("param", Some(x)),
                     K::Alias { .. } => ("alias", None),
                 };
+                let (unit, display_unit, inferred) = match units.get(&v.name) {
+                    Some((u, du, inf)) => (u.as_str(), du.as_str(), *inf),
+                    None => (v.unit.as_str(), "", false),
+                };
+                let key = format!("{unit}|{display_unit}");
+                if !unit.is_empty()
+                    && !display.contains_key(&key)
+                    && let Some(c) = daedalus_core::units::display_choices(unit, display_unit)
+                {
+                    display.insert(key, serde_json::to_value(c).unwrap_or_default());
+                }
                 VarSummary {
                     name: &v.name,
-                    unit: &v.unit,
+                    unit,
+                    display_unit,
+                    unit_inferred: inferred,
                     description: &v.description,
                     kind,
                     value,
@@ -289,6 +345,7 @@ impl Workspace {
             stats,
             model_stats: Some(m.stats.clone()),
             experiment,
+            display,
         })
     }
 

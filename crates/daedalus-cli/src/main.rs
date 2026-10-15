@@ -20,7 +20,10 @@ USAGE:
   daedalus <command> [sources...] -m <Model> [options]
 
 COMMANDS:
-  check       translate the model and print statistics
+  check       translate the model and print statistics (--units: also check
+              units and print the unit issues as warnings)
+  units       check units: print every variable's declared or inferred unit
+              and the unit inconsistencies (--json for JSON)
   flatten     print the flat model
   dump        print the sorted, causalised equation system
   simulate    simulate and write results
@@ -97,6 +100,9 @@ OPTIONS:
                           chattering) and print its summary; with a .json file
                           also write the full profile there
   --events                simulate: print the event log (implies profiling)
+  --units                 check: run the unit checker too
+  --json                  units: JSON output (same as --format json)
+  --all                   units: list variables without a unit too
 
 SWEEP OPTIONS:
   -s, --sweep NAME=VALUES  swept parameter (repeatable); VALUES is a list
@@ -198,6 +204,8 @@ fn run() -> anyhow::Result<()> {
     let mut set_jac = false;
     let mut free: Vec<String> = Vec::new();
     let mut targets: Vec<(String, f64)> = Vec::new();
+    let mut check_units = false;
+    let mut list_all = false;
     let mut i = 1;
     let next = |i: &mut usize| -> anyhow::Result<String> {
         *i += 1;
@@ -297,6 +305,9 @@ fn run() -> anyhow::Result<()> {
                 profile = Some(file);
             }
             "--events" => print_events = true,
+            "--units" => check_units = true,
+            "--json" => format = "json".into(),
+            "--all" => list_all = true,
             "--jacobian" => {
                 let j = next(&mut i)?;
                 so.jacobian = daedalus_core::sim::JacobianMode::parse(&j)
@@ -366,6 +377,12 @@ fn run() -> anyhow::Result<()> {
     }
     let t_parse = t0.elapsed();
     match cmd.as_str() {
+        "units" => {
+            let flat = with_all_files(&mut lib, |l| l.flatten(&model))?;
+            let r = daedalus_core::units::check(&flat);
+            print_units(&flat, &r, &format, list_all)?;
+            Ok(())
+        }
         "flatten" => {
             let f = with_all_files(&mut lib, |l| l.flatten(&model))?;
             print!("{}", f.dump());
@@ -375,6 +392,12 @@ fn run() -> anyhow::Result<()> {
             let t1 = Instant::now();
             let flat = with_all_files(&mut lib, |l| l.flatten(&model))?;
             let t_flat = t1.elapsed();
+            let unit_report = check_units.then(|| daedalus_core::units::check(&flat));
+            if let Some(r) = &unit_report {
+                for w in &r.issues {
+                    eprintln!("warning: {}", w.message);
+                }
+            }
             let sys = daedalus_core::backend::compile(flat, &opts)?;
             for w in &sys.warnings {
                 eprintln!("warning: {w}");
@@ -424,6 +447,16 @@ fn run() -> anyhow::Result<()> {
                     "  tape: {} instructions, {} registers",
                     m.tape_len, m.layout.n_regs
                 );
+                if let Some(r) = &unit_report {
+                    println!(
+                        "  units: {} issues, {} declared, {} inferred, {} unknown ({:.1} ms)",
+                        r.issues.len(),
+                        r.declared,
+                        r.inferred.len(),
+                        r.unknown,
+                        r.ms
+                    );
+                }
             }
             Ok(())
         }
@@ -859,6 +892,90 @@ fn write_result(
         res.write_csv(&mut w, vars)?;
     } else {
         res.write_mat(&mut w)?;
+    }
+    Ok(())
+}
+
+/// `daedalus units`: the unit of every variable and the unit issues.
+fn print_units(
+    flat: &daedalus_core::flat::FlatModel,
+    r: &daedalus_core::units::UnitReport,
+    format: &str,
+    all: bool,
+) -> anyhow::Result<()> {
+    use daedalus_core::flat::VarType;
+    let units = daedalus_core::units::resolved_units(flat, r);
+    let inferred: std::collections::HashSet<u32> = r.inferred.iter().map(|i| i.var).collect();
+    let rows: Vec<(usize, &str, &str)> = flat
+        .vars
+        .iter()
+        .enumerate()
+        .filter(|(_, v)| v.ty == VarType::Real && !v.name.starts_with('$'))
+        .filter_map(|(i, v)| {
+            let u = units.get(&(i as u32)).map(|s| s.as_str()).unwrap_or("");
+            let src = if !v.unit.is_empty() {
+                "declared"
+            } else if inferred.contains(&(i as u32)) {
+                "inferred"
+            } else {
+                "unknown"
+            };
+            (all || !u.is_empty()).then_some((i, u, src))
+        })
+        .collect();
+    if format == "json" {
+        let vars: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|&(i, u, src)| {
+                let v = &flat.vars[i];
+                serde_json::json!({"name": v.name, "unit": u, "source": src, "displayUnit": v.display_unit})
+            })
+            .collect();
+        let out = serde_json::json!({
+            "model": flat.name,
+            "variables": vars,
+            "issues": r.issues,
+            "unparsed": r.unparsed,
+            "stats": {"declared": r.declared, "inferred": r.inferred.len(), "unknown": r.unknown,
+                      "equations": r.equations, "passes": r.passes, "ms": r.ms},
+        });
+        println!("{}", serde_json::to_string_pretty(&out)?);
+        return Ok(());
+    }
+    println!("model {}", flat.name);
+    let w = rows
+        .iter()
+        .map(|&(i, ..)| flat.vars[i].name.len())
+        .max()
+        .unwrap_or(0);
+    for &(i, u, src) in &rows {
+        let v = &flat.vars[i];
+        let du = if v.display_unit.is_empty() {
+            String::new()
+        } else {
+            format!(" (display {})", v.display_unit)
+        };
+        println!(
+            "  {:w$}  {:14} {src}{du}",
+            v.name,
+            if u.is_empty() { "?" } else { u }
+        );
+    }
+    if !r.unparsed.is_empty() {
+        println!("unparsed unit strings: {}", r.unparsed.join(", "));
+    }
+    println!(
+        "{} unit issues; {} declared, {} inferred, {} unknown; {} equations, {} passes, {:.1} ms",
+        r.issues.len(),
+        r.declared,
+        r.inferred.len(),
+        r.unknown,
+        r.equations,
+        r.passes,
+        r.ms
+    );
+    for i in &r.issues {
+        println!("warning: {}", i.message);
     }
     Ok(())
 }

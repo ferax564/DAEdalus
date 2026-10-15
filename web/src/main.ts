@@ -1,10 +1,10 @@
 // DAEdalus workbench: package browser, icon/diagram/text views, simulation and plotting.
 import "./styles.css";
 import { api } from "./rpc";
-import type { ClassEntry, ClassInfo, ComponentInfo, SimSettings, SimSummary, VarSummary } from "./types";
+import type { ClassEntry, ClassInfo, ComponentInfo, SimSettings, SimSummary, UnitSummary, VarSummary } from "./types";
 import { DiagramView, type ViewKind } from "./diagram";
 import { TextView } from "./editor";
-import { PlotWindow, displayUnit, interp } from "./plot";
+import { PlotWindow, displayUnit, interp, pickUnit, type DisplayChoices } from "./plot";
 import { bundledLibrary, bundledResources, readPicked, type Picked } from "./library";
 import { drawIcon, newCtx, SVG_NS, systemExtent, IDENTITY, el } from "./graphics";
 import type { Animation3D, AnimData } from "./anim3d";
@@ -457,6 +457,12 @@ async function simulate() {
       const x = sp?.xName ? cache!.cols.get(sp.xName) : cache!.time;
       return x ? { x, y } : null;
     });
+    for (const sp of plot.subplots) {
+      for (const q of sp.series) q.choices = choicesOf(s.vars.find((v) => v.name === q.name));
+      if (sp.xName) sp.xChoices = choicesOf(s.vars.find((v) => v.name === sp.xName));
+    }
+    plot.applyUnits();
+    refreshUnitSelects();
     setMode("simulation");
     renderVariables();
     refreshXSelect();
@@ -490,7 +496,22 @@ $("btn-check").onclick = async () => {
     );
     for (const w of r.warnings ?? []) log(`warning: ${w}`, "warn");
   } else log(r.error ?? "check failed", "err");
+  logUnits(r.units);
 };
+
+/** Unit issues of a Check, as warnings in the messages panel. */
+function logUnits(u: UnitSummary | undefined) {
+  if (!u) return;
+  const shown = 50;
+  for (const i of u.issues.slice(0, shown)) log(`unit warning: ${i.message}`, "warn unit");
+  if (u.issues.length > shown) log(`… ${u.issues.length - shown} more unit warnings`, "warn unit");
+  log(
+    `Units: ${u.issues.length} issue${u.issues.length === 1 ? "" : "s"}; ${u.declared} variables with a declared unit, ` +
+      `${u.inferred} inferred, ${u.unknown} unknown` +
+      (u.unparsed.length ? `; unparsed unit strings: ${u.unparsed.join(", ")}` : ""),
+    u.issues.length ? "warn" : "ok",
+  );
+}
 
 // ---------------------------------------------------------------- variable browser
 interface VarNode {
@@ -569,7 +590,7 @@ function renderVariables() {
       nm.textContent = k.name;
       row.appendChild(nm);
       if (k.v) {
-        row.title = `${k.full}${k.v.unit ? ` [${k.v.unit}]` : ""}${k.v.description ? `\n${k.v.description}` : ""}`;
+        row.title = `${k.full}${k.v.unit ? ` [${k.v.unit}]${k.v.unit_inferred ? " (inferred)" : ""}` : ""}${k.v.description ? `\n${k.v.description}` : ""}`;
         if (k.v.kind === "param") {
           const inp = document.createElement("input");
           inp.className = "par";
@@ -601,9 +622,9 @@ function renderVariables() {
           val.className = "val";
           const y = cache?.cols.get(k.full);
           if (y && t && y.length) {
-            const du = displayUnit(k.v.unit);
+            const du = varDisplay(k.v);
             val.textContent = `${(+((y[y.length - 1] * du.scale + du.offset).toPrecision(5))).toString()} ${du.unit}`;
-          } else val.textContent = k.v.unit ? `[${displayUnit(k.v.unit).unit}]` : "";
+          } else val.textContent = k.v.unit ? `[${varDisplay(k.v).unit}]` : "";
           row.appendChild(val);
         }
       }
@@ -631,7 +652,7 @@ async function togglePlot(name: string, v: VarSummary) {
   if (sp.xName) await fetchSeries([sp.xName]);
   const y = cache!.cols.get(name)!;
   const x = sp.xName ? cache!.cols.get(sp.xName)! : cache!.time;
-  plot.toggle({ name, unit: v.unit, x, y });
+  plot.toggle({ name, unit: v.unit, x, y, choices: choicesOf(v) });
   renderVariables();
   experiments.noteSeries(summaryPath, name, v.unit, cache!.time, y);
 }
@@ -641,7 +662,76 @@ function refreshXSelect() {
   const cur = plot.subplots[plot.active]?.xName ?? "";
   sel.innerHTML = `<option value="">time</option>` + (summary?.vars ?? []).filter((v) => v.kind !== "param").map((v) => `<option${v.name === cur ? " selected" : ""}>${escapeHtml(v.name)}</option>`).join("");
 }
+// ---------------------------------------------------------------- display units
+/** Display units of a variable: the result's unit table entry for its unit and displayUnit. */
+function choicesOf(v: VarSummary | undefined): DisplayChoices | undefined {
+  if (!v?.unit) return undefined;
+  return summary?.display?.[`${v.unit}|${v.display_unit ?? ""}`];
+}
+
+/** How a variable is shown outside the plot: its default display unit in the chosen system. */
+function varDisplay(v: VarSummary): { unit: string; scale: number; offset: number } {
+  const c = choicesOf(v);
+  return c?.options.length ? pickUnit(c, plot.imperial) : displayUnit(v.unit);
+}
+
+function fillUnitSelect(sel: HTMLSelectElement, c: DisplayChoices | undefined, picked: string | undefined) {
+  if (!c?.options.length) {
+    sel.innerHTML = `<option value="">—</option>`;
+    sel.disabled = true;
+    return;
+  }
+  sel.disabled = false;
+  const auto = pickUnit(c, plot.imperial).unit;
+  sel.innerHTML =
+    `<option value="">auto (${escapeHtml(auto)})</option>` +
+    c.options
+      .map((o) => `<option value="${escapeHtml(o.unit)}"${o.unit === picked ? " selected" : ""}>${escapeHtml(o.unit)}${o.imperial ? " ·imp" : ""}</option>`)
+      .join("");
+}
+
+function refreshUnitSelects() {
+  const sp = plot.subplots[plot.active];
+  fillUnitSelect($("plot-yunit") as HTMLSelectElement, plot.yChoices(sp), sp?.yUnit);
+  fillUnitSelect($("plot-xunit") as HTMLSelectElement, plot.xChoices(sp), sp?.xDisplay);
+}
+
+$("plot-yunit").onchange = () => {
+  const sp = plot.subplots[plot.active];
+  if (!sp) return;
+  sp.yUnit = ($("plot-yunit") as HTMLSelectElement).value || undefined;
+  plot.applyUnits();
+  renderVariables();
+};
+$("plot-xunit").onchange = () => {
+  const sp = plot.subplots[plot.active];
+  if (!sp) return;
+  sp.xDisplay = ($("plot-xunit") as HTMLSelectElement).value || undefined;
+  plot.draw();
+};
+{
+  const box = $("plot-imperial") as HTMLInputElement;
+  try {
+    plot.imperial = localStorage.getItem("daedalus.imperial") === "1";
+  } catch {
+    /* storage unavailable: SI */
+  }
+  box.checked = plot.imperial;
+  box.onchange = () => {
+    plot.imperial = box.checked;
+    try {
+      localStorage.setItem("daedalus.imperial", box.checked ? "1" : "0");
+    } catch {
+      /* not persisted */
+    }
+    plot.applyUnits();
+    refreshUnitSelects();
+    renderVariables();
+  };
+}
+
 plot.onChange = () => {
+  refreshUnitSelects();
   refreshXSelect();
   renderVariables();
 };
@@ -649,7 +739,10 @@ $("plot-x").onchange = async () => {
   const xName = ($("plot-x") as HTMLSelectElement).value || undefined;
   const sp = plot.subplots[plot.active];
   sp.xName = xName;
-  sp.xUnit = xName ? summary?.vars.find((v) => v.name === xName)?.unit : undefined;
+  const xv = xName ? summary?.vars.find((v) => v.name === xName) : undefined;
+  sp.xUnit = xv?.unit;
+  sp.xChoices = choicesOf(xv);
+  sp.xDisplay = undefined;
   if (xName) await fetchSeries([xName]);
   for (const s of sp.series) if (!s.run) s.x = xName ? cache!.cols.get(xName)! : cache!.time;
   plot.draw();
@@ -696,7 +789,7 @@ function setSimView(v: typeof simView) {
   setActive($("sim-views"), "data-sim", v);
   $("plot").classList.toggle("hidden", v !== "plot");
   $("anim").classList.toggle("hidden", v !== "anim");
-  for (const id of ["plot-new", "plot-clear", "export-csv", "export-mat"]) $(id).classList.toggle("hidden", v !== "plot");
+  for (const id of ["plot-new", "plot-clear", "export-csv", "export-mat", "plot-units"]) $(id).classList.toggle("hidden", v !== "plot");
   $("plot-x").parentElement!.classList.toggle("hidden", v !== "plot");
   if (v === "plot") {
     anim?.stop();

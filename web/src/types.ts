@@ -1,3 +1,4 @@
+import type { DisplayChoices } from "./plot";
 // Data shapes returned by the WebAssembly workspace (see crates/daedalus-wasm).
 
 export interface ClassEntry {
@@ -66,7 +67,11 @@ export interface ClassInfo {
 
 export interface VarSummary {
   name: string;
+  /** Declared unit, or the one the unit checker inferred (unit_inferred). */
   unit: string;
+  /** The `displayUnit` attribute. */
+  display_unit?: string;
+  unit_inferred?: boolean;
   description: string;
   kind: "series" | "param" | "alias";
   value: number | null;
@@ -104,6 +109,27 @@ export interface SimSummary {
   } | null;
   model_stats: Record<string, number> | null;
   experiment: Record<string, unknown> | null;
+  /** Display-unit choices keyed by "unit|displayUnit". */
+  display?: Record<string, DisplayChoices>;
+}
+
+/** Unit issue found by the unit checker (crates/daedalus-core/src/units.rs). */
+export interface UnitIssue {
+  origin: string;
+  equation: string;
+  left: string;
+  left_unit: string;
+  right: string;
+  right_unit: string;
+  message: string;
+}
+
+export interface UnitSummary {
+  issues: UnitIssue[];
+  declared: number;
+  inferred: number;
+  unknown: number;
+  unparsed: string[];
 }
 
 export interface SimSettings {

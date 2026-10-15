@@ -28,6 +28,7 @@ pub mod sweep;
 pub mod structure;
 pub mod uq;
 pub mod steady;
+pub mod units;
 
 /// Flatten, analyse and compile `model` from `lib` into an executable model.
 pub fn translate(

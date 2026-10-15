@@ -19,6 +19,23 @@ export interface Series {
   points?: boolean;
   /** Line dash pattern. */
   dash?: number[];
+  /** Units the series can be shown in (from the unit table of the result). */
+  choices?: DisplayChoices;
+}
+
+/** One display unit: shown = value * scale + offset. */
+export interface UnitOption {
+  unit: string;
+  scale: number;
+  offset: number;
+  imperial: boolean;
+}
+
+/** Display units of one (unit, displayUnit) pair; see `units::display_choices` in daedalus-core. */
+export interface DisplayChoices {
+  options: UnitOption[];
+  si_default: string;
+  imperial_default: string;
 }
 
 export interface Subplot {
@@ -26,10 +43,33 @@ export interface Subplot {
   /** Parametric plot: the name of the x variable, if not time. */
   xName?: string;
   xUnit?: string;
+  /** Display units of the parametric x variable. */
+  xChoices?: DisplayChoices;
+  /** Unit the user picked for the y axis (else the default of the unit system). */
+  yUnit?: string;
+  /** Unit the user picked for the x axis. */
+  xDisplay?: string;
   /** Zoomed x range of a parametric subplot (time subplots share one range). */
   xZoom?: [number, number];
   /** Logarithmic y axis (values <= 0 are left out). */
   logY?: boolean;
+}
+
+const TIME_CHOICES: DisplayChoices = {
+  options: [
+    { unit: "s", scale: 1, offset: 0, imperial: false },
+    { unit: "ms", scale: 1000, offset: 0, imperial: false },
+    { unit: "min", scale: 1 / 60, offset: 0, imperial: false },
+    { unit: "h", scale: 1 / 3600, offset: 0, imperial: false },
+  ],
+  si_default: "s",
+  imperial_default: "s",
+};
+
+/** The option a unit system defaults to, or the one picked (when the choices have it). */
+export function pickUnit(c: DisplayChoices, imperial: boolean, picked?: string): UnitOption {
+  const want = picked && c.options.some((o) => o.unit === picked) ? picked : imperial ? c.imperial_default : c.si_default;
+  return c.options.find((o) => o.unit === want) ?? c.options[0];
 }
 
 const PALETTE = ["#0b5fff", "#d9480f", "#2b8a3e", "#ae3ec9", "#f08c00", "#1098ad", "#c2255c", "#5c940d", "#364fc7", "#862e9c"];
@@ -168,11 +208,52 @@ export class PlotWindow {
     const i = sp.series.findIndex((x) => x.name === s.name);
     if (i >= 0) sp.series.splice(i, 1);
     else {
-      const du = displayUnit(s.unit);
-      sp.series.push({ ...s, color: this.nextColor(), scale: du.scale, offset: du.offset, displayUnit: du.unit });
+      const ns: Series = { ...s, color: this.nextColor() };
+      this.applySeries(sp, ns);
+      sp.series.push(ns);
     }
     this.draw();
     this.onChange();
+  }
+
+  /** Default to Imperial units (ft, lbf, psi, mph, degF, hp, ...) instead of SI / displayUnit. */
+  imperial = false;
+
+  /** Recompute every display transform (after a unit pick or a unit-system switch). */
+  applyUnits() {
+    for (const sp of this.subplots) for (const s of sp.series) this.applySeries(sp, s);
+    this.draw();
+  }
+
+  private applySeries(sp: Subplot, s: Series) {
+    if (s.choices?.options.length) {
+      const o = pickUnit(s.choices, this.imperial, sp.yUnit);
+      s.scale = o.scale;
+      s.offset = o.offset;
+      s.displayUnit = o.unit;
+    } else {
+      const du = displayUnit(s.unit);
+      s.scale = du.scale;
+      s.offset = du.offset;
+      s.displayUnit = du.unit;
+    }
+  }
+
+  /** Units offered for the y axis of a subplot: those of its first series that has some. */
+  yChoices(sp: Subplot | undefined = this.subplots[this.active]): DisplayChoices | undefined {
+    return sp?.series.find((s) => s.choices?.options.length)?.choices;
+  }
+
+  /** Units offered for the x axis: time units, or those of the parametric x variable. */
+  xChoices(sp: Subplot | undefined = this.subplots[this.active]): DisplayChoices | undefined {
+    if (!sp?.xName) return TIME_CHOICES;
+    return sp.xChoices?.options.length ? sp.xChoices : undefined;
+  }
+
+  private xTransform(sp: Subplot): UnitOption {
+    const c = this.xChoices(sp);
+    if (c) return pickUnit(c, this.imperial, sp.xDisplay);
+    return { unit: sp.xUnit ?? "", scale: 1, offset: 0, imperial: false };
   }
 
   addSubplot() {
@@ -358,8 +439,11 @@ export class PlotWindow {
       }
       g.textAlign = "center";
       g.textBaseline = "top";
-      for (const t of niceTicks(xr[0], xr[1], Math.max(2, Math.floor(width / 90)))) {
-        const x = Math.round(X(t)) + 0.5;
+      // x ticks are nice numbers in the x display unit
+      const xu = this.xTransform(sp);
+      const [d0, d1] = [xr[0] * xu.scale + xu.offset, xr[1] * xu.scale + xu.offset].sort((a, b) => a - b);
+      for (const t of niceTicks(d0, d1, Math.max(2, Math.floor(width / 90)))) {
+        const x = Math.round(X((t - xu.offset) / xu.scale)) + 0.5;
         g.beginPath();
         g.moveTo(x, top);
         g.lineTo(x, top + height);
@@ -369,7 +453,7 @@ export class PlotWindow {
       g.strokeStyle = muted;
       g.strokeRect(left + 0.5, top + 0.5, width, height);
       g.textAlign = "right";
-      g.fillText(sp.xName ? `${sp.xName}${sp.xUnit ? ` [${sp.xUnit}]` : ""}` : "time [s]", left + width, top + height + 14);
+      g.fillText(`${sp.xName ?? "time"}${xu.unit ? ` [${xu.unit}]` : ""}`, left + width, top + height + 14);
       // series
       g.save();
       g.beginPath();
@@ -438,7 +522,7 @@ export class PlotWindow {
           ry += 14;
         }
         g.fillStyle = muted;
-        g.fillText(`t = ${fmtTick(t)}`, boxX, ry);
+        g.fillText(`t = ${fmtTick(t * xu.scale + xu.offset)} ${xu.unit}`, boxX, ry);
       }
     }
     if (this.dragStart !== null && this.dragNow !== null) {
