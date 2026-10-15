@@ -13,7 +13,7 @@ The aim is the same physics and the same kind of result plot, not identical
 numbers. Every example has a regression test in
 `crates/daedalus-core/tests/library.rs`, and CI simulates them all.
 
-Every example also has a 3-D animation, as Dymola gives 1-D libraries: open it
+Every example also has a [3-D animation](animation.md), as Dymola gives 1-D libraries: open it
 in the workbench, **Simulate**, and switch to **Animation**. The shapes come
 from `Daedalus.Visualizers`, which has the result variables of MultiBody's
 `Advanced.Shape` without needing the Modelica Standard Library, bound to the
@@ -30,6 +30,11 @@ example's positions, angles and speeds. They draw only and change no result.
 - TorqueConverter.Launch and VehicleEfficiency: saloon cars (meshes in
   `Resources/Shapes`, made by `generate.py` there) driving side by side, one
   per variant, with the wheels turning. Long drive cycles replay at 10 to 100x.
+
+<div class="pair">
+<figure><img src="img/examples/quarter_car_anim.webp" alt="QuarterCar.BumpComparison animation"></figure>
+<figure><img src="img/examples/landing_gear_anim.webp" alt="LandingGear.SinkRates animation"></figure>
+</div>
 
 Run any one of them with:
 
@@ -80,6 +85,17 @@ Assumed values:
 - a 250 N·m engine;
 - a 1700 kg car, first gear 4.2, final drive 3.2.
 
+<div class="pair">
+<figure><img src="img/examples/tc_stall_diagram.webp" alt="StallTest diagram"></figure>
+<figure><img src="img/examples/tc_stall_plot.webp" alt="Engine speed settles at the 2160 rpm stall speed; torque ratio 2.1"></figure>
+</div>
+
+[Open TorqueConverter.StallTest](https://daedalus.apps.ezkeel.com/#Daedalus.Examples.TorqueConverter.StallTest)
+
+![Launch: engine speed and vehicle speed with the static and the dynamic converter](img/examples/tc_launch_plot.webp)
+
+[Open TorqueConverter.Launch](https://daedalus.apps.ezkeel.com/#Daedalus.Examples.TorqueConverter.Launch)
+
 ### Quarter car with a physical hydraulic damper
 
 *Source: Claytex, "A look inside VeSyMA's quarter car models"
@@ -104,6 +120,13 @@ Assumed values:
 - 30 kN/m spring and 250 kN/m tyre;
 - 46 mm piston and a 20 bar gas charge.
 
+<div class="pair">
+<figure><img src="img/examples/quarter_car_diagram.webp" alt="BumpComparison diagram: road bump driving three corners"></figure>
+<figure><img src="img/examples/quarter_car_plot.webp" alt="Body travel of the three corners, and damper force against damper velocity for clean and aerated oil"></figure>
+</div>
+
+[Open QuarterCar.BumpComparison](https://daedalus.apps.ezkeel.com/#Daedalus.Examples.QuarterCar.BumpComparison)
+
 ### Vehicle efficiency sensitivity over NEDC
 
 *Source: Claytex, "Sensitivity testing of vehicle efficiency using VeSyMA drive
@@ -127,6 +150,13 @@ Assumed values:
 - 9:1 reduction;
 - 75 kWh pack.
 
+<div class="pair">
+<figure><img src="img/examples/nedc_diagram.webp" alt="NEDCSensitivity diagram: four electric cars"></figure>
+<figure><img src="img/examples/nedc_plot.webp" alt="Consumption in Wh/km of the four cases over 11 NEDC cycles"></figure>
+</div>
+
+[Open VehicleEfficiency.NEDCSensitivity](https://daedalus.apps.ezkeel.com/#Daedalus.Examples.VehicleEfficiency.NEDCSensitivity)
+
 ### Coast-down and road-load coefficients
 
 *Source: Modelon, "Advancing your vehicle's energy-efficient design"
@@ -144,6 +174,17 @@ expected.
 
 The two energy consumptions differ by **0.007 %**. The UDDS schedule comes from
 NREL FASTSim.
+
+<div class="pair">
+<figure><img src="img/examples/coastdown_diagram.webp" alt="CoastDown diagram"></figure>
+<figure><img src="img/examples/coastdown_plot.webp" alt="Speed and deceleration force during the coast-down"></figure>
+</div>
+
+[Open VehicleEfficiency.CoastDown](https://daedalus.apps.ezkeel.com/#Daedalus.Examples.VehicleEfficiency.CoastDown)
+
+![UDDSEnergy: the UDDS speed trace, and the energy difference between the physical and the fitted car, which settles near zero](img/examples/udds_plot.webp)
+
+[Open VehicleEfficiency.UDDSEnergy](https://daedalus.apps.ezkeel.com/#Daedalus.Examples.VehicleEfficiency.UDDSEnergy)
 
 ## Hydraulic and aerospace
 
@@ -174,6 +215,13 @@ Assumed values:
 - polytropic exponent 1.3;
 - 2 MN/m tyre.
 
+<div class="pair">
+<figure><img src="img/examples/landing_gear_diagram.webp" alt="SinkRates diagram: three drop tests"></figure>
+<figure><img src="img/examples/landing_gear_plot.webp" alt="Load factor of the three drops, and strut force against stroke"></figure>
+</div>
+
+[Open LandingGear.SinkRates](https://daedalus.apps.ezkeel.com/#Daedalus.Examples.LandingGear.SinkRates)
+
 ### Aileron actuator
 
 *Source: Modelon, "Modeling and simulation of aircraft aileron actuator"
@@ -198,102 +246,22 @@ Assumed values:
 - a 20 l/min valve at 70 bar with a 100 Hz spool;
 - an 80 mm horn.
 
+<div class="pair">
+<figure><img src="img/examples/aileron_position_diagram.webp" alt="PositionControl diagram: supply, servo valve, cylinder and aileron"></figure>
+<figure><img src="img/examples/aileron_position_plot.webp" alt="Aileron deflection following the steps and the sine, and the position error"></figure>
+</div>
+
+[Open AileronActuator.PositionControl](https://daedalus.apps.ezkeel.com/#Daedalus.Examples.AileronActuator.PositionControl)
+
+![SpeedVsLoad: rod speed against the ideal valve law as the opposing force ramps up](img/examples/aileron_speed_plot.webp)
+
+[Open AileronActuator.SpeedVsLoad](https://daedalus.apps.ezkeel.com/#Daedalus.Examples.AileronActuator.SpeedVsLoad)
+
 ## Multibody suspension and full vehicle
 
-`library/MultiBodyVehicle` is a separate library built on the Modelica Standard
-Library's `Modelica.Mechanics.MultiBody`. It needs MSL 4.1.0 on the source
-path:
-
-```sh
-MSL=path/to/ModelicaStandardLibrary   # git clone -b v4.1.0 https://github.com/modelica/ModelicaStandardLibrary
-./target/release/daedalus test-library $MSL/Modelica $MSL/ModelicaServices $MSL/Complex.mo \
-    library/MultiBodyVehicle -m MultiBodyVehicle
-```
-
-In the workbench, load the MSL folders and `library/MultiBodyVehicle` with
-**Library**. After **Simulate**, the **Animation** view replays the model in
-3-D, like Dymola's animation window. It draws every MultiBody shape found in
-the result: the default joint, body and spring shapes, and CAD meshes (STL or
-OBJ files referenced as `modelica://...` shape types). The library ships meshes
-for a treaded tyre, a five-spoke rim, brake disc and caliper, an open-wheel
-body and a road bump in `Resources/Shapes` (made by `generate.py` there). The
-view has studio lighting, camera presets (Iso, Front, Side, Rear, Top),
-follow and chase cameras, click-to-select with X-ray, and records a WebM
-video. The visuals do not change the dynamics.
-
-Components:
-- `DoubleWishbone`: a short-long-arm corner from hardpoints, with an external
-  coil-over on the lower arm and a steerable upright. The loop is closed
-  analytically by a `JointRRR`, so a corner adds one state pair and no
-  constraint equations.
-- `DoubleWishbonePushrod`: the same linkage with an internal spring: a pushrod
-  from the lower arm turns a bell-crank rocker that compresses a coil-over
-  lying across the chassis. A second `JointRRR` closes the pushrod loop, so it
-  still has one state pair.
-- `Multilink`: a five-link rear corner (two upper links, two lower links, toe
-  link) built elasto-kinematically: the upright is a free body and each link is
-  a `CompliantLink`, a stiff axial spring with ball-joint ends (10 kN/mm).
-- `WheelPad` and `AeroLoader`: the hydraulic wheel pad and the pull-down
-  actuator of a post rig. `Tyre(usePad=true)` stands on a pad, and
-  `Vehicle(onRig=true)` puts all four tyres on pads.
-- `MacPherson`: a strut on a top-mount hinge with a lower control arm, closed by
-  a `RevolutePlanarLoopConstraint`.
-- `Tyre`: a point contact that can lift off, with a Pacejka-type lateral force
-  and rolling resistance applied at the contact patch.
-- `AntiRollBar`: a torsion bar between the left and right lower-arm pivots.
-- `Vehicle`: a free 6-DOF sprung body on four double-wishbone corners, with
-  front steering, anti-roll bars and a rear-axle speed controller. It starts in
-  static equilibrium at design ride height.
-
-| Example | What it shows | States | CPU |
-| --- | --- | ---: | ---: |
-| SuspensionKinematics | Camber, track change and motion ratio over ±75 mm travel, double wishbone vs MacPherson | 6 | 0.4 s |
-| QuarterCarBump | 3-D corner vs a 1-D quarter car with the equivalent wheel rate over a 50 mm bump | 10 | 0.4 s |
-| StepSteer | 2° front-wheel step at 72 km/h | 28 | 2.1 s |
-| LaneChange | One-period sine steer, 2° peak, at 72 km/h | 28 | 2.6 s |
-| BumpLeft | Left wheels cross a 50 mm bump at 36 km/h | 28 | 2.6 s |
-| PushrodVsCoilOver | External coil-over vs pushrod, rocker and internal coil-over over ±75 mm | 6 | 0.2 s |
-| MultilinkRig | Five-link corner on one wheel pad, ±70 mm bounce | 15 | 0.1 s |
-| KCRig | Front axle with pushrod corners and anti-roll bar on two pads: bounce, roll, steer | 14 | 0.7 s |
-| SevenPostRig | Full car on four wheel pads and three aero loaders: heave, pitch, roll, warp | 36 | 3.2 s |
-
-Results:
-- **Kinematics.** The double wishbone gains 2.2° negative camber at +73 mm
-  bump (−21°/m at design) with a near-constant 0.65 motion ratio. The
-  MacPherson strut gains 0.7°, with a motion ratio from 0.94 to 1.0.
-- **Quarter car.** The 3-D corner and the 1-D model with wheel rate `c·MR²`
-  agree to 0.4 mm in peak suspension travel (47 mm) and to 1.5 % in peak tyre
-  load (11.5 vs 11.6 kN). Both tyres leave the road behind the crest.
-- **Step steer.** The car settles at 14.6°/s yaw rate, 0.52 g and 2.3° roll.
-  The linear bicycle model is neutral steer for this tyre, giving `v/L` =
-  7.7 1/s; the multibody yaw gain is 7.5 1/s at 0.1° and 7.3 1/s at 2°.
-- **Lane change.** The car moves 3.3 m sideways and ends on its original
-  heading, with lateral acceleration peaks of ±0.4 g.
-- **One-sided bump.** The front-left and rear-left wheels travel 47 and
-  52 mm, 0.26 s apart. The body rolls 0.6°, and each left tyre leaves the road
-  for about 40 ms behind the crest.
-- **Pushrod vs coil-over.** The outboard coil-over has a near-constant 0.65
-  motion ratio. The rocker gives a rising rate: 0.70 in full rebound, 0.82 at
-  design and 1.00 at full bump, so the wheel rate doubles from 15 to 30 kN/m
-  over the travel with one linear spring.
-- **Multilink.** −20°/m camber gain (+1.0° at −60 mm, −1.5° at +60 mm), and
-  bump steer within 0.05° in kinematics; with the bushes loaded the toe stays
-  between −0.44° and +0.06°. Under the static 3.4 kN load the links give
-  0.24° of compliance toe-out.
-- **K&C rig.** In bounce the bar does not twist and the wheel gains −1.1°
-  camber at +43 mm. In roll (±27 mm per side) the bar carries ±475 N·m and the
-  pad loads split 5.8 / 2.0 kN.
-- **Seven-post rig.** The 3.3 kN of aero load lowers the body 42 mm. The
-  12 mm, 1.5 Hz pad bursts excite ±18 mm of body heave, ±0.8° of pitch and
-  ±1.8° of roll, all near resonance. Warp barely moves the body (±0.4° roll)
-  but swings each tyre load by about ±470 N.
-
-All nine match OpenModelica 1.26.1 running the same models on MSL 4.1.0:
-the 98th-percentile difference is below 0.04 % of each signal's range
-(below 0.01 % for the four rigs). The
-only larger point errors are single samples at tyre lift-off and touchdown.
-In OpenModelica the full-car examples take 7 to 16 s of simulation time,
-against 1.1 to 2.0 s in DAEdalus (including the animation shapes).
+`library/MultiBodyVehicle` has suspension corners, test rigs and a full car built on
+`Modelica.Mechanics.MultiBody`, with nine examples checked against OpenModelica. They have
+their own page: [Multibody vehicles](multibody.md).
 
 ## Optimal control plants
 

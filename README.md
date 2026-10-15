@@ -30,6 +30,11 @@ All compilation runs in a Web Worker.
   `Modelica.Media` (IF97 water, R134a, ideal-gas mixtures, moist air) and
   `Modelica.Fluid` systems.
 
+**Documentation:** https://daedalus.apps.ezkeel.com/docs/ has a getting-started
+guide and a page per feature, with example models, screenshots and results. The pages
+are the Markdown files in [`docs/`](docs/index.md); `npm run build` in `web/` renders
+them to `dist/docs/` (`npm run docs` renders only them).
+
 > Status: under active development. See [docs/architecture.md](docs/architecture.md),
 > [docs/examples.md](docs/examples.md) and [docs/roadmap.md](docs/roadmap.md).
 
