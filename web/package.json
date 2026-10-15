@@ -8,11 +8,14 @@
     "wasm": "cargo build -p daedalus-wasm --profile release-wasm --target wasm32-unknown-unknown --manifest-path ../Cargo.toml && wasm-bindgen --target web --out-dir src/wasm ${CARGO_TARGET_DIR:-../target}/wasm32-unknown-unknown/release-wasm/daedalus_wasm.wasm",
     "msl": "node scripts/fetch-msl.mjs",
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "build": "tsc --noEmit && vite build && node scripts/build-docs.mjs",
+    "docs": "node scripts/build-docs.mjs",
     "preview": "vite preview",
     "test": "tsc --noEmit"
   },
   "devDependencies": {
+    "@types/three": "0.169.0",
+    "marked": "15.0.12",
     "typescript": "5.6.3",
     "vite": "5.4.10"
   },
@@ -22,6 +25,8 @@
     "@codemirror/legacy-modes": "6.4.2",
     "@codemirror/search": "6.5.7",
     "@codemirror/state": "6.4.1",
-    "@codemirror/view": "6.34.1"
+    "@codemirror/view": "6.34.1",
+    "@lezer/highlight": "1.2.5",
+    "three": "0.169.0"
   }
 }

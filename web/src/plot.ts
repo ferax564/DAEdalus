@@ -22,7 +22,7 @@ export interface Subplot {
   xZoom?: [number, number];
 }
 
-const PALETTE = ["#0b5fff", "#d9480f", "#2b8a3e", "#ae3ec9", "#e8590c", "#1098ad", "#c2255c", "#5c940d", "#364fc7", "#862e9c"];
+const PALETTE = ["#0b5fff", "#d9480f", "#2b8a3e", "#ae3ec9", "#f08c00", "#1098ad", "#c2255c", "#5c940d", "#364fc7", "#862e9c"];
 
 /** Dymola-style display units for common SI units. */
 export function displayUnit(unit: string): { unit: string; scale: number; offset: number } {
@@ -393,8 +393,10 @@ export class PlotWindow {
       }
     }
     if (this.dragStart !== null && this.dragNow !== null) {
-      g.fillStyle = "rgba(11,95,255,0.12)";
+      g.fillStyle = accent;
+      g.globalAlpha = 0.14;
       g.fillRect(Math.min(this.dragStart, this.dragNow), 0, Math.abs(this.dragNow - this.dragStart), H);
+      g.globalAlpha = 1;
     }
     if (this.subplots.every((s) => s.series.length === 0)) {
       g.fillStyle = muted;

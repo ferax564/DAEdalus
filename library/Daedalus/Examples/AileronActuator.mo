@@ -81,6 +81,8 @@ package AileronActuator "Electro-hydraulic aileron actuator (after Modelon)"
     Real delta_deg = aileron.phi*180/3.141592653589793 "Aileron deflection";
     Real s_ref "Rod reference from the commanded angle";
     Real e "Position error";
+    Daedalus.Visualizers.World world "Animation: z up";
+    Daedalus.Visualizers.Aileron vis(phi=aileron.phi, r_horn=r_horn) "3-D animation (draws only)";
   equation
     s_ref = r_horn*command.y*3.141592653589793/180;
     e = s_ref - stroke.s;
@@ -120,6 +122,15 @@ the chamber pressures <code>act.cylinder.pA</code>/<code>pB</code> and the spool
     parameter Units.Force F_stall = (hyd.p_supply - hyd.p_return)*A_piston "Stall force";
     parameter Units.Velocity v0 = act.valve.q_nom*sqrt((hyd.p_supply - hyd.p_return)/act.valve.dp_nom)/A_piston
       "No-load speed of an ideal valve";
+    Daedalus.Visualizers.World world "Animation: z up";
+    Daedalus.Visualizers.Shape barrel(shapeType="cylinder", r={-10.25, 0, 0.3}, length=10.25, width=0.11, height=0.11,
+      color={30, 90, 170}) "3-D animation: cylinder barrel";
+    Daedalus.Visualizers.Shape rod(shapeType="cylinder", r={act.cylinder.s - 10.2, 0, 0.3}, length=10.2, width=0.045,
+      height=0.045, color={215, 220, 228}, specularCoefficient=1) "Piston rod";
+    Daedalus.Visualizers.Shape mass(r={act.cylinder.s, 0, 0.3}, r_shape={0, 0, -0.15}, length=0.3, width=0.3, height=0.3,
+      color={200, 40, 40}) "The load";
+    Daedalus.Visualizers.Shape base(r={-10.6, 0, 0}, length=21.4, width=0.8, height=0.04, color={150, 155, 165},
+      specularCoefficient=0.2) "Test bench";
   equation
     v_theory = v0*sqrt(max(0, 1 - F_applied/F_stall));
     connect(hyd.P, act.P);

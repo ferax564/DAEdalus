@@ -20,6 +20,7 @@ environment for the Modelica language. It is built for speed and scale:
   - icon, diagram and text views of each class
   - a variable browser
   - a plot window with display units
+  - a 3-D animation view of Modelica.Mechanics.MultiBody models
   - simulation setup
 
 All compilation runs in a Web Worker.
@@ -28,6 +29,11 @@ All compilation runs in a Web Worker.
   (83%) translate and simulate, including MultiBody, the QuasiStatic machines,
   `Modelica.Media` (IF97 water, R134a, ideal-gas mixtures, moist air) and
   `Modelica.Fluid` systems.
+
+**Documentation:** https://daedalus.apps.ezkeel.com/docs/ has a getting-started
+guide and a page per feature, with example models, screenshots and results. The pages
+are the Markdown files in [`docs/`](docs/index.md); `npm run build` in `web/` renders
+them to `dist/docs/` (`npm run docs` renders only them).
 
 > Status: under active development. See [docs/architecture.md](docs/architecture.md),
 > [docs/examples.md](docs/examples.md) and [docs/roadmap.md](docs/roadmap.md).
@@ -161,7 +167,10 @@ The page is laid out like Dymola:
 - the package browser is on the left;
 - the class you open shows in Icon, Diagram or Text view;
 - **Simulate** compiles the class in the worker and fills the variable browser;
-- ticking a variable plots it.
+- ticking a variable plots it;
+- a model with MultiBody shapes also gets an **Animation** view: a 3-D
+  replay with STL/OBJ meshes, studio lighting, camera presets, follow and
+  chase cameras, part selection with X-ray, and WebM recording.
 
 ## Examples
 
@@ -215,6 +224,7 @@ of the EV model, which take 109k steps.
 | `crates/daedalus-wasm` | WebAssembly bindings used by the workbench |
 | `crates/daedalus-fmi` | FMI 2.0 runtime (`fmi2*` C functions) of exported FMUs |
 | `library/Daedalus` | Component library (Blocks, Mechanics, Hydraulics, Vehicle) and the examples |
+| `library/MultiBodyVehicle` | 3-D suspensions (double wishbone with external or pushrod springs, MacPherson, multilink), test rigs (K&C, seven-post) and full-car manoeuvres on MSL `Modelica.Mechanics.MultiBody` (needs MSL 4.1.0) |
 | `web` | Browser workbench (TypeScript, Vite, CodeMirror) |
 | `python` | `daedalus_casadi`: CasADi optimal control, MPC and MHE on exported models |
 | `tools` | Benchmark generator, coast-down fit, FMU check (FMPy) |

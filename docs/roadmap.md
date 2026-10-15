@@ -35,10 +35,16 @@
   with a model-independent runtime library and the compiled model as a resource;
   validated with FMPy in CI.
 - Browser workbench:
-  - package browser;
-  - icon, diagram and text views;
+  - package browser, with the Modelica Standard Library 4.1.0 loaded on demand;
+  - icon, diagram, text, documentation and flat-model views;
   - simulation setup and variable browser;
-  - plot window.
+  - plot window;
+  - 3-D animation of MultiBody results and of every bundled example;
+  - back and forward navigation between classes.
+- `export-casadi` and the `daedalus_casadi` package: optimal control, MPC and
+  moving horizon estimation.
+- `MultiBodyVehicle`: suspension corners, K&C and seven-post rigs and a full car.
+- Release binaries for Linux, macOS and Windows.
 - CI: Rust tests, a simulation of every example, a 2000-mass scalability smoke
   test, and the WebAssembly and workbench build.
 
@@ -89,7 +95,6 @@ function and MATLAB v7.3 (HDF5) files are not.
 
 - Graphical editing: drag components from the browser, draw connections, edit
   parameters in a dialog, and write the result back to the text.
-- Animation of mechanical models.
 
 ### FMI
 
