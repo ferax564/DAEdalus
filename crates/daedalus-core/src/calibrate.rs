@@ -109,8 +109,11 @@ pub fn fmt_num(v: f64) -> String {
         return format!("{}", if v.is_finite() { 0.0 } else { v });
     }
     let r: f64 = format!("{v:.7e}").parse().unwrap_or(v);
-    let s = format!("{r}");
-    if s.len() > 12 { format!("{r:e}") } else { s }
+    if (1e-4..1e7).contains(&r.abs()) {
+        format!("{r}")
+    } else {
+        format!("{r:e}")
+    }
 }
 
 /// A Modelica modifier setting the parameters, nested by component:

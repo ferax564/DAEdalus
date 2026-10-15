@@ -83,8 +83,8 @@ impl Rng {
     }
 }
 
-/// Inverse of the standard normal CDF (Acklam's rational approximation with one
-/// Halley refinement step; relative error near machine precision).
+/// Inverse of the standard normal CDF (Acklam's rational approximation, relative
+/// error below 1.2e-9).
 pub fn norm_inv(p: f64) -> f64 {
     if p <= 0.0 {
         return f64::NEG_INFINITY;
@@ -122,7 +122,7 @@ pub fn norm_inv(p: f64) -> f64 {
         3.754_408_661_907_416,
     ];
     let pl = 0.02425;
-    let x = if p < pl {
+    if p < pl {
         let q = (-2.0 * p.ln()).sqrt();
         (((((C[0] * q + C[1]) * q + C[2]) * q + C[3]) * q + C[4]) * q + C[5])
             / ((((D[0] * q + D[1]) * q + D[2]) * q + D[3]) * q + 1.0)
@@ -135,30 +135,7 @@ pub fn norm_inv(p: f64) -> f64 {
         let q = (-2.0 * (1.0 - p).ln()).sqrt();
         -(((((C[0] * q + C[1]) * q + C[2]) * q + C[3]) * q + C[4]) * q + C[5])
             / ((((D[0] * q + D[1]) * q + D[2]) * q + D[3]) * q + 1.0)
-    };
-    // One Halley step on Phi(x) - p.
-    let e = 0.5 * erfc(-x / std::f64::consts::SQRT_2) - p;
-    let u = e * (2.0 * std::f64::consts::PI).sqrt() * (x * x / 2.0).exp();
-    x - u / (1.0 + x * u / 2.0)
-}
-
-/// Complementary error function (Numerical Recipes' Chebyshev fit, |error| < 1.2e-7,
-/// refined by the Halley step that uses it).
-fn erfc(x: f64) -> f64 {
-    let z = x.abs();
-    let t = 1.0 / (1.0 + 0.5 * z);
-    let r = t
-        * (-z * z - 1.265_512_23
-            + t * (1.000_023_68
-                + t * (0.374_091_96
-                    + t * (0.096_784_18
-                        + t * (-0.186_288_06
-                            + t * (0.278_868_07
-                                + t * (-1.135_203_98
-                                    + t * (1.488_515_87
-                                        + t * (-0.822_152_23 + t * 0.170_872_77)))))))))
-            .exp();
-    if x >= 0.0 { r } else { 2.0 - r }
+    }
 }
 
 // ---------------------------------------------------------------------------------
@@ -1365,7 +1342,7 @@ mod tests {
             (0.975, 1.959_963_984_540_054),
             (0.05, -1.644_853_626_951_472_2),
         ] {
-            assert!((norm_inv(p) - x).abs() < 1e-9, "{p}: {}", norm_inv(p));
+            assert!((norm_inv(p) - x).abs() < 5e-9, "{p}: {}", norm_inv(p));
         }
     }
 

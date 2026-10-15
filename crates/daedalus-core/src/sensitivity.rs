@@ -103,7 +103,7 @@ pub struct Sensitivities {
     pub values: Vec<Vec<f64>>,
     /// `dydp[o][p][t]`
     pub dydp: Vec<Vec<Vec<f64>>>,
-    /// `p / y * dy/dp`, with |y| floored at 1e-3 of its largest magnitude.
+    /// `p / y * dy/dp`, with |y| floored at 1e-2 of its largest magnitude.
     pub normalized: Vec<Vec<Vec<f64>>>,
     /// Parameters by decreasing influence.
     pub ranking: Vec<RankEntry>,
@@ -499,7 +499,7 @@ fn finish(
         .zip(&dydp)
         .map(|(y, d)| {
             let ymax = y.iter().fold(0.0f64, |a, b| a.max(b.abs()));
-            let floor = 1e-3 * ymax;
+            let floor = 1e-2 * ymax;
             (0..np)
                 .map(|j| {
                     y.iter()

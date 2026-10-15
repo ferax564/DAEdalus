@@ -34,6 +34,12 @@
 - `fmu`: FMI 2.0 export, Model Exchange and Co-Simulation in one FMU (linux64),
   with a model-independent runtime library and the compiled model as a resource;
   validated with FMPy in CI.
+- Analysis (`sensitivity`, `montecarlo` / `gsa`, `calibrate`, `optimize`, and
+  the workbench's Analysis mode):
+  - exact forward sensitivities (tape tangents) or central differences;
+  - Monte Carlo bands, Sobol and Morris indices;
+  - Levenberg–Marquardt calibration against CSV data;
+  - Nelder–Mead design optimization (see the README).
 - Browser workbench:
   - package browser;
   - icon, diagram and text views;

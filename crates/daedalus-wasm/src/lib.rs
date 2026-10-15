@@ -10,6 +10,8 @@ use daedalus_core::sim::{SimOptions, simulate};
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
+mod analysis;
+
 #[wasm_bindgen]
 extern "C" {
     #[wasm_bindgen(js_namespace = performance, js_name = now)]
@@ -37,6 +39,8 @@ pub struct Workspace {
     results: Option<Results>,
     /// Classes whose registered library files are parsed already: (class, full).
     ensured: std::collections::HashSet<(String, bool)>,
+    /// The running analysis (see `analysis.rs`).
+    job: Option<Box<dyn daedalus_core::uq::Job>>,
 }
 
 fn to_json<T: Serialize>(v: &T) -> String {

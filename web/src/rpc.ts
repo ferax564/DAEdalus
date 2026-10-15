@@ -7,7 +7,14 @@ const pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Err
 /** Called with the progress of a library bundle being loaded. */
 let onProgress: ((p: BundleProgress) => void) | null = null;
 
+/** Called with the progress of a running analysis. */
+let onAnalysis: ((p: { done: number; total: number }) => void) | null = null;
+
 worker.onmessage = (ev) => {
+  if (ev.data.analysis) {
+    onAnalysis?.(ev.data.analysis);
+    return;
+  }
   if (ev.data.progress) {
     onProgress?.(ev.data.progress as BundleProgress);
     return;
@@ -46,4 +53,11 @@ export const api = {
   values: (names: string[]) => call<{ time: Float64Array; cols: Float64Array[] }>("values", names),
   resultMat: () => call<Uint8Array>("resultMat"),
   resultCsv: (names: string) => call<string>("resultCsv", names),
+  /** Run an analysis (sensitivity | gsa | calibrate | optimize) in steps; resolves to its
+   * JSON result, or `{cancelled: true}` after `analysisCancel`. */
+  analysisRun: <T>(model: string, kind: string, spec: unknown, settings: SimSettings, progress?: (p: { done: number; total: number }) => void) => {
+    onAnalysis = progress ?? null;
+    return call<T | { cancelled: true }>("analysisRun", model, kind, spec, settings);
+  },
+  analysisCancel: () => call<void>("analysisCancel"),
 };

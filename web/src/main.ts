@@ -7,6 +7,7 @@ import { TextView } from "./editor";
 import { PlotWindow, displayUnit, interp } from "./plot";
 import { bundledLibrary, readPicked } from "./library";
 import { drawIcon, newCtx, SVG_NS, systemExtent, IDENTITY, el } from "./graphics";
+import { AnalysisPanel } from "./analysis";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -33,7 +34,7 @@ let tree: ClassEntry[] = [];
 const expanded = new Set<string>(["Daedalus", "Daedalus.Examples"]);
 let current: ClassInfo | null = null;
 let view: ViewKind | "text" | "doc" | "flat" = "diagram";
-let mode: "modeling" | "simulation" = "modeling";
+let mode: "modeling" | "simulation" | "analysis" = "modeling";
 let summary: SimSummary | null = null;
 /** Model the variables in `summary` belong to. */
 let summaryPath = "";
@@ -289,6 +290,7 @@ async function openClass(path: string) {
   renderTree();
   renderVariables();
   showInspector(null);
+  if (mode === "analysis") analysis.refresh();
   await showView();
 }
 
@@ -571,16 +573,31 @@ $("export-csv").onclick = async () => {
 };
 $("export-mat").onclick = async () => download("dsres.mat", await api.resultMat(), "application/octet-stream");
 
+// ---------------------------------------------------------------- analysis
+const analysis = new AnalysisPanel($("center"), {
+  model: () => current?.path ?? null,
+  vars: () => (summary && current && summaryPath === current.path ? summary.vars : null),
+  settings: () => settings(),
+  plotted: () => plot.subplots.flatMap((sp) => sp.series.map((x) => x.name)),
+  simulate: () => simulate().then(() => setMode("analysis")),
+  applyParams: (ps) => {
+    for (const [n, v] of ps) overrides.set(n, v);
+    void simulate();
+  },
+  log,
+});
+
 // ---------------------------------------------------------------- modes
 function setMode(m: typeof mode) {
   mode = m;
   setActive($("topbar"), "data-mode", m);
   $("browser-pane").classList.toggle("hidden", m !== "modeling");
-  $("vars-pane").classList.toggle("hidden", m !== "simulation");
+  $("vars-pane").classList.toggle("hidden", m === "modeling");
   $("model-pane").classList.toggle("hidden", m !== "modeling");
   $("plot-pane").classList.toggle("hidden", m !== "simulation");
+  analysis.setVisible(m === "analysis");
   if (m === "simulation") requestAnimationFrame(() => plot.draw());
-  else showView();
+  else if (m === "modeling") showView();
 }
 $("topbar").querySelectorAll<HTMLButtonElement>("button[data-mode]").forEach((b) => (b.onclick = () => setMode(b.dataset.mode as typeof mode)));
 
@@ -654,7 +671,7 @@ async function start() {
   const hash = decodeURIComponent(location.hash.slice(1));
   // for automated checks
   const w = window as unknown as { daedalus: Record<string, unknown> };
-  w.daedalus = { api, simulate, openClass, plot, timings, togglePlot: (n: string) => togglePlot(n, summary!.vars.find((v) => v.name === n)!) };
+  w.daedalus = { api, simulate, openClass, plot, timings, analysis, setMode, togglePlot: (n: string) => togglePlot(n, summary!.vars.find((v) => v.name === n)!) };
   await load(bundledLibrary(), "Daedalus library");
   const msl = loadMsl();
   w.daedalus.msl = msl;
