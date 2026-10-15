@@ -11,6 +11,21 @@ package TorqueConverter "Torque converter stall test and vehicle launch (after C
     Daedalus.Blocks.Sources.Ramp throttle(height=0.85, offset=0.15, duration=0.5, startTime=0.5) "Idle throttle, then full load";
     Real rpm_engine(unit="rev/min") = engine.rpm;
     Real rpm_stall_theory "Speed where the K-factor curve meets the full-load torque at speed ratio 0";
+    Daedalus.Visualizers.World world "Animation: z up";
+    Daedalus.Visualizers.Shape engineBlock(r={-0.75, 0, 0.45}, r_shape={0, 0, 0}, length=0.6, width=0.55, height=0.5,
+      color={210, 80, 60}) "3-D animation: engine block";
+    Daedalus.Visualizers.RotatingDisc impeller(r0={0, 0, 0.45}, diameter=0.42, thickness=0.12, color={160, 165, 175},
+      phi=engine.flange.phi) "Converter housing and impeller, turning with the crankshaft";
+    Daedalus.Visualizers.RotatingDisc turbine(r0={0.13, 0, 0.45}, diameter=0.36, thickness=0.06, color={95, 100, 110},
+      phi=0) "Turbine, held by the brake";
+    Daedalus.Visualizers.Shape turbineShaft(shapeType="cylinder", r={0.13, 0, 0.45}, length=0.55, width=0.05, height=0.05,
+      color={95, 100, 110}) "Turbine shaft to the brake";
+    Daedalus.Visualizers.Shape brakeDrum(shapeType="cylinder", r={0.62, 0, 0.45}, length=0.12, width=0.3, height=0.3,
+      color={200, 40, 40}) "Output brake (holds the turbine at stall)";
+    Daedalus.Visualizers.Shape bench(r={-1.1, 0, 0}, length=2.0, width=0.9, height=0.04, color={150, 155, 165},
+      specularCoefficient=0.2) "Test bench";
+    Daedalus.Visualizers.Gauge rpmGauge(r0={0.0, -0.55, 0}, scale=0.8/3000, full=3000, value=engine.rpm)
+      "Engine speed, full scale 3000 rpm";
   protected
     parameter Real K0 = converter.table[1, 2];
   equation
@@ -46,6 +61,9 @@ passenger-car three-element converter) and a 2.5 l engine torque curve.</p></htm
     Boolean locked(start=false, fixed=true) "Lock-up command";
     discrete Real t_lock(start=1e30, fixed=true);
     Real v_kmh(unit="km/h") = car.v*3.6;
+    parameter Real y_vis=0 "Lane in the 3-D animation" annotation (Dialog(tab="Animation"));
+    parameter Real visColor[3]={30, 90, 170} annotation (Dialog(tab="Animation"));
+    Daedalus.Visualizers.Car vis(x=car.s, y0=y_vis, color=visColor) "3-D animation (draws only)";
   equation
     when converter.speedRatio > lockupRatio and time > 1 then
       locked = true;
@@ -72,8 +90,9 @@ passenger-car three-element converter) and a 2.5 l engine torque curve.</p></htm
 
   model Launch "Full-throttle launch: static K-factor converter versus converter with fluid dynamics"
     extends Daedalus.Icons.Example;
-    Driveline static(dynamicConverter=false);
-    Driveline dynamic(dynamicConverter=true);
+    Daedalus.Visualizers.World world "Animation: z up";
+    Driveline static(dynamicConverter=false, y_vis=1.75, visColor={150, 155, 165});
+    Driveline dynamic(dynamicConverter=true, y_vis=-1.75, visColor={200, 40, 40});
     Daedalus.Blocks.Sources.Ramp throttle(height=0.85, offset=0.15, duration=0.2, startTime=0.5);
   equation
     connect(throttle.y, static.throttle);

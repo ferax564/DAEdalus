@@ -56,8 +56,8 @@
   - Levenberg–Marquardt calibration against CSV data;
   - Nelder–Mead design optimization (see the README).
 - Browser workbench:
-  - package browser;
-  - icon, diagram and text views;
+  - package browser, with the Modelica Standard Library 4.1.0 loaded on demand;
+  - icon, diagram, text, documentation and flat-model views;
   - simulation setup and variable browser;
   - plot window;
   - graphical editing: drag components from the browser, draw connections with
@@ -69,6 +69,12 @@
   workbench, stored runs (IndexedDB) with overlay and diff, sweeps over a pool
   of Web Workers with a summary table and a scalar-vs-parameter plot, and
   shareable links that reopen and run a model with its overrides.
+  - 3-D animation of MultiBody results and of every bundled example;
+  - back and forward navigation between classes.
+- `export-casadi` and the `daedalus_casadi` package: optimal control, MPC and
+  moving horizon estimation.
+- `MultiBodyVehicle`: suspension corners, K&C and seven-post rigs and a full car.
+- Release binaries for Linux, macOS and Windows.
 - CI: Rust tests, a simulation of every example, a 2000-mass scalability smoke
   test, and the WebAssembly and workbench build.
 
@@ -115,7 +121,6 @@ failures, which are the next work items:
 
 - Graphical editing, next steps: editing inherited components and connections,
   array connectors (`u[1]`), connector names in the diagram, align and space.
-- Animation of mechanical models.
 
 ### FMI
 

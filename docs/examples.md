@@ -13,6 +13,29 @@ The aim is the same physics and the same kind of result plot, not identical
 numbers. Every example has a regression test in
 `crates/daedalus-core/tests/library.rs`, and CI simulates them all.
 
+Every example also has a [3-D animation](animation.md), as Dymola gives 1-D libraries: open it
+in the workbench, **Simulate**, and switch to **Animation**. The shapes come
+from `Daedalus.Visualizers`, which has the result variables of MultiBody's
+`Advanced.Shape` without needing the Modelica Standard Library, bound to the
+example's positions, angles and speeds. They draw only and change no result.
+- QuarterCar and OptimalControl.ActiveSuspension: road pad, tyre, coil spring,
+  damper and body for each lane, with the actuator force as an arrow.
+- LandingGear: a wing segment, the oleo strut stroking and the twin wheels on
+  the runway, one lane per sink rate.
+- AileronActuator and OptimalControl.AileronServo: the wing, the aileron
+  turning on its hinge, the control horn and the actuator rod; SpeedVsLoad
+  shows the load pushed along the bench.
+- TorqueConverter.StallTest: engine, the converter turning with the crankshaft,
+  the held turbine and brake, and an engine-speed gauge.
+- TorqueConverter.Launch and VehicleEfficiency: saloon cars (meshes in
+  `Resources/Shapes`, made by `generate.py` there) driving side by side, one
+  per variant, with the wheels turning. Long drive cycles replay at 10 to 100x.
+
+<div class="pair">
+<figure><img src="img/examples/quarter_car_anim.webp" alt="QuarterCar.BumpComparison animation"></figure>
+<figure><img src="img/examples/landing_gear_anim.webp" alt="LandingGear.SinkRates animation"></figure>
+</div>
+
 Run any one of them with:
 
 ```sh
@@ -62,6 +85,17 @@ Assumed values:
 - a 250 N·m engine;
 - a 1700 kg car, first gear 4.2, final drive 3.2.
 
+<div class="pair">
+<figure><img src="img/examples/tc_stall_diagram.webp" alt="StallTest diagram"></figure>
+<figure><img src="img/examples/tc_stall_plot.webp" alt="Engine speed settles at the 2160 rpm stall speed; torque ratio 2.1"></figure>
+</div>
+
+[Open TorqueConverter.StallTest](https://daedalus.apps.ezkeel.com/#Daedalus.Examples.TorqueConverter.StallTest)
+
+![Launch: engine speed and vehicle speed with the static and the dynamic converter](img/examples/tc_launch_plot.webp)
+
+[Open TorqueConverter.Launch](https://daedalus.apps.ezkeel.com/#Daedalus.Examples.TorqueConverter.Launch)
+
 ### Quarter car with a physical hydraulic damper
 
 *Source: Claytex, "A look inside VeSyMA's quarter car models"
@@ -86,6 +120,13 @@ Assumed values:
 - 30 kN/m spring and 250 kN/m tyre;
 - 46 mm piston and a 20 bar gas charge.
 
+<div class="pair">
+<figure><img src="img/examples/quarter_car_diagram.webp" alt="BumpComparison diagram: road bump driving three corners"></figure>
+<figure><img src="img/examples/quarter_car_plot.webp" alt="Body travel of the three corners, and damper force against damper velocity for clean and aerated oil"></figure>
+</div>
+
+[Open QuarterCar.BumpComparison](https://daedalus.apps.ezkeel.com/#Daedalus.Examples.QuarterCar.BumpComparison)
+
 ### Vehicle efficiency sensitivity over NEDC
 
 *Source: Claytex, "Sensitivity testing of vehicle efficiency using VeSyMA drive
@@ -109,6 +150,13 @@ Assumed values:
 - 9:1 reduction;
 - 75 kWh pack.
 
+<div class="pair">
+<figure><img src="img/examples/nedc_diagram.webp" alt="NEDCSensitivity diagram: four electric cars"></figure>
+<figure><img src="img/examples/nedc_plot.webp" alt="Consumption in Wh/km of the four cases over 11 NEDC cycles"></figure>
+</div>
+
+[Open VehicleEfficiency.NEDCSensitivity](https://daedalus.apps.ezkeel.com/#Daedalus.Examples.VehicleEfficiency.NEDCSensitivity)
+
 ### Coast-down and road-load coefficients
 
 *Source: Modelon, "Advancing your vehicle's energy-efficient design"
@@ -126,6 +174,17 @@ expected.
 
 The two energy consumptions differ by **0.007 %**. The UDDS schedule comes from
 NREL FASTSim.
+
+<div class="pair">
+<figure><img src="img/examples/coastdown_diagram.webp" alt="CoastDown diagram"></figure>
+<figure><img src="img/examples/coastdown_plot.webp" alt="Speed and deceleration force during the coast-down"></figure>
+</div>
+
+[Open VehicleEfficiency.CoastDown](https://daedalus.apps.ezkeel.com/#Daedalus.Examples.VehicleEfficiency.CoastDown)
+
+![UDDSEnergy: the UDDS speed trace, and the energy difference between the physical and the fitted car, which settles near zero](img/examples/udds_plot.webp)
+
+[Open VehicleEfficiency.UDDSEnergy](https://daedalus.apps.ezkeel.com/#Daedalus.Examples.VehicleEfficiency.UDDSEnergy)
 
 ## Hydraulic and aerospace
 
@@ -156,6 +215,13 @@ Assumed values:
 - polytropic exponent 1.3;
 - 2 MN/m tyre.
 
+<div class="pair">
+<figure><img src="img/examples/landing_gear_diagram.webp" alt="SinkRates diagram: three drop tests"></figure>
+<figure><img src="img/examples/landing_gear_plot.webp" alt="Load factor of the three drops, and strut force against stroke"></figure>
+</div>
+
+[Open LandingGear.SinkRates](https://daedalus.apps.ezkeel.com/#Daedalus.Examples.LandingGear.SinkRates)
+
 ### Aileron actuator
 
 *Source: Modelon, "Modeling and simulation of aircraft aileron actuator"
@@ -179,6 +245,23 @@ Assumed values:
 - 40 mm bore, 20 mm rods, 60 mm stroke;
 - a 20 l/min valve at 70 bar with a 100 Hz spool;
 - an 80 mm horn.
+
+<div class="pair">
+<figure><img src="img/examples/aileron_position_diagram.webp" alt="PositionControl diagram: supply, servo valve, cylinder and aileron"></figure>
+<figure><img src="img/examples/aileron_position_plot.webp" alt="Aileron deflection following the steps and the sine, and the position error"></figure>
+</div>
+
+[Open AileronActuator.PositionControl](https://daedalus.apps.ezkeel.com/#Daedalus.Examples.AileronActuator.PositionControl)
+
+![SpeedVsLoad: rod speed against the ideal valve law as the opposing force ramps up](img/examples/aileron_speed_plot.webp)
+
+[Open AileronActuator.SpeedVsLoad](https://daedalus.apps.ezkeel.com/#Daedalus.Examples.AileronActuator.SpeedVsLoad)
+
+## Multibody suspension and full vehicle
+
+`library/MultiBodyVehicle` has suspension corners, test rigs and a full car built on
+`Modelica.Mechanics.MultiBody`, with nine examples checked against OpenModelica. They have
+their own page: [Multibody vehicles](multibody.md).
 
 ## Optimal control plants
 
