@@ -20,6 +20,8 @@ use std::rc::Rc;
 
 #[path = "clocks.rs"]
 mod clocks;
+#[path = "statemachines.rs"]
+mod statemachines;
 
 pub type InstId = u32;
 
@@ -303,6 +305,8 @@ pub struct Flattener<'a, 't> {
     clocked_whens: Vec<(ExprId, Vec<Equation>)>,
     /// A synchronous operator was translated.
     uses_clocks: bool,
+    /// State machines (MLS chapter 17) recorded during translation.
+    sm: statemachines::SmLog,
     depth: usize,
     /// Next id of a [`Node::Local`] standing for a loop variable while a loop body is
     /// translated (unique, so nested loops never mix their variables up).
@@ -384,6 +388,7 @@ impl<'a, 't> Flattener<'a, 't> {
             clock_vars: FxHashSet::default(),
             clocked_whens: Vec::new(),
             uses_clocks: false,
+            sm: Default::default(),
             depth: 0,
             next_local: 1 << 20,
             outlining: FxHashSet::default(),
@@ -773,12 +778,18 @@ impl<'a, 't> Flattener<'a, 't> {
         self.count_connects()?;
         let n = self.insts.len();
         for i in 0..n {
+            let s0 = self.model.equations.len();
             self.translate_instance(i as InstId)
                 .with_context(|| format!("in component '{}'", self.inst_name(i as InstId)))?;
+            let s1 = self.model.equations.len();
+            if s1 > s0 {
+                self.sm.eq_ranges.push((s0, s1, i as InstId));
+            }
         }
         self.finish_impure_rng();
         self.finish_streams();
         self.finish_connections();
+        self.lower_state_machines()?;
         self.lower_clocks()?;
         self.finish_discrete();
         self.drop_unused_expandable();
@@ -2647,7 +2658,9 @@ impl<'a, 't> Flattener<'a, 't> {
                         }
                     }
                     _ => {
-                        // Function call with no outputs in an equation section: ignore.
+                        // `transition(..)` / `initialState(..)`; any other function call
+                        // with no outputs in an equation section is ignored.
+                        self.sm_equation(&name, args, scope, ctx)?;
                     }
                 }
             }
@@ -5181,6 +5194,11 @@ impl<'a, 't> Flattener<'a, 't> {
         };
         if !name.contains('.')
             && let Some(r) = self.clock_call(&name, &pos, &named, scope, ctx)
+        {
+            return r;
+        }
+        if !name.contains('.')
+            && let Some(r) = self.sm_call(&name, &pos, scope, ctx)
         {
             return r;
         }

@@ -2,6 +2,78 @@
 
 The most recent additions, newest first. Each links to the page that covers it in full.
 
+## State machines
+
+The state machines of Modelica 3.6 chapter 17 now translate and simulate. The
+example from `ModelicaReference.StateMachines` runs as written:
+
+```modelica
+model Counter
+  inner Integer v(start = 0);
+  block Increase
+    outer output Integer v;
+  equation
+    v = previous(v) + 2;
+  end Increase;
+  Increase increase;
+  block Decrease
+    outer output Integer v;
+  equation
+    v = previous(v) - 1;
+  end Decrease;
+  Decrease decrease;
+equation
+  initialState(increase);
+  transition(increase, decrease, v >= 6, immediate = false);
+  transition(decrease, increase, v == 0, immediate = false);
+end Counter;
+```
+
+What is supported:
+
+**Operators.** All the chapter 17 operators work:
+- `transition(from, to, condition, immediate, reset, synchronize, priority)`,
+  where the last four arguments must be parameter expressions;
+- `initialState`, `activeState`, `ticksInState()` and `timeInState()`.
+
+**Transitions.**
+- Immediate transitions fire in the tick where their condition holds. Delayed
+  transitions take effect at the next tick.
+- When several transitions could fire, the one with the lowest `priority`
+  number wins.
+- With `synchronize = true`, a transition waits until every state machine
+  inside its from-state is in a final state.
+
+**Hierarchy.** Machines nest inside states, and several machines can run in
+parallel in one state. An inner machine pauses while its enclosing state is
+inactive. When the enclosing state is re-entered, the inner machine resumes
+where it stopped, or restarts in its initial state if the transition resets
+it.
+
+**Variables.**
+- An `outer output` variable defined in several states gets one merged
+  definition: `v = if activeState(s1) then e1 elseif ... else previous(v)`.
+- `inner outer output` variables pass the merged value of the inner states up
+  to the enclosing machine.
+- Variables of an inactive state hold their values.
+- A reset transition reinitializes the variables of its target state to
+  their start values.
+
+**Clock.** A state machine runs on the clock inferred for its partition. If no
+clock can be inferred, as in the example above, it runs on a default periodic
+clock of 1 s.
+
+Inside clocked partitions, `time` is now the nominal instant of the tick
+(`start + k·interval`), not the slightly later instant at which the event was
+located. This makes `timeInState()` and comparisons against `time` exact.
+
+**Limitations.**
+- `ticksInState()` and `timeInState()` can only be used in transition
+  conditions.
+- Each equation in a state must be solvable for the variable it defines.
+- An immediate transition whose condition reads a variable computed by its
+  from-state in the same tick forms an algebraic loop, which is rejected.
+
 ## 3-D animation for every example
 
 After **Simulate**, models with shapes open in the new **Animation** view: a WebGL scene
