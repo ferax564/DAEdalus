@@ -587,7 +587,7 @@ fn perturb(v: VarId) -> f64 {
 }
 
 /// Preference for a derivative variable to become a dummy (higher = more willing).
-fn dummy_preference(w: &Work, trig: &FxHashSet<VarId>, z: VarId) -> i64 {
+fn dummy_preference(w: &Work, trig: &FxHashSet<VarId>, nl: &FxHashSet<VarId>, z: VarId) -> i64 {
     // Making `z` a dummy derivative removes its base from the state vector.
     let base = w.base_of[z as usize].unwrap();
     let var = &w.vars[base as usize];
@@ -614,6 +614,11 @@ fn dummy_preference(w: &Work, trig: &FxHashSet<VarId>, z: VarId) -> i64 {
     }
     if var.fixed == Some(true) {
         s -= 20;
+    }
+    // `cbc*der(vbc)` (a junction charge with a state-dependent capacitance) makes a worse
+    // state than `C*der(v)`: prefer bases whose derivatives enter with constant factors.
+    if nl.contains(&z) {
+        s += 10;
     }
     // Later declared variables first (mimics Dymola's tie-breaking).
     s * 1_000_000 + base as i64
@@ -689,8 +694,9 @@ pub fn select_states(w: &mut Work) -> Result<Vec<VarId>> {
             };
             // Order columns by preference (most willing to become dummy first).
             let mut cols = cols;
-            cols.sort_by_key(|&z| -dummy_preference(w, &trig, z));
-            let tiers: Vec<i64> = cols.iter().map(|&z| dummy_tier(w, &trig, z)).collect();
+            let nl = nonconstant_der_coeff(w, &cols);
+            cols.sort_by_key(|&z| -dummy_preference(w, &trig, &nl, z));
+            let tiers: Vec<i64> = cols.iter().map(|&z| dummy_tier(w, &trig, &nl, z)).collect();
             // Jacobian H = dg/dz evaluated numerically, stored sparsely: only columns that
             // occur in an equation can have a nonzero derivative.
             let col_of: FxHashMap<VarId, usize> =
@@ -891,8 +897,43 @@ fn select_columns_sparse(h: &[Vec<(usize, f64)>], ncols: usize, need: usize) -> 
     chosen
 }
 
+/// Derivative variables among `cols` that some original equation multiplies by a factor
+/// depending on unknowns.
+fn nonconstant_der_coeff(w: &mut Work, cols: &[VarId]) -> FxHashSet<VarId> {
+    let want: FxHashSet<VarId> = cols.iter().copied().collect();
+    let mut out = FxHashSet::default();
+    for e in 0..w.eqs.len() {
+        if w.eqs[e].parent.is_some() {
+            continue;
+        }
+        let (l, r) = (w.eqs[e].lhs, w.eqs[e].rhs);
+        let mut zs = Vec::new();
+        for x in [l, r] {
+            w.arena.visit_leaves(x, &mut |n| {
+                if let Node::Var(v) = n
+                    && want.contains(&v)
+                    && !zs.contains(&v)
+                {
+                    zs.push(v);
+                }
+            });
+        }
+        if zs.is_empty() {
+            continue;
+        }
+        let res = w.arena.sub(l, r);
+        for z in zs {
+            let d = w.arena.diff(res, Node::Var(z), &mut FxHashMap::default());
+            if w.arena.vars_in(&[d]).iter().any(|&v| w.unknown[v as usize]) {
+                out.insert(z);
+            }
+        }
+    }
+    out
+}
+
 /// Coarse preference tier (stateSelect of the base variable); pivoting happens within a tier.
-fn dummy_tier(w: &Work, trig: &FxHashSet<VarId>, z: VarId) -> i64 {
+fn dummy_tier(w: &Work, trig: &FxHashSet<VarId>, nl: &FxHashSet<VarId>, z: VarId) -> i64 {
     let base = w.base_of[z as usize].unwrap();
     let t = match w.vars[base as usize].state_select {
         StateSelect::Never => 4,
@@ -901,7 +942,7 @@ fn dummy_tier(w: &Work, trig: &FxHashSet<VarId>, z: VarId) -> i64 {
         StateSelect::Prefer => 1,
         StateSelect::Always => 0,
     };
-    2 * t + i64::from(trig.contains(&base))
+    4 * t + 2 * i64::from(trig.contains(&base)) + i64::from(nl.contains(&z))
 }
 
 /// Unknowns defined as the sine or cosine of another unknown (`rotator.im = sin(gamma)`).
