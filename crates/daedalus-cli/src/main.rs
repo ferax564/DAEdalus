@@ -3,6 +3,7 @@
 use daedalus_core::backend::Options;
 use daedalus_core::frontend::Library;
 use daedalus_core::sim::{Method, SimOptions};
+mod analysis;
 mod fmu;
 
 use std::path::Path;
@@ -60,6 +61,28 @@ OPTIONS:
   --fmi-lib FILE          fmu: the FMI runtime library (default: next to this
                           executable, or $DAEDALUS_FMI_LIB)
   --timeout S             per-model time limit for test-library (default 60)
+
+ANALYSIS COMMANDS (text summary on stdout; -o FILE.json or FILE.csv writes data):
+  sensitivity  local sensitivities dy/dp along the trajectory:
+                 --params a,b --outputs x,y [--sens-method auto|exact|fd]
+                 [--rel-step H]; exact = forward sensitivity equations with
+                 tape tangents (no events), fd = central differences
+  montecarlo   Monte Carlo statistics (mean, std, 5/50/95 % bands) over
+                 --dist p=lo:hi | p=normal:MEAN:STD | p=lognormal:MEAN:STD
+                 (repeatable) --outputs x,y [--qoi 'max(x)'] [-N SAMPLES]
+                 [--sampling lhs|random] [--seed S]; with --sobol or --morris
+                 global sensitivity indices of the --qoi quantities
+  gsa          the same, Sobol indices by default (N base samples: N (k+2)
+                 runs); quantities: final(x) max(x) min(x) mean(x)
+                 integral(x) at(x,T), window: max(x,T0,T1)
+  calibrate    fit parameters to measured data (projected Levenberg-Marquardt):
+                 --data meas.csv --tune p=lo:hi[:start] (repeatable)
+                 [--map column=var] [--weight column=W] [--window T0:T1]
+                 [--max-iter N] [--sens-method auto|exact|fd]; prints the fit,
+                 standard errors and a Modelica modifier
+  optimize     minimize scalar quantities over bounded parameters (Nelder-Mead):
+                 --tune p=lo:hi --minimize QOI | --maximize QOI |
+                 --target QOI=VALUE (repeatable)
 ";
 
 fn main() -> ExitCode {
@@ -79,6 +102,7 @@ fn run() -> anyhow::Result<()> {
         return Ok(());
     }
     let cmd = args[0].clone();
+    let (args, an) = analysis::take_args(args)?;
     let mut sources: Vec<String> = Vec::new();
     let mut libs: Vec<String> = Vec::new();
     let mut model = None;
@@ -492,6 +516,33 @@ fn run() -> anyhow::Result<()> {
                 Err(e) => println!("ERR simulate: {}", e.message.lines().next().unwrap_or("")),
             }
             Ok(())
+        }
+        c if analysis::COMMANDS.contains(&c) => {
+            let m = with_all_files(&mut lib, |l| daedalus_core::translate(l, &model, &opts))?;
+            for w in &m.warnings {
+                eprintln!("warning: {w}");
+            }
+            let mut o = SimOptions::from_model(&m);
+            if set_start {
+                o.start_time = so.start_time;
+            }
+            if set_stop {
+                o.stop_time = so.stop_time;
+            }
+            if set_tol {
+                o.tolerance = so.tolerance;
+            }
+            if set_method {
+                o.method = so.method;
+            }
+            if so.interval > 0.0 {
+                o.interval = so.interval;
+            } else if set_intervals {
+                o.interval = 0.0;
+            }
+            o.intervals = so.intervals;
+            o.params = so.params.clone();
+            analysis::run(c, m, o, &an, output.as_deref(), &format, jobs)
         }
         _ => anyhow::bail!("unknown command '{cmd}'\n\n{USAGE}"),
     }

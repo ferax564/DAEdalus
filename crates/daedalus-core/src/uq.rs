@@ -1266,11 +1266,13 @@ pub fn sobol_indices(fa: &[f64], fb: &[f64], fab: &[Vec<f64>]) -> (Vec<f64>, Vec
         return (vec![f64::NAN; k], vec![f64::NAN; k]);
     }
     let all: Vec<f64> = fa.iter().chain(fb).copied().collect();
-    let (_, var) = mean_var(&all);
+    let (f0, var) = mean_var(&all);
     let mut s1 = Vec::with_capacity(k);
     let mut st = Vec::with_capacity(k);
     for f in fab {
-        let v1 = (0..n).map(|j| fb[j] * (f[j] - fa[j])).sum::<f64>() / n as f64;
+        // f(B) is centred on the mean: same expectation, far less variance when the
+        // mean is large against the spread.
+        let v1 = (0..n).map(|j| (fb[j] - f0) * (f[j] - fa[j])).sum::<f64>() / n as f64;
         let vt = (0..n).map(|j| (fa[j] - f[j]).powi(2)).sum::<f64>() / (2.0 * n as f64);
         s1.push(if var > 0.0 { v1 / var } else { 0.0 });
         st.push(if var > 0.0 { vt / var } else { 0.0 });
