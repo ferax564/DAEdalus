@@ -70,9 +70,9 @@ text.onChange = (t) => {
   docs.set(uri, t);
   clearTimeout(editTimer);
   editTimer = window.setTimeout(async () => {
-    const errs = await api.setDocuments([[uri, t]]);
+    // Syntax errors show in the editor itself (the linter); this refreshes the browser.
+    await api.ideUpdate(uri, t);
     classes.clear();
-    if (errs[uri]) for (const e of errs[uri].slice(0, 5)) log(e, "err");
     await refreshTree();
     if (current) {
       const keep = view;
@@ -81,6 +81,44 @@ text.onChange = (t) => {
       view = keep;
     }
   }, 500);
+};
+
+// Editor intelligence: the compiler answers in the worker; navigation opens classes here.
+/** A range to select once the text view shows a document (go to definition, usages). */
+let pendingSelect: { uri: string; from: number; to: number } | null = null;
+text.ide = {
+  uri: () => (view === "text" ? current?.source?.uri ?? null : null),
+  update: (uri, t) => api.ideUpdate(uri, t),
+  definition: (uri, t, pos) => api.ideDefinition(uri, t, pos),
+  references: (uri, t, pos) => api.ideReferences(uri, t, pos),
+  rename: (uri, t, pos, name) => api.ideRename(uri, t, pos, name),
+  completion: (uri, t, pos) => api.ideCompletion(uri, t, pos),
+  hover: (uri, t, pos) => api.ideHover(uri, t, pos),
+  symbols: (uri, t) => api.ideSymbols(uri, t),
+  goto: (loc) => {
+    const uri = current?.source?.uri;
+    if (uri === loc.uri && (!loc.class || loc.class === current?.path)) {
+      text.select(loc.from, loc.to);
+      return;
+    }
+    pendingSelect = { uri: loc.uri, from: loc.from, to: loc.to };
+    view = "text";
+    if (loc.class && loc.class !== current?.path) openClass(loc.class);
+    else showView();
+  },
+  applyEdits: async (edits) => {
+    const byUri = new Map<string, typeof edits>();
+    for (const e of edits) byUri.set(e.uri, [...(byUri.get(e.uri) ?? []), e]);
+    for (const [uri, es] of byUri) {
+      let t = docs.get(uri) ?? (await api.documentText(uri)) ?? "";
+      for (const e of [...es].sort((a, b) => b.from - a.from)) t = t.slice(0, e.from) + e.text + t.slice(e.to);
+      docs.set(uri, t);
+      await api.ideUpdate(uri, t);
+    }
+    classes.clear();
+    await refreshTree();
+  },
+  log: (msg, cls) => log(msg, cls),
 };
 
 function setActive(container: HTMLElement, attr: string, value: string) {
@@ -106,7 +144,10 @@ async function showView() {
       // the source offsets are byte offsets; convert to a character offset
       const start = current.source!.start;
       const chars = new TextDecoder().decode(new TextEncoder().encode(t).slice(0, start)).length;
-      text.setText(t, chars);
+      const sel = pendingSelect?.uri === uri ? pendingSelect : undefined;
+      pendingSelect = null;
+      text.setText(t, chars, sel);
+      if (sel) text.view.focus();
     }
   } else if (view === "doc") {
     $("view-doc").classList.remove("hidden");
@@ -782,7 +823,7 @@ async function start() {
   const hash = decodeURIComponent(location.hash.slice(1));
   // for automated checks
   const w = window as unknown as { daedalus: Record<string, unknown> };
-  w.daedalus = { api, simulate, openClass, plot, timings, anim: () => anim, animData: () => animData, setSimView, togglePlot: (n: string) => togglePlot(n, summary!.vars.find((v) => v.name === n)!) };
+  w.daedalus = { api, simulate, openClass, plot, editor: text, timings, anim: () => anim, animData: () => animData, setSimView, togglePlot: (n: string) => togglePlot(n, summary!.vars.find((v) => v.name === n)!) };
   await load(bundledLibrary(), "Daedalus library", await bundledResources());
   const msl = loadMsl();
   w.daedalus.msl = msl;

@@ -20,6 +20,16 @@ pub struct Document {
     pub text: Arc<str>,
     pub ast: ast::StoredDefinition,
     pub errors: Vec<String>,
+    /// The parse errors as short messages with their byte ranges (for editor diagnostics).
+    pub error_spans: Vec<ParseDiag>,
+}
+
+/// A syntax error located in its document: byte range and a one-line message.
+#[derive(Clone, Debug)]
+pub struct ParseDiag {
+    pub start: usize,
+    pub end: usize,
+    pub message: String,
 }
 
 /// A set of Modelica sources (libraries + user models) that compile together.
@@ -56,6 +66,12 @@ impl Library {
         } else {
             self.docs.push(doc);
         }
+    }
+
+    /// Whether a document is a file of a library registered for on-demand parsing
+    /// (as opposed to a document set directly, such as the user's own models).
+    pub fn is_registered_file(&self, uri: &str) -> bool {
+        self.lazy_file_of(uri).is_some()
     }
 
     pub fn remove_document(&mut self, uri: &str) {
@@ -173,11 +189,42 @@ pub fn parse_document(uri: &str, text: &str) -> Document {
         .iter()
         .map(|e| rumoca_phase_parse::format_parse_error(e, uri, text))
         .collect();
+    let error_spans = syntax
+        .parse_errors()
+        .iter()
+        .map(|e| {
+            let sp = e.span();
+            let message = match e {
+                rumoca_phase_parse::ParseError::SyntaxError {
+                    message,
+                    expected,
+                    unexpected,
+                    ..
+                } => {
+                    let mut m = message.lines().next().unwrap_or("syntax error").to_string();
+                    if let Some(u) = unexpected {
+                        m = format!("{m}: unexpected `{u}`");
+                    }
+                    if !expected.is_empty() && expected.len() <= 6 {
+                        m = format!("{m} (expected {})", expected.join(", "));
+                    }
+                    m
+                }
+                other => format!("{other:?}"),
+            };
+            ParseDiag {
+                start: sp.start.0,
+                end: sp.end.0.max(sp.start.0 + 1),
+                message,
+            }
+        })
+        .collect();
     let ast = syntax.best_effort().clone();
     Document {
         uri: uri.to_string(),
         text: Arc::from(text),
         ast,
         errors,
+        error_spans,
     }
 }

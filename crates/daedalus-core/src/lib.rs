@@ -9,6 +9,7 @@ pub mod fmi;
 #[cfg(all(feature = "fmu", not(target_arch = "wasm32")))]
 pub mod fmu;
 pub mod frontend;
+pub mod ide;
 pub mod linalg;
 pub mod linearize;
 pub mod results;

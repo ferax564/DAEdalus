@@ -199,3 +199,27 @@ canvas.plot { position: absolute; inset: 0; display: block; }
 .anim-slider { flex: 1 1 200px; min-width: 120px; }
 .anim-time { font-family: var(--mono); min-width: 96px; }
 .anim-info { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; max-width: 100%; }
+
+/* ---------------------------------------------------------------- editor intelligence */
+.cm-ide-hover { max-width: 520px; padding: 6px 10px; font-size: 12.5px; line-height: 1.45; }
+.cm-ide-hover pre { margin: 0 0 6px; font-family: var(--mono); font-size: 12px; white-space: pre-wrap; color: var(--syn-type); }
+.cm-ide-hover p { margin: 4px 0; }
+.cm-ide-hover code { font-family: var(--mono); font-size: 11.5px; background: var(--accent-soft); padding: 0 3px; border-radius: 3px; }
+.cm-ide-panel { font-size: 12.5px; }
+.cm-ide-panel-head { display: flex; align-items: center; justify-content: space-between; padding: 3px 8px; color: var(--muted); border-bottom: 1px solid var(--line); }
+.cm-ide-panel-head button { border: none; background: none; color: var(--muted); font-size: 15px; cursor: pointer; padding: 0 4px; }
+.cm-ide-panel-head button:hover { color: var(--fg); }
+.cm-ide-panel-body { max-height: 180px; overflow: auto; }
+.cm-ide-rename .cm-ide-panel-body { display: flex; gap: 10px; align-items: center; padding: 6px 8px; }
+.cm-ide-rename input { font-family: var(--mono); font-size: 12.5px; padding: 3px 6px; min-width: 220px; background: var(--panel); color: var(--fg); border: 1px solid var(--accent); border-radius: 3px; outline: none; }
+.cm-ide-hint { color: var(--muted); }
+.cm-ide-error { color: var(--err); }
+.cm-ide-file { padding: 3px 8px 1px; font-weight: 600; color: var(--muted); font-size: 11.5px; }
+.cm-ide-ref, .cm-ide-sym { display: flex; gap: 10px; align-items: baseline; padding: 2px 8px 2px 18px; cursor: pointer; white-space: nowrap; }
+.cm-ide-sym { display: block; padding-top: 1px; padding-bottom: 1px; }
+.cm-ide-ref:hover, .cm-ide-sym:hover { background: var(--sel); }
+.cm-ide-ref code { font-family: var(--mono); font-size: 12px; overflow: hidden; text-overflow: ellipsis; }
+.cm-ide-line { color: var(--muted); min-width: 34px; text-align: right; font-family: var(--mono); font-size: 11.5px; }
+.cm-ide-cls { color: var(--muted); font-size: 11.5px; }
+.cm-ide-kind { color: var(--syn-keyword); font-size: 11px; display: inline-block; min-width: 64px; }
+.cm-ide-empty { padding: 6px 18px; color: var(--muted); }

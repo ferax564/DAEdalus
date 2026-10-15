@@ -1,5 +1,5 @@
 // Promise-based calls into the simulation worker.
-import type { BundleInfo, BundleProgress, ClassEntry, ClassInfo, SimSettings, SimSummary } from "./types";
+import type { BundleInfo, BundleProgress, ClassEntry, ClassInfo, IdeCompletion, IdeDiagnostic, IdeHover, IdeLocation, IdeRename, IdeSymbol, SimSettings, SimSummary } from "./types";
 
 const worker = new Worker(new URL("./worker.ts", import.meta.url), { type: "module" });
 let nextId = 1;
@@ -46,4 +46,12 @@ export const api = {
   values: (names: string[]) => call<{ time: Float64Array; cols: Float64Array[] }>("values", names),
   resultMat: () => call<Uint8Array>("resultMat"),
   resultCsv: (names: string) => call<string>("resultCsv", names),
+  // editor intelligence: offsets are string indices into `text`, the document's current text
+  ideUpdate: (uri: string, text: string) => call<IdeDiagnostic[]>("ideUpdate", uri, text),
+  ideDefinition: (uri: string, text: string, pos: number) => call<IdeLocation[]>("ide", "definition", uri, text, pos),
+  ideReferences: (uri: string, text: string, pos: number) => call<IdeLocation[]>("ide", "references", uri, text, pos),
+  ideRename: (uri: string, text: string, pos: number, name: string) => call<IdeRename>("ide", "rename", uri, text, pos, name),
+  ideCompletion: (uri: string, text: string, pos: number) => call<IdeCompletion>("ide", "completion", uri, text, pos),
+  ideHover: (uri: string, text: string, pos: number) => call<IdeHover | null>("ide", "hover", uri, text, pos),
+  ideSymbols: (uri: string, text: string) => call<IdeSymbol[]>("ide", "symbols", uri, text, 0),
 };

@@ -1073,6 +1073,7 @@ pub(super) mod cache {
                 text: Arc::from(text),
                 ast,
                 errors: Vec::new(),
+                error_spans: Vec::new(),
             };
         }
         let d = parse_document(uri, text);

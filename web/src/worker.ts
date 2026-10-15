@@ -8,6 +8,8 @@ const ready = init().then(() => {
 });
 
 type Req = { id: number; op: string; args: unknown[] };
+/** Text of each document as the editor intelligence last saw it. */
+const ideText = new Map<string, string>();
 
 function progress(p: BundleProgress) {
   (self as unknown as Worker).postMessage({ progress: p });
@@ -93,6 +95,7 @@ self.onmessage = async (ev: MessageEvent<Req>) => {
         const docs = args[0] as [string, string][];
         const errors: Record<string, string[]> = {};
         for (const [uri, text] of docs) {
+          ideText.delete(uri);
           const e = JSON.parse(w.setDocument(uri, text)) as string[];
           if (e.length) errors[uri] = e;
         }
@@ -106,6 +109,7 @@ self.onmessage = async (ev: MessageEvent<Req>) => {
         result = JSON.parse(w.libraryStats());
         break;
       case "removeDocument":
+        ideText.delete(args[0] as string);
         w.removeDocument(args[0] as string);
         break;
       case "classTree":
@@ -117,6 +121,30 @@ self.onmessage = async (ev: MessageEvent<Req>) => {
       case "documentText":
         result = w.documentText(args[0] as string) ?? null;
         break;
+      case "ideUpdate": {
+        const [uri, text] = args as [string, string];
+        ideText.set(uri, text);
+        result = JSON.parse(w.ideUpdate(uri, text));
+        break;
+      }
+      case "ide": {
+        // [request, uri, text, offset, extra]: bring the document up to date, then ask
+        const [req, uri, text, offset, extra] = args as [string, string, string, number, string?];
+        if (ideText.get(uri) !== text) {
+          w.ideUpdate(uri, text);
+          ideText.set(uri, text);
+        }
+        const r =
+          req === "definition" ? w.ideDefinition(uri, offset)
+          : req === "references" ? w.ideReferences(uri, offset)
+          : req === "rename" ? w.ideRename(uri, offset, extra ?? "")
+          : req === "completion" ? w.ideCompletion(uri, offset)
+          : req === "hover" ? w.ideHover(uri, offset)
+          : req === "symbols" ? w.ideSymbols(uri)
+          : "null";
+        result = JSON.parse(r);
+        break;
+      }
       case "check":
         result = JSON.parse(w.check(args[0] as string));
         break;
