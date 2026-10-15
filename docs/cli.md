@@ -18,11 +18,15 @@ moves it and `DAEDALUS_NO_CACHE` turns it off).
 | `check` | Translate the model and print statistics: variables, aliases removed, states, algebraic loops, events, tape size. |
 | `flatten` | Print the flat model. |
 | `dump` | Print the sorted, causalized equation system (BLT blocks, tearing). |
+| `structure` | Variable roles, BLT blocks, incidence, state selection and why, and the state Jacobian's eigenvalues and stiffness. See [Structure and state selection](structure.md). |
 | `simulate` | Simulate and write a Dymola `.mat` file or a CSV file. |
 | `linearize` | State-space matrices A, B, C, D. See [Linearization](linearize.md). |
+| `sweep` | Simulate once per parameter combination, in parallel, with a summary table. See [Experiments and sweeps](experiments.md#sweeps-on-the-command-line). |
+| `sensitivity`, `montecarlo`, `gsa`, `calibrate`, `optimize` | Parameter sensitivities, uncertainty bands, Sobol and Morris indices, fitting to measurements and design optimization. See [Sensitivity and calibration](analysis.md). |
 | `steady` | Steady state (`der(x) = 0`) with its stability, or a trim with `--free` and `--target`. See [Scripts and steady states](scripting.md#steady-states-and-trim). |
 | `fmu` | Export an FMI 2.0 FMU. See [FMI 2.0 export](fmi.md). |
 | `export-casadi` | Write the index-reduced DAE as JSON for CasADi. See [Optimal control](optimal-control.md). |
+| `mcp` | Serve the libraries to an AI assistant over the Model Context Protocol. See [AI assistant and MCP](assistant.md). |
 | `run` | Run a Dymola or OpenModelica script (`.mos`). See [Scripts and steady states](scripting.md). |
 | `test-library` | Translate and simulate every model with an `experiment` annotation in a package, each in its own process with a time limit, and print a report. |
 
@@ -50,6 +54,10 @@ translated in 11.7 ms; simulated in 7.2 ms (158 steps, 10 rejected (0 Newton), 3
 
 `.mat` results use Dymola's `dsres` layout, so Dymola, OMEdit, DyMat, ModelicaRes and
 existing post-processing scripts read them.
+
+Add `--profile` to see where the solver spends its steps and time, and `--method auto` to
+let it switch between Dopri5 and BDF; see [Performance analyzer](performance.md) and
+[Solvers](solvers.md).
 
 ## Libraries
 
@@ -126,7 +134,7 @@ job runs the MSL examples against their reference results (see
 | `--interval DT` | Output interval |
 | `-n, --intervals N` | Number of output intervals (default 500) |
 | `--tol TOL` | Relative tolerance (default 1e-6) |
-| `--method M` | `bdf`, `dopri5`, `rk4` or `euler` |
+| `--method M` | `bdf`, `radau`, `esdirk`, `auto`, `dopri5`, `rk4` or `euler`; see [Solvers](solvers.md) |
 | `--step H` | Fixed step size |
 | `--store-events E` | Rows written at events: `all`, `none` or a number |
 | `-p, --param NAME=VALUE` | Parameter override (repeatable) |
@@ -138,7 +146,11 @@ job runs the MSL examples against their reference results (see
 | `--timeout S` | Per-model time limit for `test-library` |
 | `--at T` | `linearize`: simulate to time T first |
 | `--format F` | `linearize`: `text`, `json` or `mo` |
-| `--jacobian J` | `linearize`: `exact` or `fd` (central differences) |
+| `--jacobian J` | `linearize`: `exact` or `fd` (central differences); `simulate`: the implicit solvers' state Jacobian, `exact` (default) or `fd` |
+| `--state NAME=TIER` | `stateSelect` override (`always`, `prefer`, `default`, `avoid`, `never`); `NAME` may be a glob |
+| `--profile [FILE.json]` | `simulate`: record a performance profile; see [Performance analyzer](performance.md) |
+| `--events` | `simulate`: print the event log |
+| `-s NAME=VALUES`, `--grouped`, `--stats S` | `sweep`: swept parameter, grouped instead of grid, summary columns |
 | `--fmi-lib FILE` | `fmu`: the FMI runtime library to bundle |
 | `--at-time T` | `steady`: start from the state at time T |
 | `--free a,b`, `--target y=v` | `steady`: trim these inputs or parameters to hit these targets |

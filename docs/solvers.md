@@ -5,6 +5,8 @@ backend produces. All methods share the event handling (zero crossings located
 on the dense output, event iteration, `reinit`), the output grid and the
 statistics.
 
+![Auto switching on the quarter car: the message log lists each switch between Dopri5 and BDF](img/solvers/quarter_car_auto.webp)
+
 | Method | `--method` | Kind | Use it for |
 | --- | --- | --- | --- |
 | BDF | `bdf` (default) | stiff, multistep, order 1–5 | most models; the role Dassl plays in Dymola |
@@ -142,6 +144,11 @@ show a **Recommend** chip:
 - an implicit method with Newton failures on more than 20 % of the steps, or
   more than 40 % rejected steps: try the other stiff method;
 - Auto with more than 20 switches: use BDF.
+
+<div class="pair">
+<figure><img src="img/solvers/stiff_hint.webp" alt="Recommend chip after a stiff Dopri5 run"><figcaption>Van der Pol with mu = 1000 on Dopri5: 596,070 steps, and the chip recommends BDF.</figcaption></figure>
+<figure><img src="img/solvers/auto_log.webp" alt="Auto switching log"><figcaption>The same model on Auto: the log shows each switch between Dopri5 and BDF.</figcaption></figure>
+</div>
 
 Clicking the chip selects the method for the next run. The hint uses only the
 run statistics. It does not do an eigenvalue analysis.
