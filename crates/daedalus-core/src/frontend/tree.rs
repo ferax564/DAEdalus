@@ -1,7 +1,7 @@
 //! Class tree over all loaded source files, with Modelica name lookup.
 
 use rumoca_ir_ast as ast;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 pub type ClassId = u32;
 
@@ -122,13 +122,60 @@ impl<'a> ClassTree<'a> {
                 let parts: Vec<&str> = ext.base_name.name.iter().map(|t| &*t.text).collect();
                 // Extends names are looked up in the enclosing scope of the class
                 // (excluding the class itself to avoid self-reference).
-                let scope = self.node(id).parent.unwrap_or(ROOT);
-                if let Some(b) = self.lookup(scope, &parts, Some(id)) {
+                if let Some(b) = self.extends_target(id, &parts) {
                     out.push(b);
                 }
             }
         }
         self.bases_cache.borrow_mut().insert(id, out.clone());
+        out
+    }
+
+    /// The class an `extends` clause of `id` names. `redeclare class extends X` inside
+    /// `id` named X extends the X that the enclosing class inherits.
+    fn extends_target(&self, id: ClassId, parts: &[&str]) -> Option<ClassId> {
+        let scope = self.node(id).parent.unwrap_or(ROOT);
+        if parts.len() == 1 && parts[0] == self.node(id).name {
+            if let Some(b) = self.inherited_member(id, parts[0]) {
+                return Some(b);
+            }
+        }
+        self.lookup(scope, parts, Some(id))
+    }
+
+    /// Nested class `name` that the parent of `class` inherits (excluding `class`).
+    pub fn inherited_member(&self, class: ClassId, name: &str) -> Option<ClassId> {
+        let parent = self.node(class).parent?;
+        let mut stack = self.bases(parent);
+        stack.reverse();
+        let mut seen = FxHashSet::default();
+        while let Some(b) = stack.pop() {
+            if !seen.insert(b) {
+                continue;
+            }
+            if let Some(&c) = self.node(b).children.get(name)
+                && c != class
+            {
+                return Some(c);
+            }
+            let mut more = self.bases(b);
+            more.reverse();
+            stack.extend(more);
+        }
+        None
+    }
+
+    /// Base classes paired with the index of the `extends` clause naming them.
+    pub fn bases_by_ext(&self, id: ClassId) -> Vec<(usize, ClassId)> {
+        let mut out = Vec::new();
+        if let Some(def) = self.def(id) {
+            for (i, ext) in def.extends.iter().enumerate() {
+                let parts: Vec<&str> = ext.base_name.name.iter().map(|t| &*t.text).collect();
+                if let Some(b) = self.extends_target(id, &parts) {
+                    out.push((i, b));
+                }
+            }
+        }
         out
     }
 
@@ -360,6 +407,7 @@ pub fn builtin_name(s: &str) -> Option<&'static str> {
         "StateSelect" => Some("StateSelect"),
         "AssertionLevel" => Some("AssertionLevel"),
         "ExternalObject" => Some("ExternalObject"),
+        "Clock" => Some("Clock"),
         _ => None,
     }
 }

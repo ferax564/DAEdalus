@@ -7,7 +7,7 @@ use crate::expr::VarId;
 use crate::flat::VarKind;
 use crate::results::{ResultKind, ResultVar, Results};
 use crate::solver::{Bdf, Dopri5, FixedMethod, FixedStep, Integrator, SolverStats};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -46,6 +46,11 @@ pub struct SimOptions {
     pub max_step: f64,
     /// Store values just before and after events.
     pub store_events: bool,
+    /// Most rows stored at events; 0 means about 50 million values' worth (at least as many
+    /// rows as output points), so a large model with dense switching keeps a bounded file.
+    /// `usize::MAX` keeps every event.
+    #[serde(default)]
+    pub max_event_rows: usize,
     /// Parameter overrides by name.
     pub params: Vec<(String, f64)>,
     /// Abort after this many seconds of wall-clock time (0 = no limit).
@@ -65,6 +70,7 @@ impl Default for SimOptions {
             fixed_step: 0.0,
             max_step: 0.0,
             store_events: true,
+            max_event_rows: 0,
             params: Vec::new(),
             max_wall_time: 0.0,
         }
@@ -136,7 +142,12 @@ impl Recorder {
             if is_param[i] || hidden(&v.name) {
                 continue;
             }
-            if let Some(AliasKind::Var { .. }) = alias_of.get(&id) {
+            // An alias of another stored series shares its column.
+            // An alias of a parameter is constant too.
+            if let Some(AliasKind::Var { of, .. }) = alias_of.get(&id)
+                && (is_param[*of as usize]
+                    || (!hidden(&m.vars[*of as usize].name) && !alias_of.contains_key(of)))
+            {
                 continue;
             }
             col_of.insert(id, stored.len());
@@ -151,6 +162,8 @@ impl Recorder {
             }
             let kind = if is_param[i] {
                 ResultKind::Param(0.0)
+            } else if let Some(&c) = col_of.get(&id) {
+                ResultKind::Series(c)
             } else if let Some(AliasKind::Var { of, sign }) = alias_of.get(&id) {
                 match col_of.get(of) {
                     Some(&c) => ResultKind::Alias {
@@ -205,6 +218,8 @@ pub struct Simulation<'m> {
     terminated: Option<String>,
     log: Vec<String>,
     pub stats: SimStats,
+    /// Pending time events: jumps of delayed signals coming out of `delay()`.
+    delay_events: Vec<f64>,
 }
 
 #[derive(Debug)]
@@ -231,6 +246,25 @@ impl<'m> Simulation<'m> {
             terminated: None,
             log: Vec::new(),
             stats: SimStats::default(),
+            delay_events: Vec::new(),
+        }
+    }
+
+    /// Record the delayed variables at the current solution point.
+    fn record_delays(&mut self) {
+        if self.rt.m.delays.is_empty() {
+            return;
+        }
+        let mut jumps = Vec::new();
+        self.rt.record_delays(&mut jumps);
+        let t = self.rt.time();
+        for te in jumps {
+            if te > t {
+                let i = self.delay_events.partition_point(|&x| x < te);
+                if self.delay_events.get(i) != Some(&te) {
+                    self.delay_events.insert(i, te);
+                }
+            }
         }
     }
 
@@ -282,10 +316,22 @@ impl<'m> Simulation<'m> {
         // Evaluate all new values first (simultaneous semantics), then assign.
         let mut updates: Vec<(usize, f64)> = Vec::new();
         let mut any = false;
-        for (wi, w) in m.whens.iter().enumerate() {
+        let mut fired: Vec<usize> = Vec::new();
+        for &wi in &m.when_order {
+            let w = &m.whens[wi];
             for (bi, acts) in w.actions.iter().enumerate() {
                 if conds[wi][bi] && !prev[wi][bi] {
                     any = true;
+                    // A clause reading what an earlier clause of this event assigned sees
+                    // the new value (when-equations are solved together).
+                    if !updates.is_empty() && m.when_deps[wi].iter().any(|d| fired.contains(d)) {
+                        for (v, x) in updates.drain(..) {
+                            self.rt.r[v] = x;
+                        }
+                        self.rt.run(&m.ode);
+                        self.rt.run(&m.when_prog);
+                    }
+                    fired.push(wi);
                     let chained = w.chained[bi];
                     for (k, a) in acts.iter().enumerate() {
                         match a {
@@ -330,16 +376,67 @@ impl<'m> Simulation<'m> {
     /// Event iteration at the current time until discrete values settle.
     fn event_iteration(&mut self) -> Result<(), String> {
         let m = self.rt.m;
+        let mut hist: Vec<Vec<f64>> = Vec::new();
         for _ in 0..100 {
             self.rt.save_pre();
             let rel_changed = self.rt.latch_relations();
             self.rt.run(&m.ode);
-            let conds = self.when_conds();
+            let mut conds = self.when_conds();
             let prev = std::mem::take(&mut self.cond_prev);
             let fired = self.fire(&conds, &prev);
+            // Relations read the values the actions just assigned (`time >= t_start +
+            // waitTime` right after `t_start := time`), then the algebraics follow. A
+            // condition that only becomes true with those values belongs to the same
+            // solution of the event equations: fire it before anything is committed.
+            let mut rel_changed = rel_changed;
+            if fired {
+                for _ in 0..100 {
+                    self.rt.run(&m.ode);
+                    rel_changed |= self.rt.latch_relations();
+                    self.rt.run(&m.ode);
+                    let now = self.when_conds();
+                    let seen: Vec<Vec<bool>> = conds
+                        .iter()
+                        .zip(&prev)
+                        .map(|(c, p)| c.iter().zip(p).map(|(&a, &b)| a || b).collect())
+                        .collect();
+                    let more = self.fire(&now, &seen);
+                    conds = now;
+                    if !more {
+                        break;
+                    }
+                }
+            }
             self.cond_prev = conds;
             // Recompute algebraics with the new discrete values.
             self.rt.run(&m.ode);
+            if std::env::var("DAEDALUS_DEBUG_EVENTS").is_ok() {
+                let ch: Vec<String> = m
+                    .discretes
+                    .iter()
+                    .filter(|&&d| self.rt.r[d as usize] != self.rt.r[m.layout.pre0 + d as usize])
+                    .map(|&d| format!("{}={}", m.vars[d as usize].name, self.rt.r[d as usize]))
+                    .collect();
+                let rels: String = (0..m.layout.n_rel)
+                    .map(|i| {
+                        if self.rt.r[m.layout.rel0 + i] != 0.0 {
+                            '1'
+                        } else {
+                            '0'
+                        }
+                    })
+                    .collect();
+                if std::env::var("DAEDALUS_DEBUG_EVENTS").as_deref() == Ok("2") {
+                    for (i, t) in m.rel_text.iter().enumerate() {
+                        eprintln!("  rel{i}: {t}");
+                    }
+                }
+                eprintln!(
+                    "t={} fired={fired} rel={rel_changed} [{rels}] {}",
+                    self.rt.time(),
+                    ch.join(" ")
+                );
+            }
             let disc_changed = m.discretes.iter().any(|&d| {
                 let a = self.rt.r[d as usize];
                 let b = self.rt.r[m.layout.pre0 + d as usize];
@@ -349,11 +446,89 @@ impl<'m> Simulation<'m> {
                 self.rt.save_pre();
                 return Ok(());
             }
+            // Pure relation cycle (a Schmitt trigger switching between a saturated and the
+            // linear branch, neither consistent): fixed-point iteration never visits the
+            // consistent mode, so search the modes of the relations involved.
+            if !fired && !disc_changed {
+                let rels = self.rt.r[m.layout.rel0..m.layout.rel0 + m.layout.n_rel].to_vec();
+                if let Some(k) = hist.iter().position(|h| *h == rels) {
+                    let toggling: Vec<usize> = (0..rels.len())
+                        .filter(|&i| hist[k..].iter().any(|h| h[i] != rels[i]))
+                        .collect();
+                    if self.mode_search(&toggling) {
+                        self.rt.save_pre();
+                        return Ok(());
+                    }
+                }
+                hist.push(rels);
+            }
         }
         Err(format!(
             "event iteration did not converge at t = {}",
             self.rt.time()
         ))
+    }
+
+    /// Look for relation values that reproduce themselves: the relations that toggled in
+    /// a cycle, plus those comparing the same expression (the other limit of a limiter),
+    /// with duplicate copies of one relation kept equal. Tries the modes closest to the
+    /// current one first; returns whether a consistent one was found and latched.
+    fn mode_search(&mut self, toggling: &[usize]) -> bool {
+        let m = self.rt.m;
+        let lhs = |i: usize| {
+            let t = &m.rel_text[i];
+            let op = format!(" {:?} ", m.rel_ops[i]);
+            t.split(op.as_str()).next().unwrap_or(t).to_string()
+        };
+        let lhs_set: FxHashSet<String> = toggling.iter().map(|&i| lhs(i)).collect();
+        let mut atoms: Vec<&str> = Vec::new();
+        for i in 0..m.layout.n_rel {
+            if lhs_set.contains(&lhs(i)) && !atoms.contains(&m.rel_text[i].as_str()) {
+                atoms.push(&m.rel_text[i]);
+            }
+        }
+        if atoms.is_empty() || atoms.len() > 10 {
+            return false;
+        }
+        let members: Vec<Vec<usize>> = atoms
+            .iter()
+            .map(|a| {
+                (0..m.layout.n_rel)
+                    .filter(|&i| m.rel_text[i] == *a)
+                    .collect()
+            })
+            .collect();
+        let base: Vec<f64> = self.rt.r[m.layout.rel0..m.layout.rel0 + m.layout.n_rel].to_vec();
+        let cur: u32 = members
+            .iter()
+            .enumerate()
+            .map(|(k, ms)| u32::from(base[ms[0]] != 0.0) << k)
+            .sum();
+        let mut masks: Vec<u32> = (0..1u32 << atoms.len()).collect();
+        masks.sort_by_key(|&x| ((x ^ cur).count_ones(), x));
+        for mask in masks {
+            for (k, ms) in members.iter().enumerate() {
+                let v = f64::from((mask >> k) & 1);
+                for &i in ms {
+                    self.rt.r[m.layout.rel0 + i] = v;
+                }
+            }
+            self.rt.run(&m.ode);
+            if self.rt.error.is_some() {
+                self.rt.error = None;
+                continue;
+            }
+            self.rt.run(&m.zc);
+            let ok = (0..m.layout.n_rel)
+                .all(|i| self.rt.r[m.zc_raw[i] as usize] == self.rt.r[m.layout.rel0 + i]);
+            if ok {
+                return true;
+            }
+        }
+        self.rt.r[m.layout.rel0..m.layout.rel0 + m.layout.n_rel].copy_from_slice(&base);
+        self.rt.run(&m.ode);
+        self.rt.error = None;
+        false
     }
 
     fn check_newton(&mut self, phase: &str) -> Result<(), String> {
@@ -369,6 +544,53 @@ impl<'m> Simulation<'m> {
         Ok(())
     }
 
+    /// Solve the initial equations. With `homotopy()` in the model, start from the
+    /// simplified equations (lambda = 0) and continue to the actual ones (lambda = 1),
+    /// each solve starting from the last solution; fall back to a direct solve.
+    fn solve_init(&mut self) -> Result<(), String> {
+        let m = self.rt.m;
+        let lambda = m
+            .vars
+            .iter()
+            .position(|v| v.name == crate::flat::HOMOTOPY_LAMBDA && v.kind == VarKind::Parameter);
+        if let Some(l) = lambda {
+            let saved = self.rt.r.clone();
+            let mut ok = true;
+            let mut at = 0.0f64;
+            let mut h = 0.1f64;
+            self.rt.r[l] = 0.0;
+            self.rt.run(&m.init);
+            if self.rt.error.take().is_some() {
+                ok = false;
+            }
+            while ok && at < 1.0 {
+                let next = (at + h).min(1.0);
+                let before = self.rt.r.clone();
+                self.rt.r[l] = next;
+                self.rt.run(&m.init);
+                if self.rt.error.take().is_some()
+                    || self.rt.r[..m.layout.nv].iter().any(|x| x.is_nan())
+                {
+                    self.rt.r = before;
+                    h /= 4.0;
+                    if h < 1e-4 {
+                        ok = false;
+                    }
+                } else {
+                    at = next;
+                    h = (h * 2.0).min(0.25);
+                }
+            }
+            if ok {
+                return Ok(());
+            }
+            self.rt.r = saved;
+            self.rt.r[l] = 1.0;
+        }
+        self.rt.run(&m.init);
+        self.check_newton("initialization")
+    }
+
     pub fn initialize(&mut self) -> Result<(), String> {
         let m = self.rt.m;
         let t0 = self.opts.start_time;
@@ -377,8 +599,10 @@ impl<'m> Simulation<'m> {
         self.rt.r[m.layout.initial] = 1.0;
         self.rt.run(&m.starts);
         self.rt.save_pre();
-        self.rt.run(&m.init);
-        self.check_newton("initialization")?;
+        self.solve_init()?;
+        for &(v, p) in &m.pre_init {
+            self.rt.r[m.layout.pre0 + v as usize] = self.rt.r[p as usize];
+        }
         self.rt.latch_relations();
         for &r in &m.sample_rels {
             self.rt.r[m.layout.rel0 + r] = 0.0;
@@ -406,6 +630,21 @@ impl<'m> Simulation<'m> {
         // Event iteration at the start time (handles sample() at t0 and initial() clauses).
         self.event_iteration()?;
         self.check_newton("initialization")?;
+        if !m.delays.is_empty() {
+            // delay(x, d) = x(start) until start + d: settle the delays on the initial values
+            self.rt.run(&m.ode);
+            for _ in 0..2 {
+                for b in &mut self.rt.delays {
+                    b.t.clear();
+                    b.v.clear();
+                }
+                self.record_delays();
+                self.rt.run(&m.ode);
+                self.event_iteration()?;
+                self.check_newton("initialization")?;
+            }
+            self.delay_events.clear();
+        }
         Ok(())
     }
 
@@ -421,6 +660,7 @@ impl<'m> Simulation<'m> {
             });
         }
         // Parameter values into the result.
+        self.rt.run(&m.outputs);
         for (k, &i) in order.iter().enumerate() {
             if let ResultKind::Param(_) = rec.res.vars[k].kind {
                 rec.res.vars[k].kind = ResultKind::Param(self.rt.r[i]);
@@ -457,11 +697,23 @@ impl<'m> Simulation<'m> {
         } else {
             span / o.intervals.max(1) as f64
         };
-        let max_step = if o.max_step > 0.0 {
+        let mut max_step = if o.max_step > 0.0 {
             o.max_step
         } else {
             span.max(1e-12)
         };
+        // Steps no longer than the shortest delay: delayed values come from the history,
+        // never from the step being taken.
+        for b in &self.rt.delays {
+            if b.d > 0.0 && b.d < max_step {
+                max_step = b.d;
+            }
+        }
+        // Without states nothing limits the step: still look for crossings at least once
+        // per output interval.
+        if n == 0 && dt > 0.0 && dt < max_step {
+            max_step = dt;
+        }
         let rtol = o.tolerance;
         let atol = o.tolerance;
         let mut solver: Box<dyn Integrator> = match o.method {
@@ -488,6 +740,15 @@ impl<'m> Simulation<'m> {
         rec.record(&mut self.rt);
         let mut k_out: u64 = 1;
         let next_out = |k: u64| o.start_time + k as f64 * dt;
+        let event_budget = if o.max_event_rows > 0 {
+            o.max_event_rows
+        } else {
+            // About 50 million stored values of event rows, and never fewer rows than
+            // output points: every event of a small model, a bounded file for a large one.
+            let per_row = rec.stored.len().max(1);
+            ((span / dt).ceil() as usize).max(50_000_000 / per_row)
+        };
+        let mut event_rows = 0usize;
         solver.reset(&mut self.rt, t, &x);
         let n_rel = m.layout.n_rel;
         let mut xi = vec![0.0; n];
@@ -509,7 +770,16 @@ impl<'m> Simulation<'m> {
                     o.max_wall_time, t
                 ));
             }
-            let tn = solver.step(&mut self.rt, o.stop_time)?;
+            let t_lim = match self.delay_events.first() {
+                Some(&te) if te < o.stop_time => te,
+                _ => o.stop_time,
+            };
+            let t_lim = if n == 0 {
+                t_lim.min(t + max_step)
+            } else {
+                t_lim
+            };
+            let tn = solver.step(&mut self.rt, t_lim)?;
             let tp = solver.t_prev();
             self.rt.error = None;
             // Event detection at the end of the step.
@@ -534,14 +804,27 @@ impl<'m> Simulation<'m> {
                 }
                 if !crossing.is_empty() {
                     let mut best = tn;
+                    let after_event = tp - last_event <= 1e-10 * tp.abs().max(1.0);
                     for &i in &crossing {
-                        let te = self.locate(&*solver, i, tp, best, &mut xi);
+                        let te = self.locate(&*solver, i, tp, best, after_event, &mut xi);
                         if te < best {
                             best = te;
                         }
                     }
                     event_t = Some(best);
                 }
+            }
+            let mut time_event = false;
+            if event_t.is_none()
+                && let Some(&te) = self.delay_events.first()
+                && tn >= te * (1.0 - 1e-14) - 1e-300
+            {
+                event_t = Some(tn);
+                time_event = true;
+            }
+            if let Some(te) = event_t {
+                let k = self.delay_events.partition_point(|&x| x <= te);
+                self.delay_events.drain(..k);
             }
             let t_end = event_t.unwrap_or(tn);
             // Output points inside the step (before the event).
@@ -555,6 +838,7 @@ impl<'m> Simulation<'m> {
                 solver.interpolate(to, &mut xi);
                 self.rt.rhs(to, &xi, &mut x);
                 rec.record(&mut self.rt);
+                self.record_delays();
                 self.check_asserts()?;
                 k_out += 1;
             }
@@ -567,7 +851,7 @@ impl<'m> Simulation<'m> {
                                 self.rt.r[m.zc_raw[i] as usize] != self.rt.r[m.layout.rel0 + i]
                             })
                             .take(4)
-                            .map(|i| format!("relation {i}"))
+                            .map(|i| format!("`{}`", m.rel_text.get(i).map_or("?", |s| s.as_str())))
                             .collect();
                         return Err(format!(
                             "events chatter at t = {te}: {} keep switching back and forth",
@@ -583,20 +867,36 @@ impl<'m> Simulation<'m> {
                 }
                 last_event = te;
                 self.stats.events += 1;
-                self.stats.state_events += 1;
+                if !time_event {
+                    self.stats.state_events += 1;
+                }
+                // The row before the event sees the left values of delayed jumps.
+                self.rt.delay_right = false;
                 solver.interpolate(te, &mut xi);
                 self.rt.rhs(te, &xi, &mut x);
-                if o.store_events {
+                let store = o.store_events && event_rows < event_budget;
+                if store {
                     rec.record(&mut self.rt);
+                    event_rows += 2;
+                    if event_rows >= event_budget {
+                        self.log.push(format!(
+                            "more than {} event points at t = {te}: later events are not stored \
+                             (only output points)",
+                            event_budget
+                        ));
+                    }
                 }
+                self.record_delays();
+                self.rt.delay_right = true;
                 self.event_iteration()?;
                 self.check_newton("event")?;
-                if o.store_events {
+                self.record_delays();
+                if store {
                     rec.record(&mut self.rt);
                 }
                 // Output point coinciding with the event.
                 if (next_out(k_out) - te).abs() <= 1e-12 * te.abs().max(1.0) {
-                    if !o.store_events {
+                    if !store {
                         rec.record(&mut self.rt);
                     }
                     k_out += 1;
@@ -606,6 +906,11 @@ impl<'m> Simulation<'m> {
                 solver.reset(&mut self.rt, t, &xi);
             } else {
                 t = tn;
+                if !m.delays.is_empty() {
+                    let xs = solver.x().to_vec();
+                    self.rt.rhs(tn, &xs, &mut xi);
+                    self.record_delays();
+                }
                 if (tn - o.stop_time).abs() <= 1e-12 * o.stop_time.abs().max(1.0)
                     && rec
                         .res
@@ -658,6 +963,7 @@ impl<'m> Simulation<'m> {
         i: usize,
         ta: f64,
         tb: f64,
+        after_event: bool,
         xi: &mut Vec<f64>,
     ) -> f64 {
         let m = self.rt.m;
@@ -680,10 +986,12 @@ impl<'m> Simulation<'m> {
             return tb; // no crossing at tb any more (should not happen)
         }
         if ra != lat {
-            if ga.abs() <= self.hysteresis(i) {
-                return tb; // still inside the hysteresis band at the start
+            if after_event && ga.abs() <= self.hysteresis(i) {
+                return tb; // still inside the hysteresis band right after an event
             }
-            return ta; // already crossed at the start (e.g. right after an event)
+            // Already crossed at the start: right after an event, or a step that ended
+            // just past the switching point (a sample instant hit exactly).
+            return ta;
         }
         let mut side = 0;
         for _ in 0..100 {

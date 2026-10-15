@@ -53,6 +53,8 @@ pub struct ComponentInfo {
     pub flow: bool,
     pub protected: bool,
     pub conditional: bool,
+    /// The condition of a conditional component as source text (`useHeatPort`).
+    pub condition: Option<String>,
     /// `Placement` annotation.
     pub placement: Option<Value>,
     /// Modifiers as source text, e.g. `("J", "0.5")`.
@@ -297,6 +299,7 @@ fn collect(lib: &Library, tree: &ClassTree, id: ClassId, info: &mut ClassInfo, d
             flow: matches!(c.connection, ast::Connection::Flow(_)),
             protected: c.is_protected,
             conditional: c.condition.is_some(),
+            condition: c.condition.as_ref().map(|x| src(text, x.span())),
             placement: find_annotation(&c.annotation, "Placement").map(|p| expr_json(p, text)),
             modifiers,
             binding: c.binding.as_ref().map(|b| src(text, b.span())),
@@ -459,9 +462,35 @@ fn balanced(s: &str) -> Option<String> {
 }
 
 fn src(text: Option<&str>, span: rumoca_core::Span) -> String {
-    text.and_then(|t| t.get(span.start.0..span.end.0))
-        .map(|s| s.trim().to_string())
-        .unwrap_or_default()
+    let Some(t) = text else {
+        return String::new();
+    };
+    let Some(s) = t.get(span.start.0..span.end.0) else {
+        return String::new();
+    };
+    // An expression ending in a parenthesised operand can have its span stop before the
+    // closing parentheses: take them from the source that follows.
+    let open = s
+        .matches('(')
+        .count()
+        .saturating_sub(s.matches(')').count());
+    let mut end = span.end.0;
+    let rest = t[end..].char_indices();
+    let mut need = open;
+    for (i, c) in rest {
+        if need == 0 {
+            break;
+        }
+        match c {
+            ')' => {
+                need -= 1;
+                end = span.end.0 + i + 1;
+            }
+            c if c.is_whitespace() => {}
+            _ => break,
+        }
+    }
+    t[span.start.0..end].trim().to_string()
 }
 
 fn cref_text(c: &ast::ComponentReference) -> String {
@@ -522,7 +551,8 @@ pub fn expr_json(e: &ast::Expression, text: Option<&str>) -> Value {
             match (format!("{op:?}").as_str(), v.as_f64()) {
                 (o, Some(x)) if o.contains("Minus") => num(-x),
                 (_, Some(x)) => num(x),
-                _ => v,
+                // `not useAxisFlange`: keep the whole expression for the client to evaluate
+                _ => Value::String(text.map(|t| src(Some(t), e.span())).unwrap_or_default()),
             }
         }
         E::Binary { op, lhs, rhs, .. } => {

@@ -4,6 +4,7 @@
 use super::graph::{Bipartite, NONE, augment, hopcroft_karp, tarjan_blt};
 use super::{Block, Eq, Work};
 use crate::expr::{Arena, ExprId, Node, VarId};
+use crate::flat::{VarKind, Variable};
 use anyhow::{Result, bail};
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -301,6 +302,10 @@ fn tear(w: &mut Work, eqs: &[Eq], vars: &[VarId], tearing: bool, pt: &[f64]) -> 
     let mut tears: Vec<VarId> = Vec::new();
     // Cache of failed solve attempts: (eq, var).
     let mut unsolvable: FxHashSet<(usize, VarId)> = FxHashSet::default();
+    // Guess point updated with the inner assignments as they are chosen, so a pivot that
+    // vanishes for the propagated values (`dp` from `W = dp*V/eta` with `V` computed as
+    // zero from a zero start flow) is rejected even when `V`'s own start is non-zero.
+    let mut pt = pt.to_vec();
     loop {
         // Propagate: repeatedly solve equations with one remaining unknown, safest first.
         loop {
@@ -321,7 +326,7 @@ fn tear(w: &mut Work, eqs: &[Eq], vars: &[VarId], tearing: bool, pt: &[f64]) -> 
                 // unrotated frame) stays a residual for the Newton/linear solve.
                 let sc = w
                     .solve_class(&eqs[i], v)
-                    .filter(|&(_, c)| c == 0 || w.coefficient_nonzero(&eqs[i], v, pt));
+                    .filter(|&(_, c)| c == 0 || w.coefficient_nonzero(&eqs[i], v, &pt));
                 match sc {
                     Some((x, c)) => {
                         if best.is_none_or(|b| c < b.3) {
@@ -337,6 +342,10 @@ fn tear(w: &mut Work, eqs: &[Eq], vars: &[VarId], tearing: bool, pt: &[f64]) -> 
                 }
             }
             let Some((i, v, x, _)) = best else { break };
+            let y = eval_at(w, x, &pt);
+            if y.is_finite() {
+                pt[v as usize] = y;
+            }
             inner.push((v, x));
             known.insert(v);
             used[i] = true;
@@ -360,11 +369,20 @@ fn tear(w: &mut Work, eqs: &[Eq], vars: &[VarId], tearing: bool, pt: &[f64]) -> 
                 *count.entry(v).or_default() += if rem.len() == 2 { 3 } else { 1 };
             }
         }
+        // Discrete unknowns (a switch's `off`) are not torn while a continuous one is
+        // left: Newton cannot move a Boolean; computed from its own equation, it
+        // follows the frozen relations instead.
         let t = vars
             .iter()
             .copied()
             .filter(|v| !known.contains(v))
-            .max_by_key(|v| (count.get(v).copied().unwrap_or(0), std::cmp::Reverse(*v)))
+            .max_by_key(|v| {
+                (
+                    w.vars[*v as usize].kind != VarKind::Discrete,
+                    count.get(v).copied().unwrap_or(0),
+                    std::cmp::Reverse(*v),
+                )
+            })
             .unwrap();
         tears.push(t);
         known.insert(t);
@@ -386,6 +404,108 @@ fn tear(w: &mut Work, eqs: &[Eq], vars: &[VarId], tearing: bool, pt: &[f64]) -> 
 /// simulation equations, initial equations, `fixed=true` start values and, where still
 /// underdetermined, start values of states (then of other variables) as needed.
 pub fn initialization(w: &mut Work, states: &[VarId], tearing: bool) -> Result<Vec<Block>> {
+    // Discrete variables that initial equations determine (`pulseStart = startTime`)
+    // are unknowns of initialization too.
+    let assigned: Vec<VarId> = w
+        .when_assigned
+        .iter()
+        .copied()
+        .filter(|&v| !w.unknown[v as usize])
+        .collect();
+    for &v in &assigned {
+        w.unknown[v as usize] = true;
+    }
+    let mut in_init: FxHashSet<VarId> = FxHashSet::default();
+    for e in &w.init_eqs {
+        in_init.extend(w.eq_unknowns(e));
+    }
+    for &v in &assigned {
+        w.unknown[v as usize] = false;
+    }
+    let mut extra: Vec<VarId> = assigned
+        .into_iter()
+        .filter(|v| in_init.contains(v) || w.init_only.contains(v))
+        .collect();
+    extra.sort();
+    for &v in &extra {
+        w.unknown[v as usize] = true;
+    }
+    // `pre(v)` named in an initial equation is an unknown of initialization: it gets a
+    // variable of its own there, defaulting to the start value of v.
+    let mut pre_of: Vec<VarId> = Vec::new();
+    for e in &w.init_eqs {
+        for root in [e.lhs, e.rhs] {
+            w.arena.visit_all_leaves(root, &mut |n| {
+                if let Node::Pre(v) = n
+                    && !pre_of.contains(&v)
+                {
+                    pre_of.push(v);
+                }
+            });
+        }
+    }
+    pre_of.sort();
+    let mut pre_var: FxHashMap<VarId, VarId> = FxHashMap::default();
+    for &v in &pre_of {
+        let src = &w.vars[v as usize];
+        let mut pv = Variable::new(format!("$pre.{}", src.name), VarKind::Discrete, src.ty);
+        pv.start = src.start;
+        pv.generated = true;
+        pv.is_protected = true;
+        let p = w.add_var(pv, true);
+        pre_var.insert(v, p);
+        w.pre_init.push((v, p));
+    }
+    let saved = if pre_var.is_empty() {
+        None
+    } else {
+        let pre_expr: FxHashMap<VarId, ExprId> =
+            pre_var.iter().map(|(&v, &p)| (v, w.arena.var(p))).collect();
+        let subst = |w: &mut Work, eqs: &[Eq]| -> Vec<Eq> {
+            eqs.iter()
+                .map(|e| {
+                    let mut e = *e;
+                    for side in [&mut e.lhs, &mut e.rhs] {
+                        *side = w.arena.substitute(*side, &|n| match n {
+                            Node::Pre(v) => pre_expr.get(&v).copied(),
+                            _ => None,
+                        });
+                    }
+                    e
+                })
+                .collect()
+        };
+        let eqs = w.eqs.clone();
+        let ieqs = w.init_eqs.clone();
+        let ne = subst(w, &eqs);
+        let ni = subst(w, &ieqs);
+        Some((
+            std::mem::replace(&mut w.eqs, ne),
+            std::mem::replace(&mut w.init_eqs, ni),
+        ))
+    };
+    let r = initialization_inner(w, states, tearing);
+    if let Some((eqs, ieqs)) = saved {
+        w.eqs = eqs;
+        w.init_eqs = ieqs;
+    }
+    let mut r = r?;
+    for &v in &pre_of {
+        let p = pre_var[&v];
+        w.unknown[p as usize] = false;
+        // A variable initialization does not determine starts from its pre value.
+        if !w.unknown[v as usize] {
+            let expr = w.arena.var(p);
+            r.push(Block::Assign { var: v, expr });
+        }
+    }
+    for &v in &extra {
+        w.unknown[v as usize] = false;
+    }
+    Ok(r)
+}
+
+fn initialization_inner(w: &mut Work, states: &[VarId], tearing: bool) -> Result<Vec<Block>> {
     let mut mandatory: Vec<Eq> = w.eqs.clone();
     mandatory.extend(w.init_eqs.iter().copied());
     let state_set: FxHashSet<VarId> = states.iter().copied().collect();
@@ -406,7 +526,12 @@ pub fn initialization(w: &mut Work, states: &[VarId], tearing: bool) -> Result<V
         }
     };
     for v in 0..w.vars.len() as VarId {
-        if w.unknown[v as usize] && w.vars[v as usize].fixed == Some(true) {
+        // For a discrete variable `fixed = true` fixes pre(v), which already starts at
+        // the start value; v itself follows from its equation.
+        if w.unknown[v as usize]
+            && w.vars[v as usize].fixed == Some(true)
+            && w.vars[v as usize].kind != VarKind::Discrete
+        {
             let e = start_eq(w, v);
             mandatory.push(e);
         }

@@ -72,6 +72,8 @@ export interface RenderCtx {
   defIds: Map<string, string>;
   /** Text substitutions: %name, %par. */
   subst: (s: string) => string;
+  /** Value of a Boolean expression such as `visible = useAxisFlange` (null: unknown). */
+  cond: (expr: string) => boolean | null;
 }
 
 function el<K extends keyof SVGElementTagNameMap>(tag: K, attrs: Record<string, string | number>): SVGElementTagNameMap[K] {
@@ -181,6 +183,7 @@ function arrowHead(parent: SVGGElement, tip: [number, number], from: [number, nu
 export function drawGraphics(parent: SVGGElement, graphics: AnnRecord[], m: Mat, ctx: RenderCtx) {
   for (const g of graphics) {
     if (g.visible === false) continue;
+    if (typeof g.visible === "string" && ctx.cond(g.visible) === false) continue;
     const mm = mul(m, itemMatrix(g));
     const kind = g["@"];
     if (kind === "Line") {
@@ -250,18 +253,28 @@ export function drawGraphics(parent: SVGGElement, graphics: AnnRecord[], m: Mat,
       const bw = Math.max(...xs) - bx;
       const bh = Math.max(...ys) - by;
       const scaleLen = Math.hypot(m[0], m[1]);
-      const fs = num(g.fontSize) > 0 ? num(g.fontSize) * 0.35 * scaleLen * 2.83 : Math.min(bh * 0.9, (bw / Math.max(1, text.length)) * 1.7);
+      // Text turns with its component (a vertical label in a quarter-turned box) but is
+      // never drawn upside down; it fits the extent measured along the item's own axes.
+      const ew = Math.abs(e[1][0] - e[0][0]) * Math.hypot(mm[0], mm[1]);
+      const eh = Math.abs(e[1][1] - e[0][1]) * Math.hypot(mm[2], mm[3]);
+      let deg = (Math.atan2(mm[1], mm[0]) * 180) / Math.PI;
+      if (deg > 90.5) deg -= 180;
+      else if (deg <= -89.5) deg += 180;
+      deg = Math.round(deg * 1000) / 1000;
+      const fs = num(g.fontSize) > 0 ? num(g.fontSize) * 0.35 * scaleLen * 2.83 : Math.min(eh * 0.9, (ew / Math.max(1, text.length)) * 1.7);
       if (fs < 0.5) continue;
       const align = enumLit(g.horizontalAlignment, "Center");
-      const tx = align === "Left" ? bx : align === "Right" ? bx + bw : bx + bw / 2;
+      const cx = bx + bw / 2;
+      const cy = by + bh / 2;
+      const off = align === "Left" ? -ew / 2 : align === "Right" ? ew / 2 : 0;
       const t = el("text", {
-        x: tx,
-        y: -(by + bh / 2),
+        x: off,
+        y: 0,
         "font-size": fs,
         "text-anchor": align === "Left" ? "start" : align === "Right" ? "end" : "middle",
         "dominant-baseline": "central",
         fill: color(g.textColor ?? g.lineColor, "black"),
-        transform: "scale(1,-1)",
+        transform: `scale(1,-1) translate(${cx},${-cy})${deg ? ` rotate(${-deg})` : ""}`,
         "font-family": typeof g.fontName === "string" && g.fontName ? g.fontName : "inherit",
       });
       const styles = Array.isArray(g.textStyle) ? g.textStyle.map((s) => enumLit(s, "")) : [];
@@ -278,21 +291,176 @@ export interface ClassSource {
   get(path: string): Promise<ClassInfo | null>;
 }
 
+/** Value text of parameter `name` for component `comp` of class `cls`: its modifier, or the
+ * default binding in the class or its bases. */
+function paramText(name: string, comp: ComponentInfo | null, cls: ClassInfo, classes: Map<string, ClassInfo>): string | null {
+  const mod = comp?.modifiers.find(([k]) => k === name);
+  if (mod) return mod[1];
+  for (const c of [cls, ...cls.extends.map((e) => classes.get(e)).filter((x): x is ClassInfo => !!x)]) {
+    const p = c.components.find((x) => x.name === name);
+    if (p?.binding) return p.binding;
+  }
+  return null;
+}
+
+/** Evaluate a small Boolean expression (`not a and (b or c)`, `n > 1`); null if unknown. */
+export function evalCond(expr: string, lookup: (name: string) => string | null, depth = 0): boolean | null {
+  if (depth > 8) return null;
+  const toks = expr.match(/[A-Za-z_][A-Za-z0-9_.]*|\d+(?:\.\d*)?(?:[eE][-+]?\d+)?|==|<>|<=|>=|[()<>]/g) ?? [];
+  let i = 0;
+  type V = boolean | number | null;
+  const atom = (): V => {
+    const t = toks[i++];
+    if (t === undefined) return null;
+    if (t === "(") {
+      const v = or();
+      i++;
+      return v;
+    }
+    if (t === "not") {
+      const v = atom();
+      return typeof v === "boolean" ? !v : null;
+    }
+    if (t === "true") return true;
+    if (t === "false") return false;
+    if (/^\d/.test(t)) return parseFloat(t);
+    const s = lookup(t);
+    if (s === null) return null;
+    if (s.trim() === "true") return true;
+    if (s.trim() === "false") return false;
+    const x = Number(s);
+    if (s.trim() !== "" && !Number.isNaN(x)) return x;
+    return evalCond(s, lookup, depth + 1);
+  };
+  const cmp = (): V => {
+    const a = atom();
+    const op = toks[i];
+    if (op && ["==", "<>", "<", ">", "<=", ">="].includes(op)) {
+      i++;
+      const b = atom();
+      if (a === null || b === null) return null;
+      const [x, y] = [Number(a), Number(b)];
+      return op === "==" ? x === y : op === "<>" ? x !== y : op === "<" ? x < y : op === ">" ? x > y : op === "<=" ? x <= y : x >= y;
+    }
+    return a;
+  };
+  const and = (): V => {
+    let a = cmp();
+    while (toks[i] === "and") {
+      i++;
+      const b = cmp();
+      a = a === false || b === false ? false : a === null || b === null ? null : Boolean(a) && Boolean(b);
+    }
+    return a;
+  };
+  const or = (): V => {
+    let a = and();
+    while (toks[i] === "or") {
+      i++;
+      const b = and();
+      a = a === true || b === true ? true : a === null || b === null ? null : Boolean(a) || Boolean(b);
+    }
+    return a;
+  };
+  const v = or();
+  return typeof v === "boolean" && i === toks.length ? v : null;
+}
+
+/** Boolean expressions of a component's icon, evaluated with its parameters. */
+export function condition(comp: ComponentInfo | null, cls: ClassInfo, classes: Map<string, ClassInfo>): (expr: string) => boolean | null {
+  return (expr) => evalCond(expr, (n) => paramText(n, comp, cls, classes));
+}
+
+const CONSTANTS: Record<string, number> = {
+  pi: Math.PI,
+  e: Math.E,
+  "Modelica.Constants.pi": Math.PI,
+  "Modelica.Constants.e": Math.E,
+  "Modelica.Constants.D2R": Math.PI / 180,
+  "Modelica.Constants.R2D": 180 / Math.PI,
+  "Modelica.Constants.g_n": 9.80665,
+  "Modelica.Constants.sigma": 5.670374419e-8,
+  "Modelica.Constants.T_zero": -273.15,
+};
+const FUNS: Record<string, (x: number) => number> = {
+  sqrt: Math.sqrt, sin: Math.sin, cos: Math.cos, tan: Math.tan, exp: Math.exp, log: Math.log, log10: Math.log10, abs: Math.abs,
+};
+
+/** Evaluate an arithmetic parameter expression (`1/(2*Modelica.Constants.pi)`); null if unknown. */
+export function evalNum(expr: string, lookup: (name: string) => string | null, depth = 0): number | null {
+  if (depth > 8) return null;
+  const toks = expr.match(/[A-Za-z_][A-Za-z0-9_.]*|\d+(?:\.\d*)?(?:[eE][-+]?\d+)?|\.\d+(?:[eE][-+]?\d+)?|[-+*/^(),]|\S/g) ?? [];
+  let i = 0;
+  let bad = false;
+  const prim = (): number => {
+    const t = toks[i++];
+    if (t === undefined) return (bad = true), NaN;
+    if (t === "(") {
+      const v = sum();
+      if (toks[i++] !== ")") bad = true;
+      return v;
+    }
+    if (t === "-") return -pow();
+    if (t === "+") return pow();
+    if (/^[\d.]/.test(t)) return parseFloat(t);
+    if (/^[A-Za-z_]/.test(t)) {
+      const f = FUNS[t.replace(/^Modelica\.Math\./, "")];
+      if (f && toks[i] === "(") {
+        i++;
+        const v = sum();
+        if (toks[i++] !== ")") bad = true;
+        return f(v);
+      }
+      if (t in CONSTANTS) return CONSTANTS[t];
+      const s = lookup(t);
+      const v = s === null ? null : evalNum(s, lookup, depth + 1);
+      if (v === null) bad = true;
+      return v ?? NaN;
+    }
+    bad = true;
+    return NaN;
+  };
+  const pow = (): number => {
+    const a = prim();
+    if (toks[i] === "^") {
+      i++;
+      return a ** pow();
+    }
+    return a;
+  };
+  const prod = (): number => {
+    let a = pow();
+    while (toks[i] === "*" || toks[i] === "/") a = toks[i++] === "*" ? a * pow() : a / pow();
+    return a;
+  };
+  const sum = (): number => {
+    let a = prod();
+    while (toks[i] === "+" || toks[i] === "-") a = toks[i++] === "+" ? a + prod() : a - prod();
+    return a;
+  };
+  const v = sum();
+  return bad || i !== toks.length || !Number.isFinite(v) ? null : v;
+}
+
+/** A parameter value as icon text: computed expressions shown as their number. */
+function shownValue(v: string, lookup: (name: string) => string | null): string {
+  if (!/[-+*/^(]/.test(v.replace(/^-/, "")) && !/[A-Za-z]/.test(v)) return v;
+  if (/^\s*(true|false|"[^"]*")\s*$/.test(v)) return v;
+  const x = evalNum(v, lookup);
+  if (x === null) return v;
+  return String(Number(x.toPrecision(4)));
+}
+
 function substitution(comp: ComponentInfo | null, cls: ClassInfo, classes: Map<string, ClassInfo>): (s: string) => string {
+  const lookup = (n: string) => paramText(n, comp, cls, classes);
   return (s: string) =>
     s.replace(/%%|%\{?([A-Za-z_][A-Za-z0-9_.]*)\}?/g, (all, name: string | undefined) => {
       if (all === "%%") return "%";
       if (!name) return all;
       if (name === "name") return comp?.name ?? cls.name;
       if (name === "class") return cls.name;
-      const mod = comp?.modifiers.find(([k]) => k === name);
-      if (mod) return mod[1];
-      // default value of a parameter of the class (or one of its bases)
-      for (const c of [cls, ...cls.extends.map((e) => classes.get(e)).filter((x): x is ClassInfo => !!x)]) {
-        const p = c.components.find((x) => x.name === name);
-        if (p?.binding) return p.binding;
-      }
-      return name;
+      const v = lookup(name);
+      return v === null ? name : shownValue(v, lookup);
     });
 }
 
@@ -311,13 +479,19 @@ export async function drawIcon(
   depth = 0,
 ): Promise<void> {
   const saved = ctx.subst;
+  const savedCond = ctx.cond;
   ctx.subst = substitution(comp, cls, classes);
+  ctx.cond = condition(comp, cls, classes);
   drawGraphics(parent, cls.icon.graphics, m, ctx);
   ctx.subst = saved;
+  const visible = ctx.cond;
+  ctx.cond = savedCond;
   if (depth > 2) return;
   const inner = systemExtent(cls.icon.coordinate_system);
   for (const c of cls.components) {
     if (c.protected || c.type_kind !== "connector" || !c.type_path || !c.placement) continue;
+    // A conditional connector that is switched off (`heatPort if useHeatPort`) is not drawn.
+    if (c.condition && visible(c.condition) === false) continue;
     const pl = c.placement as AnnRecord;
     const tr = (pl.iconTransformation ?? pl.transformation) as AnnRecord | undefined;
     const sub = await src.get(c.type_path);
@@ -337,7 +511,7 @@ export function newCtx(svg: SVGSVGElement): RenderCtx {
     defs = el("defs", {});
     svg.appendChild(defs);
   }
-  return { defs, defIds: new Map(), subst: (s) => s };
+  return { defs, defIds: new Map(), subst: (s) => s, cond: () => null };
 }
 
 export { el };

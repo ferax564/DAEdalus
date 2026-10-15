@@ -40,20 +40,22 @@
 ### Modelica Standard Library coverage
 
 The MSL 4.x sweep is `daedalus test-library <MSL> -m Modelica`:
-**261 of 534** example models translate and simulate (up from 110). Now
-covered: MultiBody, overconstrained connectors (`Connections.branch`/`root`),
-`Complex` and the QuasiStatic libraries, `CombiTable1D`/`CombiTimeTable`, and
-expandable connectors. The largest remaining groups of failures, which are the
-next work items:
+**441 of 534** example models translate and simulate (up from 261, and 110
+before that). Recently covered: `Modelica.Media` (IF97 water, R134a, ideal-gas
+mixtures, moist air, reference air) and most `Modelica.Fluid` examples, through
+compiled run-time functions with exact forward-mode partials, Dymola-style
+preferred-state selection and record constants from modifiers. The remaining
+failures, which are the next work items:
 
-| Failures | Missing feature |
+| Failures | Cause |
 | ---: | --- |
-| 73 | Synchronous `Clock` models (`Modelica.Clocked` and the clocked blocks) |
-| ~40 | Media: `extends` depth on deeply nested packages, string-valued substance names in numeric context, and function evaluation over record states |
-| ~25 | Array sizes and subscripts in record and matrix bindings (for example the battery `cellData` tables) |
-| 14 | External C functions (`Modelica.Math.Random`, `Streams.writeRealMatrix`) |
-| ~10 | Index reduction and initialization of a few FundamentalWave machines and rectifiers |
-| 1 | RobotR3 `OneAxis`/`FullRobot`: bearing friction stick-slip makes events chatter; the run stops with a clear error |
+| ~30 | Stiff or discontinuous runs that stop with "step size too small" or reach the wall-clock limit (Spice3 transistors, digital circuits, some Fluid start-ups such as `HeatingSystem`) |
+| 12 | External C functions (`Modelica.Math.Random`, `Streams`, FFT, `Utilities`) |
+| ~10 | Function bodies: `return` under a time-varying condition, missing defaulted inputs in nested calls, vector size checks |
+| ~10 | Subscripts on non-array components and non-constant subscripts in bindings |
+| 6 | Friction and thyristor events that chatter (clutches, RobotR3 bearing friction) |
+| ~5 | Initialization of nonlinear systems (R134a two-volume system, op-amp circuits, rolling wheel) |
+| 3 | Synchronous `Clock` partitions |
 
 `CombiTable2D` is not supported yet.
 

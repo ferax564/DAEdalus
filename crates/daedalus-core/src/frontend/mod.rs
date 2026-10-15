@@ -5,6 +5,7 @@
 
 pub mod inspect;
 pub mod inst;
+pub mod lazy;
 pub mod overconstrained;
 pub mod tree;
 
@@ -25,6 +26,9 @@ pub struct Document {
 #[derive(Default)]
 pub struct Library {
     pub docs: Vec<Document>,
+    /// Library files registered for on-demand parsing, by path and by class.
+    pub lazy: Vec<lazy::LazyFile>,
+    lazy_index: rustc_hash::FxHashMap<String, usize>,
 }
 
 impl Library {
@@ -78,6 +82,8 @@ impl Library {
             .unwrap_or(1)
             .min(16);
         let next = std::sync::atomic::AtomicUsize::new(0);
+        let cache_dir = lazy::cache::dir();
+        let cache_dir = cache_dir.as_deref();
         let mut docs: Vec<(usize, Document)> = std::thread::scope(|sc| {
             let handles: Vec<_> = (0..threads)
                 .map(|_| {
@@ -90,7 +96,10 @@ impl Library {
                             }
                             let p = &files[i];
                             if let Ok(text) = std::fs::read_to_string(p) {
-                                out.push((i, parse_document(&p.to_string_lossy(), &text)));
+                                out.push((
+                                    i,
+                                    lazy::cache::parse(cache_dir, &p.to_string_lossy(), &text),
+                                ));
                             }
                         }
                         out

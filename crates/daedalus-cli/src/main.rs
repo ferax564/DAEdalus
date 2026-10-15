@@ -35,6 +35,8 @@ OPTIONS:
   --tol TOL               relative tolerance (default 1e-6)
   --method M              bdf | dopri5 | rk4 | euler
   --step H                fixed step size
+  --store-events E        rows at events: all | none | N (default: about
+                          50 million values, at least the output points)
   -p, --param NAME=VALUE  parameter override (repeatable)
   -o, --output FILE       result file (.mat Dymola format, or .csv)
   --vars a,b,c            variables written to CSV / printed
@@ -68,6 +70,7 @@ fn run() -> anyhow::Result<()> {
     let mut set_start = false;
     let mut set_stop = false;
     let mut set_tol = false;
+    let mut set_intervals = false;
     let mut set_method = false;
     let mut output = None;
     let mut vars: Option<Vec<String>> = None;
@@ -95,7 +98,10 @@ fn run() -> anyhow::Result<()> {
                 set_stop = true
             }
             "--interval" => so.interval = next(&mut i)?.parse()?,
-            "-n" | "--intervals" => so.intervals = next(&mut i)?.parse()?,
+            "-n" | "--intervals" => {
+                so.intervals = next(&mut i)?.parse()?;
+                set_intervals = true
+            }
             "--tol" => {
                 so.tolerance = next(&mut i)?.parse()?;
                 set_tol = true
@@ -106,6 +112,11 @@ fn run() -> anyhow::Result<()> {
                     Method::parse(&m).ok_or_else(|| anyhow::anyhow!("unknown method '{m}'"))?;
                 set_method = true;
             }
+            "--store-events" => match next(&mut i)?.as_str() {
+                "all" => so.max_event_rows = usize::MAX,
+                "none" => so.store_events = false,
+                n => so.max_event_rows = n.parse()?,
+            },
             "--step" => so.fixed_step = next(&mut i)?.parse()?,
             "-p" | "--param" => {
                 let kv = next(&mut i)?;
@@ -138,13 +149,20 @@ fn run() -> anyhow::Result<()> {
         libs.push(dir);
     }
     let t0 = Instant::now();
+    // One model needs only part of a library: parse just the files it can reach
+    // (test-library lists every model, so it parses everything).
+    let lazy = cmd != "test-library";
     for s in libs.iter().chain(sources.iter()) {
         let p = Path::new(s);
         if p.is_dir() {
-            lib.load_dir(p)?;
-            for d in &lib.docs {
-                for e in d.errors.iter().take(3) {
-                    eprintln!("{e}");
+            if lazy {
+                lib.add_dir_lazy(p)?;
+            } else {
+                lib.load_dir(p)?;
+                for d in &lib.docs {
+                    for e in d.errors.iter().take(3) {
+                        eprintln!("{e}");
+                    }
                 }
             }
         } else {
@@ -154,16 +172,36 @@ fn run() -> anyhow::Result<()> {
             }
         }
     }
+    if lazy && lib.has_pending() {
+        let before = lib.docs.len();
+        lib.load_for(&model);
+        if std::env::var_os("DAEDALUS_DEBUG_LAZY").is_some() {
+            let bytes: usize = lib.docs[before..].iter().map(|d| d.text.len()).sum();
+            eprintln!(
+                "parsed {} files, {} kB",
+                lib.docs.len() - before,
+                bytes / 1000
+            );
+            for d in &lib.docs[before..] {
+                eprintln!("  {} {}", d.text.len() / 1000, d.uri);
+            }
+        }
+        for d in &lib.docs[before..] {
+            for e in d.errors.iter().take(3) {
+                eprintln!("{e}");
+            }
+        }
+    }
     let t_parse = t0.elapsed();
     match cmd.as_str() {
         "flatten" => {
-            let f = lib.flatten(&model)?;
+            let f = with_all_files(&mut lib, |l| l.flatten(&model))?;
             print!("{}", f.dump());
             Ok(())
         }
         "dump" | "check" => {
             let t1 = Instant::now();
-            let flat = lib.flatten(&model)?;
+            let flat = with_all_files(&mut lib, |l| l.flatten(&model))?;
             let t_flat = t1.elapsed();
             let sys = daedalus_core::backend::compile(flat, &opts)?;
             for w in &sys.warnings {
@@ -219,7 +257,7 @@ fn run() -> anyhow::Result<()> {
         }
         "simulate" => {
             let t1 = Instant::now();
-            let m = daedalus_core::translate(&lib, &model, &opts)?;
+            let m = with_all_files(&mut lib, |l| daedalus_core::translate(l, &model, &opts))?;
             let t_tr = t1.elapsed();
             for w in &m.warnings {
                 eprintln!("warning: {w}");
@@ -239,9 +277,14 @@ fn run() -> anyhow::Result<()> {
             }
             if so.interval > 0.0 {
                 o.interval = so.interval;
+            } else if set_intervals {
+                // An explicit interval count replaces the experiment's Interval.
+                o.interval = 0.0;
             }
             o.intervals = so.intervals;
             o.fixed_step = so.fixed_step;
+            o.store_events = so.store_events;
+            o.max_event_rows = so.max_event_rows;
             o.params = so.params.clone();
             let (res, stats) = match daedalus_core::sim::simulate(&m, o) {
                 Ok(r) => r,
@@ -306,7 +349,7 @@ fn run() -> anyhow::Result<()> {
         "probe" => {
             // Internal: used by test-library to isolate one model per process.
             let t = Instant::now();
-            let m = match daedalus_core::translate(&lib, &model, &opts) {
+            let m = match with_all_files(&mut lib, |l| daedalus_core::translate(l, &model, &opts)) {
                 Ok(m) => m,
                 Err(e) => {
                     println!(
@@ -511,4 +554,21 @@ fn categorize(msg: &str) -> String {
         out.push(ch);
     }
     out.chars().take(120).collect()
+}
+
+/// Run `f`; if it fails while library files are still unparsed (a class the file scan
+/// could not see), parse the rest and run it again.
+fn with_all_files<T>(
+    lib: &mut Library,
+    f: impl Fn(&Library) -> anyhow::Result<T>,
+) -> anyhow::Result<T> {
+    let r = f(lib);
+    if r.is_err() && lib.has_pending() {
+        if std::env::var_os("DAEDALUS_DEBUG_LAZY").is_some() {
+            eprintln!("lazy load fell back to the whole library");
+        }
+        lib.load_all();
+        return f(lib);
+    }
+    r
 }

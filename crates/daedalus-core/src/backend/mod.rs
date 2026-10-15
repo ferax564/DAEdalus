@@ -89,6 +89,8 @@ pub struct System {
     pub blocks: Vec<Block>,
     /// Initialization blocks: compute states and all unknowns at t0.
     pub init_blocks: Vec<Block>,
+    /// `(v, p)`: initialization solved `pre(v)` as variable `p`.
+    pub pre_init: Vec<(VarId, VarId)>,
     pub whens: Vec<WhenClause>,
     pub asserts: Vec<(ExprId, String)>,
     pub aliases: Vec<Alias>,
@@ -130,6 +132,10 @@ pub struct Work {
     pub invariant: FxHashSet<VarId>,
     /// The equations that define the `invariant` unknowns.
     pub invariant_eqs: FxHashSet<usize>,
+    /// Variables only the initialization problem determines (`fixed = false` parameters).
+    pub init_only: FxHashSet<VarId>,
+    /// `(v, p)`: initialization solved `pre(v)` as variable `p`.
+    pub pre_init: Vec<(VarId, VarId)>,
 }
 
 impl Work {
@@ -237,6 +243,61 @@ pub fn compile(flat: FlatModel, opts: &Options) -> Result<System> {
         experiment,
         warnings,
     } = flat;
+    let mut vars = vars;
+    let mut arena = arena;
+    let mut initial_equations = initial_equations;
+    let mut origins = origins;
+    // Parameters with `fixed = false` are unknowns of the initialization problem and
+    // constant afterwards, as are parameters whose bindings depend on them. They become
+    // discrete variables that only initialization assigns.
+    let mut init_only: FxHashSet<VarId> = FxHashSet::default();
+    for (i, v) in vars.iter().enumerate() {
+        if v.kind == VarKind::Parameter && v.fixed == Some(false) {
+            init_only.insert(i as VarId);
+        }
+    }
+    if !init_only.is_empty() {
+        loop {
+            let mut grew = false;
+            for (i, v) in vars.iter().enumerate() {
+                if v.kind != VarKind::Parameter || init_only.contains(&(i as VarId)) {
+                    continue;
+                }
+                let Some(b) = v.binding else { continue };
+                let mut dep = false;
+                arena.visit_leaves(b, &mut |n| {
+                    if let Node::Var(x) = n
+                        && init_only.contains(&x)
+                    {
+                        dep = true;
+                    }
+                });
+                if dep {
+                    init_only.insert(i as VarId);
+                    grew = true;
+                }
+            }
+            if !grew {
+                break;
+            }
+        }
+        let mut ids: Vec<VarId> = init_only.iter().copied().collect();
+        ids.sort();
+        for v in ids {
+            let var = &mut vars[v as usize];
+            var.kind = VarKind::Discrete;
+            if let Some(b) = var.binding.take() {
+                let lhs = arena.var(v);
+                origins.push(format!("binding of {}", var.name));
+                initial_equations.push(crate::flat::Equation {
+                    lhs,
+                    rhs: b,
+                    origin: origins.len() as u32 - 1,
+                });
+            }
+            var.fixed = None;
+        }
+    }
     let n = vars.len();
     let mut when_assigned = FxHashSet::default();
     for w in &whens {
@@ -248,6 +309,7 @@ pub fn compile(flat: FlatModel, opts: &Options) -> Result<System> {
             }
         }
     }
+    when_assigned.extend(init_only.iter().copied());
     let unknown: Vec<bool> = vars
         .iter()
         .enumerate()
@@ -293,6 +355,8 @@ pub fn compile(flat: FlatModel, opts: &Options) -> Result<System> {
         dummy: FxHashSet::default(),
         invariant: FxHashSet::default(),
         invariant_eqs: FxHashSet::default(),
+        init_only,
+        pre_init: Vec::new(),
     };
 
     // 1. Parameters
@@ -302,6 +366,11 @@ pub fn compile(flat: FlatModel, opts: &Options) -> Result<System> {
         .collect();
     let mut discretes: Vec<VarId> = w.when_assigned.iter().copied().collect();
     discretes.sort();
+
+    // Final parameters that are zero drop out of the equations before any structural
+    // analysis: `ir*m_resist = p.v - pin` with `m_resist = 0` is `p.v = pin`, not an
+    // equation for `ir` (Spice3 diodes without series resistance).
+    fold_final_zeros(&mut w);
 
     // 2. Alias elimination
     let removed = alias::eliminate(&mut w);
@@ -368,6 +437,45 @@ pub fn compile(flat: FlatModel, opts: &Options) -> Result<System> {
     {
         // purely discrete / parametric model is fine
     }
+    // Variables read through pre() outside when-clauses (`y = pre(aux)` in the Digital
+    // gates): the event iteration also runs until they settle.
+    {
+        let mut roots: Vec<ExprId> = w.eqs.iter().flat_map(|e| [e.lhs, e.rhs]).collect();
+        for wc in &w.whens {
+            for (c, acts) in &wc.branches {
+                roots.push(*c);
+                for a in acts {
+                    match a {
+                        WhenAction::Assign(_, e)
+                        | WhenAction::Reinit(_, e)
+                        | WhenAction::Assert(e, _) => roots.push(*e),
+                        WhenAction::Terminate(_) => {}
+                    }
+                }
+            }
+        }
+        let mut pre_read = FxHashSet::default();
+        for r in roots {
+            w.arena.visit_leaves(r, &mut |n| {
+                if let Node::Pre(v) = n {
+                    pre_read.insert(v);
+                }
+            });
+        }
+        let known: FxHashSet<VarId> = discretes.iter().copied().collect();
+        let mut extra: Vec<VarId> = pre_read
+            .into_iter()
+            .filter(|v| !known.contains(v) && !state_set.contains(v))
+            .filter(|&v| {
+                !matches!(
+                    w.vars[v as usize].kind,
+                    VarKind::Parameter | VarKind::Constant
+                )
+            })
+            .collect();
+        discretes.append(&mut extra);
+        discretes.sort();
+    }
     let der_of = w.der_of.clone();
     Ok(System {
         name,
@@ -381,6 +489,7 @@ pub fn compile(flat: FlatModel, opts: &Options) -> Result<System> {
         discretes,
         blocks,
         init_blocks,
+        pre_init: w.pre_init,
         whens: w.whens,
         asserts: w.asserts,
         aliases: w.aliases,
@@ -550,5 +659,33 @@ impl System {
             serde_json::to_string(&self.stats).unwrap_or_default()
         );
         s
+    }
+}
+
+/// Replace final parameters whose value is exactly zero by the constant 0.
+fn fold_final_zeros(w: &mut Work) {
+    let zero: FxHashSet<VarId> = (0..w.vars.len() as VarId)
+        .filter(|&v| {
+            let var = &w.vars[v as usize];
+            var.is_final
+                && matches!(var.kind, VarKind::Parameter | VarKind::Constant)
+                && var.ty == VarType::Real
+                && w.param_values[v as usize] == 0.0
+        })
+        .collect();
+    if zero.is_empty() {
+        return;
+    }
+    let mut memo = FxHashMap::default();
+    let mut fold = |arena: &mut Arena, e: ExprId| {
+        arena.rewrite(e, &mut memo, &mut |_, n| match n {
+            Node::Var(v) if zero.contains(&v) => Some(Arena::ZERO),
+            _ => None,
+        })
+    };
+    for i in 0..w.eqs.len() {
+        let (l, r) = (w.eqs[i].lhs, w.eqs[i].rhs);
+        w.eqs[i].lhs = fold(&mut w.arena, l);
+        w.eqs[i].rhs = fold(&mut w.arena, r);
     }
 }

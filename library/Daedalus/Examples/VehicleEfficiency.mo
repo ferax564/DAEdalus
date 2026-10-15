@@ -77,7 +77,7 @@ loss model, 9:1 reduction, 75 kWh pack. The NEDC table is the regulation's segme
     Real v_kmh(unit="km/h") = body.v*3.6;
     Units.Force F_decel = -(body.m + body.J_wheels/body.R_wheel^2)*body.a "Road load from the deceleration";
   equation
-    body.axle.tau = 0;
+    // body.axle is left unconnected: its torque is zero (neutral gear).
     when body.v < 15/3.6 then
       terminate("coast-down reached 15 km/h");
     end when;

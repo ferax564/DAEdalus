@@ -8,7 +8,7 @@
 
 use super::graph::{NONE, augment, augment_traced};
 use super::{Eq, Work, eval};
-use crate::expr::{Arena, ExprId, Node, VarId};
+use crate::expr::{Arena, ExprId, Fn1, Node, VarId};
 use crate::flat::{StateSelect, VarKind, VarType, Variable, WhenAction};
 use anyhow::{Result, bail};
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -93,6 +93,18 @@ impl Work {
 /// zero, so index reduction does not differentiate the equations that define them.
 pub fn find_invariant(w: &mut Work) {
     let mut invariant: FxHashSet<VarId> = FxHashSet::default();
+    // A variable the model differentiates itself (an inductor current forced to zero by
+    // an open terminal) is left to index reduction.
+    let mut differentiated: FxHashSet<VarId> = FxHashSet::default();
+    for eq in &w.eqs {
+        for root in [eq.lhs, eq.rhs] {
+            w.arena.visit_all_leaves(root, &mut |n| {
+                if let Node::Der(v) = n {
+                    differentiated.insert(v);
+                }
+            });
+        }
+    }
     let mut done = vec![false; w.eqs.len()];
     let mut defining = Vec::new();
     loop {
@@ -116,6 +128,7 @@ pub fn find_invariant(w: &mut Work) {
                         if !w.unknown[v as usize]
                             || !matches!(var.kind, VarKind::Continuous | VarKind::Discrete)
                             || w.when_assigned.contains(&v)
+                            || differentiated.contains(&v)
                         {
                             varying = true;
                         } else if free != Some(v) {
@@ -316,6 +329,7 @@ fn unmatched_hint(w: &Work) -> String {
 /// with `parent`/`derived` links; new derivative variables are created on demand.
 pub fn pantelides(w: &mut Work) -> Result<()> {
     check_balance(w)?;
+    prefer_state_change(w);
     let n_orig = w.eqs.len();
     // Time-invariant unknowns and their defining equations are solved like parameters:
     // they take no part in index reduction.
@@ -345,10 +359,15 @@ pub fn pantelides(w: &mut Work) -> Result<()> {
     let mut stamp = 0u32;
     let max_eqs = 8 * n_orig.max(16) + 1000;
     for k in 0..n_orig {
-        if invariant_eqs.contains(&k) {
+        if invariant_eqs.contains(&k) || w.eqs[k].parent.is_some() {
             continue;
         }
+        // Equations already differentiated (by the state change) start at their
+        // highest derivative.
         let mut i = k;
+        while let Some(d) = w.eqs[i].derived {
+            i = d;
+        }
         let mut level = 0;
         loop {
             stamp += 1;
@@ -431,6 +450,133 @@ pub fn pantelides(w: &mut Work) -> Result<()> {
     Ok(())
 }
 
+/// Make unknowns with `stateSelect = prefer/always` that do not appear differentiated
+/// candidates for states, as Dymola does: the algebraic equations that compute them from
+/// the natural states (`m = V*d(p, h)`, `U = m*u(p, h)` for a medium volume with mass and
+/// energy balances) are differentiated, so the dummy-derivative selection can pick the
+/// preferred variables (`p`, `h`) as states and turn the natural ones into algebraic
+/// variables. The states then enter the medium functions directly instead of through a
+/// nonlinear system solved at every step.
+fn prefer_state_change(w: &mut Work) {
+    let nv = w.vars.len();
+    let preferred: Vec<VarId> = (0..nv as VarId)
+        .filter(|&v| {
+            let x = &w.vars[v as usize];
+            w.unknown[v as usize]
+                && w.der_of[v as usize].is_none()
+                && w.base_of[v as usize].is_none()
+                && !w.invariant.contains(&v)
+                && x.ty == VarType::Real
+                && x.kind == VarKind::Continuous
+                && matches!(x.state_select, StateSelect::Prefer | StateSelect::Always)
+        })
+        .collect();
+    if preferred.is_empty() {
+        return;
+    }
+    // Algebraic part: equations without derivative variables, over unknowns that are
+    // neither natural states nor derivatives.
+    let is_alg = |w: &Work, v: VarId| {
+        w.der_of[v as usize].is_none()
+            && w.base_of[v as usize].is_none()
+            && !w.invariant.contains(&v)
+    };
+    let mut alg_eqs: Vec<usize> = Vec::new();
+    let mut adj: Vec<Vec<u32>> = Vec::new();
+    let mut touches_state: Vec<bool> = Vec::new();
+    for (k, e) in w.eqs.iter().enumerate() {
+        if w.invariant_eqs.contains(&k) || e.derived.is_some() || e.parent.is_some() {
+            continue;
+        }
+        let u = w.eq_unknowns(e);
+        if u.iter().any(|&v| w.base_of[v as usize].is_some()) {
+            continue;
+        }
+        let a: Vec<u32> = u.iter().copied().filter(|&v| is_alg(w, v)).collect();
+        if a.is_empty() {
+            // a constraint between states: index reduction proper handles it
+            return;
+        }
+        touches_state.push(u.iter().any(|&v| w.der_of[v as usize].is_some()));
+        alg_eqs.push(k);
+        adj.push(a);
+    }
+    let mut eq_match = vec![NONE; alg_eqs.len()];
+    let mut var_match = vec![NONE; nv];
+    let mut visited_eq = vec![0u32; alg_eqs.len()];
+    let mut visited_var = vec![0u32; nv];
+    let active = |_: u32| true;
+    for e in 0..alg_eqs.len() {
+        augment(
+            e,
+            &adj,
+            &mut eq_match,
+            &mut var_match,
+            &mut visited_eq,
+            &mut visited_var,
+            e as u32 + 1,
+            &active,
+        );
+    }
+    // For each preferred variable, the equations it depends on (transitively).
+    let mut chosen: Vec<bool> = vec![false; alg_eqs.len()];
+    for &p in &preferred {
+        if var_match[p as usize] == NONE {
+            continue;
+        }
+        let mut seen_eq: FxHashSet<u32> = FxHashSet::default();
+        let mut stack = vec![p];
+        let mut seen_var: FxHashSet<VarId> = FxHashSet::default();
+        seen_var.insert(p);
+        let mut reaches_state = false;
+        let mut complete = true;
+        while let Some(v) = stack.pop() {
+            let e = var_match[v as usize];
+            if e == NONE {
+                complete = false;
+                break;
+            }
+            if !seen_eq.insert(e) {
+                continue;
+            }
+            reaches_state |= touches_state[e as usize];
+            for &u in &adj[e as usize] {
+                if seen_var.insert(u) {
+                    stack.push(u);
+                }
+            }
+        }
+        if complete && reaches_state {
+            for e in seen_eq {
+                chosen[e as usize] = true;
+            }
+        }
+    }
+    let todo: Vec<usize> = (0..alg_eqs.len())
+        .filter(|&e| chosen[e])
+        .map(|e| alg_eqs[e])
+        .collect();
+    for l in todo {
+        let eq = w.eqs[l];
+        for v in w.eq_unknowns(&eq) {
+            if !w.invariant.contains(&v) {
+                w.der_var(v);
+            }
+        }
+        let lhs = w.time_derivative(eq.lhs);
+        let rhs = w.time_derivative(eq.rhs);
+        w.eqs.push(Eq {
+            lhs,
+            rhs,
+            origin: eq.origin,
+            parent: Some(l),
+            derived: None,
+        });
+        let ni = w.eqs.len() - 1;
+        w.eqs[l].derived = Some(ni);
+    }
+}
+
 /// Structural pseudo-random perturbation used for numeric rank checks.
 fn perturb(v: VarId) -> f64 {
     let mut x = (v as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0xD1B5_4A32_D192_ED03;
@@ -441,7 +587,7 @@ fn perturb(v: VarId) -> f64 {
 }
 
 /// Preference for a derivative variable to become a dummy (higher = more willing).
-fn dummy_preference(w: &Work, z: VarId) -> i64 {
+fn dummy_preference(w: &Work, trig: &FxHashSet<VarId>, nl: &FxHashSet<VarId>, z: VarId) -> i64 {
     // Making `z` a dummy derivative removes its base from the state vector.
     let base = w.base_of[z as usize].unwrap();
     let var = &w.vars[base as usize];
@@ -463,8 +609,16 @@ fn dummy_preference(w: &Work, z: VarId) -> i64 {
     if var.generated {
         s += 50;
     }
+    if trig.contains(&base) {
+        s += 1000;
+    }
     if var.fixed == Some(true) {
         s -= 20;
+    }
+    // `cbc*der(vbc)` (a junction charge with a state-dependent capacitance) makes a worse
+    // state than `C*der(v)`: prefer bases whose derivatives enter with constant factors.
+    if nl.contains(&z) {
+        s += 10;
     }
     // Later declared variables first (mimics Dymola's tie-breaking).
     s * 1_000_000 + base as i64
@@ -504,6 +658,7 @@ pub fn select_states(w: &mut Work) -> Result<Vec<VarId>> {
             }
         }
         let max_c = chains.iter().map(|c| c.len() - 1).max().unwrap();
+        let trig = trig_defined(w);
         // Candidates for step 1: highest derivatives that are derivative variables.
         let mut candidates: Option<Vec<VarId>> = None;
         for k in 1..=max_c {
@@ -539,8 +694,9 @@ pub fn select_states(w: &mut Work) -> Result<Vec<VarId>> {
             };
             // Order columns by preference (most willing to become dummy first).
             let mut cols = cols;
-            cols.sort_by_key(|&z| -dummy_preference(w, z));
-            let tiers: Vec<i64> = cols.iter().map(|&z| dummy_tier(w, z)).collect();
+            let nl = nonconstant_der_coeff(w, &cols);
+            cols.sort_by_key(|&z| -dummy_preference(w, &trig, &nl, z));
+            let tiers: Vec<i64> = cols.iter().map(|&z| dummy_tier(w, &trig, &nl, z)).collect();
             // Jacobian H = dg/dz evaluated numerically, stored sparsely: only columns that
             // occur in an equation can have a nonzero derivative.
             let col_of: FxHashMap<VarId, usize> =
@@ -741,16 +897,95 @@ fn select_columns_sparse(h: &[Vec<(usize, f64)>], ncols: usize, need: usize) -> 
     chosen
 }
 
+/// Derivative variables among `cols` that some original equation multiplies by a factor
+/// depending on unknowns.
+fn nonconstant_der_coeff(w: &mut Work, cols: &[VarId]) -> FxHashSet<VarId> {
+    let want: FxHashSet<VarId> = cols.iter().copied().collect();
+    let mut out = FxHashSet::default();
+    for e in 0..w.eqs.len() {
+        if w.eqs[e].parent.is_some() {
+            continue;
+        }
+        let (l, r) = (w.eqs[e].lhs, w.eqs[e].rhs);
+        let mut zs = Vec::new();
+        for x in [l, r] {
+            w.arena.visit_leaves(x, &mut |n| {
+                if let Node::Var(v) = n
+                    && want.contains(&v)
+                    && !zs.contains(&v)
+                {
+                    zs.push(v);
+                }
+            });
+        }
+        if zs.is_empty() {
+            continue;
+        }
+        let res = w.arena.sub(l, r);
+        for z in zs {
+            let d = w.arena.diff(res, Node::Var(z), &mut FxHashMap::default());
+            if w.arena.vars_in(&[d]).iter().any(|&v| w.unknown[v as usize]) {
+                out.insert(z);
+            }
+        }
+    }
+    out
+}
+
 /// Coarse preference tier (stateSelect of the base variable); pivoting happens within a tier.
-fn dummy_tier(w: &Work, z: VarId) -> i64 {
+fn dummy_tier(w: &Work, trig: &FxHashSet<VarId>, nl: &FxHashSet<VarId>, z: VarId) -> i64 {
     let base = w.base_of[z as usize].unwrap();
-    match w.vars[base as usize].state_select {
+    let t = match w.vars[base as usize].state_select {
         StateSelect::Never => 4,
         StateSelect::Avoid => 3,
         StateSelect::Default => 2,
         StateSelect::Prefer => 1,
         StateSelect::Always => 0,
+    };
+    4 * t + 2 * i64::from(trig.contains(&base)) + i64::from(nl.contains(&z))
+}
+
+/// Unknowns defined as the sine or cosine of another unknown (`rotator.im = sin(gamma)`).
+/// As states they lose the angle at the turning points (`gamma` is not determined by
+/// `sin(gamma)` at `pi/2`), so the angle is preferred within the same stateSelect tier.
+fn trig_defined(w: &Work) -> FxHashSet<VarId> {
+    let mut out = FxHashSet::default();
+    for eq in &w.eqs {
+        if eq.parent.is_some() {
+            continue;
+        }
+        for (a, b) in [(eq.lhs, eq.rhs), (eq.rhs, eq.lhs)] {
+            let Node::Var(v) = w.arena.node(a) else {
+                continue;
+            };
+            // `-sin(gamma)`, `k*cos(gamma)` count too.
+            let mut b = b;
+            loop {
+                match w.arena.node(b) {
+                    Node::Neg(x) => b = x,
+                    Node::Mul(x, y) if matches!(w.arena.node(x), Node::Const(_)) => b = y,
+                    Node::Mul(x, y) if matches!(w.arena.node(y), Node::Const(_)) => b = x,
+                    _ => break,
+                }
+            }
+            let Node::F1(Fn1::Sin | Fn1::Cos, x) = w.arena.node(b) else {
+                continue;
+            };
+            let mut other = false;
+            w.arena.visit_leaves(x, &mut |n| {
+                if let Node::Var(y) = n
+                    && y != v
+                    && w.unknown[y as usize]
+                {
+                    other = true;
+                }
+            });
+            if other {
+                out.insert(v);
+            }
+        }
     }
+    out
 }
 
 /// Column selection by Gram-Schmidt with column pivoting: columns are taken tier by tier

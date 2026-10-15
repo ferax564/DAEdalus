@@ -35,6 +35,8 @@ let current: ClassInfo | null = null;
 let view: ViewKind | "text" | "doc" | "flat" = "diagram";
 let mode: "modeling" | "simulation" = "modeling";
 let summary: SimSummary | null = null;
+/** Model the variables in `summary` belong to. */
+let summaryPath = "";
 const overrides = new Map<string, number>();
 const docs = new Map<string, string>();
 
@@ -280,6 +282,7 @@ async function openClass(path: string) {
   history.replaceState(null, "", `#${encodeURIComponent(path)}`);
   if (view !== "text" && view !== "doc" && view !== "flat") view = info.kind !== "connector" && info.kind !== "package" && info.components.some((c) => c.type_kind !== "type" && !c.protected) ? "diagram" : "icon";
   renderTree();
+  renderVariables();
   showInspector(null);
   await showView();
 }
@@ -327,6 +330,7 @@ async function simulate() {
   try {
     const s = await api.simulate(name, settings());
     summary = s;
+    summaryPath = name;
     if (!s.ok) {
       log(s.error ?? "simulation failed", "err");
       if (!s.vars?.length) return;
@@ -398,6 +402,13 @@ function renderVariables() {
   const host = $("variables");
   host.innerHTML = "";
   if (!summary) return;
+  if (current && summaryPath !== current.path) {
+    // Like a result file kept loaded: say which model these variables come from.
+    const note = document.createElement("div");
+    note.className = "var-note";
+    note.textContent = `Results of ${summaryPath}. Simulate to list ${current.path.split(".").pop()}.`;
+    host.appendChild(note);
+  }
   const filter = ($("var-filter") as HTMLInputElement).value.trim().toLowerCase();
   const root: VarNode = { name: "", full: "", kids: new Map() };
   for (const v of summary.vars) {
