@@ -1,0 +1,4 @@
+# WebAssembly SIMD (128-bit vectors) lets LLVM vectorise the solver's dense loops in the
+# browser build; every current browser supports it (Chrome 91, Firefox 89, Safari 16.4).
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "target-feature=+simd128"]

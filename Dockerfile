@@ -13,6 +13,7 @@ RUN curl -fsSL "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/$
     && mv /tmp/wasm-bindgen-${WASM_BINDGEN_VERSION}-x86_64-unknown-linux-musl/wasm-bindgen /usr/local/bin/
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
+COPY .cargo ./.cargo
 COPY crates ./crates
 ENV CARGO_NET_GIT_FETCH_WITH_CLI=true
 RUN cargo build -p daedalus-wasm --profile release-wasm --target wasm32-unknown-unknown \
@@ -34,6 +35,8 @@ COPY library /src/library
 # docs/conformance feeds the scoreboard page (scripts/copy-conformance.mjs).
 COPY docs /src/docs
 COPY --from=wasm /out ./src/wasm
+# Binaryen's optimizer: a faster and about 20% smaller module than rustc alone.
+RUN npm run wasm-opt
 RUN npm run build
 
 # 3. Serve the static bundle.

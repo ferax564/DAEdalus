@@ -39,8 +39,8 @@ pub struct Workspace {
     results: Option<Results>,
     /// Classes whose registered library files are parsed already: (class, full).
     ensured: std::collections::HashSet<(String, bool)>,
-    /// Translation reused by [`Workspace::simulate_run`] (sweeps): (model and state
-    /// overrides, compiled).
+    /// Translation reused by [`Workspace::simulate`] and [`Workspace::simulate_run`]:
+    /// (model and state overrides, compiled).
     compiled: Option<(String, daedalus_core::codegen::Model)>,
     /// Performance profile of the last simulation (JSON), when it was asked for.
     profile: Option<String>,
@@ -64,6 +64,8 @@ struct SimSummary<'a> {
     translate_ms: f64,
     /// Time spent parsing the registered library files the model needs.
     load_ms: f64,
+    /// The translation of the previous run was reused.
+    cached: bool,
     stats: Option<daedalus_core::sim::SimStats>,
     model_stats: Option<daedalus_core::backend::Stats>,
     experiment: Option<serde_json::Value>,
@@ -209,14 +211,21 @@ impl Workspace {
         let load_ms = self.ensure(model, Some(true));
         let t0 = now_ms();
         let bopts = backend_options(options);
-        let m = match daedalus_core::translate(&self.lib, model, &bopts) {
-            Ok(m) => m,
-            Err(e) => {
-                self.results = None;
-                return to_json(
-                    &serde_json::json!({"ok": false, "error": format!("{e:#}"), "model": model}),
-                );
-            }
+        // Running the same model again (only run-time settings or free parameters changed)
+        // reuses the last translation; any source change clears it (`set_document`).
+        let key = translation_key(model, &bopts);
+        let cached = self.compiled.as_ref().is_some_and(|(k, _)| *k == key);
+        let m = match self.compiled.take() {
+            Some((_, m)) if cached => m,
+            _ => match daedalus_core::translate(&self.lib, model, &bopts) {
+                Ok(m) => m,
+                Err(e) => {
+                    self.results = None;
+                    return to_json(
+                        &serde_json::json!({"ok": false, "error": format!("{e:#}"), "model": model}),
+                    );
+                }
+            },
         };
         let translate_ms = now_ms() - t0;
         let mut opts = SimOptions::from_model(&m);
@@ -276,7 +285,7 @@ impl Workspace {
                 }
             })
             .collect();
-        to_json(&SimSummary {
+        let out = to_json(&SimSummary {
             ok: error.is_none(),
             error,
             model,
@@ -286,10 +295,13 @@ impl Workspace {
             warnings: m.warnings.clone(),
             translate_ms,
             load_ms,
+            cached,
             stats,
             model_stats: Some(m.stats.clone()),
             experiment,
-        })
+        });
+        self.compiled = Some((key, m));
+        out
     }
 
     /// JSON performance profile and event log of the last simulation (`null` unless it
@@ -373,6 +385,12 @@ impl Workspace {
 }
 
 /// Backend options from a JSON options object: `"stateOverrides": [[name, tier], ...]`.
+/// Key of a cached translation: the model and the options that change its translation
+/// (state-selection overrides).
+fn translation_key(model: &str, bopts: &daedalus_core::backend::Options) -> String {
+    format!("{model}\0{:?}", bopts.state_overrides)
+}
+
 fn backend_options(options: &str) -> daedalus_core::backend::Options {
     use daedalus_core::backend::state_select::{StateOverride, parse_tier};
     let mut o = daedalus_core::backend::Options::default();
@@ -407,7 +425,7 @@ impl Workspace {
         let mut cached = true;
         // State-selection overrides change the translation, so they are part of the key.
         let bopts = backend_options(options);
-        let key = format!("{model}\0{:?}", bopts.state_overrides);
+        let key = translation_key(model, &bopts);
         if self.compiled.as_ref().is_none_or(|(n, _)| *n != key) {
             cached = false;
             match daedalus_core::translate(&self.lib, model, &bopts) {

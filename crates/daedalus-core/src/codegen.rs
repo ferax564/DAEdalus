@@ -2009,8 +2009,15 @@ impl<'m> Runtime<'m> {
         // A linear block normally converges in one step; if it does not (an ill-conditioned
         // or switching system), it continues as a damped Newton iteration.
         let max_iter = if self.step_cap > 0.0 { 400 } else { 50 };
+        // The damping test below evaluates the body at the accepted step; when it did, the
+        // registers already hold the residuals at the current tears, so the next iteration
+        // (or the final return) reuses them instead of evaluating the body again.
+        let mut body_fresh = false;
         for it in 0..max_iter {
-            self.run(&b.body);
+            if !body_fresh {
+                self.run(&b.body);
+            }
+            body_fresh = false;
             let norm = b
                 .residuals
                 .iter()
@@ -2213,6 +2220,7 @@ impl<'m> Runtime<'m> {
                 if (nn.is_finite() && nn < wnorm0 * (1.0 - 1e-4 * lambda) + 1e-300)
                     || (nu.is_finite() && nu < norm * (1.0 - 1e-4 * lambda) + 1e-300)
                 {
+                    body_fresh = true;
                     break;
                 }
                 lambda *= 0.5;
@@ -2221,7 +2229,9 @@ impl<'m> Runtime<'m> {
                 .map(|i| (lambda * rhs[i]).abs() / (1.0 + old[i].abs()))
                 .fold(0.0, f64::max);
             if step < 1e-13 {
-                self.run(&b.body);
+                if !body_fresh {
+                    self.run(&b.body);
+                }
                 return;
             }
         }
