@@ -5,6 +5,7 @@
 //! a million points costs one copy.
 
 use daedalus_core::frontend::{Library, edit, inspect, lazy};
+use daedalus_core::ide::{self, Ide};
 use daedalus_core::results::Results;
 use daedalus_core::sim::{SimOptions, simulate, simulate_profiled};
 use serde::Serialize;
@@ -37,6 +38,8 @@ pub fn version() -> String {
 #[derive(Default)]
 pub struct Workspace {
     lib: Library,
+    /// Editor intelligence state (the last parsing version of each edited document).
+    ide: Ide,
     results: Option<Results>,
     /// Classes whose registered library files are parsed already: (class, full).
     ensured: std::collections::HashSet<(String, bool)>,
@@ -132,6 +135,7 @@ impl Workspace {
     #[wasm_bindgen(js_name = removeDocument)]
     pub fn remove_document(&mut self, uri: &str) {
         self.ensured.clear();
+        self.ide.forget(uri);
         self.compiled = None;
         self.lin_model = None;
         self.lib.remove_document(uri);
@@ -1214,3 +1218,181 @@ impl Workspace {
     }
 }
 
+/// A place in a document with JavaScript (UTF-16) offsets.
+#[derive(Serialize)]
+struct Loc16 {
+    uri: String,
+    from: usize,
+    to: usize,
+    /// 1-based line.
+    line: usize,
+    class: Option<String>,
+    preview: String,
+}
+
+impl Workspace {
+    fn text_of(&self, uri: &str) -> Option<std::sync::Arc<str>> {
+        self.lib
+            .docs
+            .iter()
+            .find(|d| d.uri == uri)
+            .map(|d| d.text.clone())
+    }
+
+    fn off(&self, uri: &str, u16: usize) -> usize {
+        self.text_of(uri)
+            .map(|t| ide::utf16_to_byte(&t, u16))
+            .unwrap_or(u16)
+    }
+
+    fn u16(&self, uri: &str, b: usize) -> usize {
+        self.text_of(uri)
+            .map(|t| ide::byte_to_utf16(&t, b))
+            .unwrap_or(b)
+    }
+
+    fn loc16(&self, l: ide::Location) -> Loc16 {
+        Loc16 {
+            from: self.u16(&l.uri, l.start),
+            to: self.u16(&l.uri, l.end),
+            line: l.line + 1,
+            uri: l.uri,
+            class: l.class,
+            preview: l.preview,
+        }
+    }
+
+    fn symbols16(&self, uri: &str, v: Vec<ide::DocSymbol>) -> Vec<serde_json::Value> {
+        v.into_iter()
+            .map(|s| {
+                let children = self.symbols16(uri, s.children);
+                serde_json::json!({
+                    "name": s.name, "kind": s.kind, "detail": s.detail, "path": s.path,
+                    "from": self.u16(uri, s.start), "to": self.u16(uri, s.end),
+                    "selFrom": self.u16(uri, s.sel_start), "selTo": self.u16(uri, s.sel_end),
+                    "children": children,
+                })
+            })
+            .collect()
+    }
+}
+
+/// Editor intelligence. Offsets are JavaScript string indices (UTF-16 code units).
+#[wasm_bindgen]
+impl Workspace {
+    /// Set an edited document's text (re-parsing only that document) and return its
+    /// diagnostics: JSON `[{from, to, severity, message}]`.
+    #[wasm_bindgen(js_name = ideUpdate)]
+    pub fn ide_update(&mut self, uri: &str, text: &str) -> String {
+        let registered = self.lib.is_registered_file(uri);
+        if self.ide.set_text(&mut self.lib, uri, text) {
+            self.ensured.clear();
+            self.compiled = None;
+            // parse the library classes the document names, so that they resolve
+            if self.lib.has_pending()
+                && !registered
+                && let Some((path, _)) = Ide::document_classes(text).into_iter().next()
+            {
+                self.lib.load_class(&path, true);
+            }
+        }
+        // A library file opened from the on-demand bundle may name classes not parsed
+        // yet: only its syntax is checked.
+        let diags = if registered {
+            self.ide.syntax_diagnostics(&self.lib, uri)
+        } else {
+            self.ide.diagnostics(&self.lib, uri)
+        };
+        let out: Vec<serde_json::Value> = diags
+            .into_iter()
+            .map(|d| {
+                serde_json::json!({"from": self.u16(uri, d.start), "to": self.u16(uri, d.end),
+                    "severity": d.severity, "message": d.message})
+            })
+            .collect();
+        to_json(&out)
+    }
+
+    /// JSON `[Loc]`: where the name at `offset` is declared.
+    #[wasm_bindgen(js_name = ideDefinition)]
+    pub fn ide_definition(&mut self, uri: &str, offset: usize) -> String {
+        let off = self.off(uri, offset);
+        let v: Vec<Loc16> = self
+            .ide
+            .definition(&self.lib, uri, off)
+            .into_iter()
+            .map(|l| self.loc16(l))
+            .collect();
+        to_json(&v)
+    }
+
+    /// JSON `[Loc]`: every use of the name at `offset` in the loaded documents.
+    #[wasm_bindgen(js_name = ideReferences)]
+    pub fn ide_references(&mut self, uri: &str, offset: usize) -> String {
+        let off = self.off(uri, offset);
+        let v: Vec<Loc16> = self
+            .ide
+            .references(&self.lib, uri, off)
+            .into_iter()
+            .map(|l| self.loc16(l))
+            .collect();
+        to_json(&v)
+    }
+
+    /// JSON `{ok, edits: [{uri, from, to, text}], error}`. Library files registered for
+    /// on-demand parsing (the MSL bundle) are read-only.
+    #[wasm_bindgen(js_name = ideRename)]
+    pub fn ide_rename(&mut self, uri: &str, offset: usize, new_name: &str) -> String {
+        let off = self.off(uri, offset);
+        let lib = &self.lib;
+        match self
+            .ide
+            .rename(lib, uri, off, new_name, &|u| lib.is_registered_file(u))
+        {
+            Ok(edits) => {
+                let e: Vec<serde_json::Value> = edits
+                    .into_iter()
+                    .map(|e| {
+                        serde_json::json!({"uri": e.uri, "from": self.u16(&e.uri, e.start),
+                            "to": self.u16(&e.uri, e.end), "text": e.new_text})
+                    })
+                    .collect();
+                to_json(&serde_json::json!({"ok": true, "edits": e}))
+            }
+            Err(e) => to_json(&serde_json::json!({"ok": false, "error": e, "edits": []})),
+        }
+    }
+
+    /// JSON `{from, items: [{label, kind, detail, info}]}`.
+    #[wasm_bindgen(js_name = ideCompletion)]
+    pub fn ide_completion(&mut self, uri: &str, offset: usize) -> String {
+        let off = self.off(uri, offset);
+        // `Modelica.Blocks.|`: parse that package first, so that its members are known
+        if self.lib.has_pending()
+            && let Some(t) = self.text_of(uri)
+            && let Some(p) = Ide::dotted_prefix(&t, off)
+            && self.lib.lazy_is_package(&p).is_some()
+        {
+            self.ensure(&p, Some(false));
+        }
+        let c = self.ide.completion(&self.lib, uri, off);
+        to_json(&serde_json::json!({"from": self.u16(uri, c.from), "items": c.items}))
+    }
+
+    /// JSON `{from, to, markdown}` or null.
+    #[wasm_bindgen(js_name = ideHover)]
+    pub fn ide_hover(&mut self, uri: &str, offset: usize) -> String {
+        let off = self.off(uri, offset);
+        match self.ide.hover(&self.lib, uri, off) {
+            Some(h) => to_json(&serde_json::json!({"from": self.u16(uri, h.start),
+                "to": self.u16(uri, h.end), "markdown": h.markdown})),
+            None => "null".into(),
+        }
+    }
+
+    /// JSON outline: `[{name, kind, detail, path, from, to, selFrom, selTo, children}]`.
+    #[wasm_bindgen(js_name = ideSymbols)]
+    pub fn ide_symbols(&self, uri: &str) -> String {
+        to_json(&self.symbols16(uri, self.ide.symbols(&self.lib, uri)))
+    }
+}

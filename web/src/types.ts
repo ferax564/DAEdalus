@@ -347,3 +347,52 @@ export interface LinearResult {
   translate_ms: number;
   analysis_ms: number;
 }
+
+// ---------------------------------------------------------------- editor intelligence
+// Offsets are JavaScript string indices into the document's text.
+export interface IdeDiagnostic {
+  from: number;
+  to: number;
+  severity: "error" | "warning";
+  message: string;
+}
+
+export interface IdeLocation {
+  uri: string;
+  from: number;
+  to: number;
+  /** 1-based line. */
+  line: number;
+  /** Innermost class around the place. */
+  class: string | null;
+  preview: string;
+}
+
+export interface IdeRename {
+  ok: boolean;
+  error?: string;
+  edits: { uri: string; from: number; to: number; text: string }[];
+}
+
+export interface IdeCompletion {
+  from: number;
+  items: { label: string; kind: string; detail: string; info: string }[];
+}
+
+export interface IdeHover {
+  from: number;
+  to: number;
+  markdown: string;
+}
+
+export interface IdeSymbol {
+  name: string;
+  kind: string;
+  detail: string;
+  path: string;
+  from: number;
+  to: number;
+  selFrom: number;
+  selTo: number;
+  children: IdeSymbol[];
+}

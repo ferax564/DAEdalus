@@ -470,6 +470,40 @@ event, and that mid-run parameter changes propagate. In the WebAssembly workspac
 it is `liveStart`, `liveAdvance`, `liveValues`, `liveSetParams` and `liveFinish`.
 `web/scripts/e2e-plotting.mjs` exercises all of the above in Chromium.
 
+### Editor intelligence
+
+The Text view is a Modelica editor backed by the compiler's own name lookup
+(`crates/daedalus-core/src/ide.rs`, run in the worker):
+
+| Key | Does |
+| --- | --- |
+| F12, or Ctrl/Cmd-click | Go to the definition: opens the class that declares the name and selects it |
+| Shift+F12 | Find usages across the loaded documents, in a panel; click a row to go there |
+| F2 | Rename a class, component or loop index everywhere it is named |
+| Ctrl+Space (or just type) | Complete: classes and components in scope, members after `a.b.`, modifier names inside `x(...)`, keywords |
+| hover | Declaration, description, declaring class, type and unit |
+| Ctrl+Shift+O | Outline of the document's classes and components |
+
+Syntax errors are underlined as you type, with unknown classes (errors) and
+unknown names, members and modifiers (warnings). Enter and `end`/`else`/
+`equation` indent the Modelica way.
+
+Names are resolved with the Modelica lookup rules: enclosing classes, imports
+(qualified, renamed, unqualified, selective), inherited elements, component
+types for dotted references in equations (`r1.p.v`), modifier and named
+argument names against the type they modify, enumeration literals and `for`
+indices. Definition on an `outer` component also lists the matching `inner`
+declarations. Rename refuses names already taken, keywords, classes stored in
+their own file, and any edit in the read-only library bundle (the MSL).
+
+Only the edited document is re-parsed per keystroke, and while it does not
+parse the last version that did stands in for it, so completion keeps working
+mid-edit. With the whole MSL parsed (2,554 files), a natively compiled
+update plus completion takes about 6 ms and finding the 38 uses of
+`Modelica.Blocks.Sources.Step` about 85 ms; `cargo test -p daedalus-core
+--test ide` checks that every MSL file (with `DAEDALUS_MSL=/path/to/msl`) and
+the Daedalus library resolve without a single diagnostic.
+
 ## Experiments: sweeps, runs and comparison
 
 `daedalus sweep` translates a model once and simulates it for every combination of

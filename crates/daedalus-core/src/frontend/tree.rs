@@ -140,6 +140,24 @@ impl<'a> ClassTree<'a> {
                 return Some(b);
             }
         }
+        // MLS 5.6.1: the name is looked up in the class itself first: its own nested
+        // classes (not inherited ones, which would need the bases resolved) and its
+        // imports (an encapsulated class imports what it extends).
+        if let Some(c) = self
+            .node(id)
+            .children
+            .get(parts[0])
+            .copied()
+            .or_else(|| self.lookup_import(id, parts[0]))
+        {
+            let mut c = Some(c);
+            for p in &parts[1..] {
+                c = c.and_then(|c| self.member_class(c, p));
+            }
+            if c.is_some() {
+                return c;
+            }
+        }
         self.lookup(scope, parts, Some(id))
     }
 

@@ -18,6 +18,7 @@ pub mod fmu;
 pub mod fmu_import;
 pub mod frontend;
 pub mod libraries;
+pub mod ide;
 pub mod linalg;
 pub mod linearize;
 pub mod params;

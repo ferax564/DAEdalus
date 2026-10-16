@@ -1,5 +1,5 @@
 // Promise-based calls into the simulation worker.
-import type { BundleInfo, BundleProgress, ClassDiff, ClassEntry, ClassInfo, LibReport, LibSource, LinearOptions, LinearResult, PackageManifest, ParamValue, SimSettings, SimSummary, UnitSummary } from "./types";
+import type { BundleInfo, BundleProgress, ClassDiff, ClassEntry, ClassInfo, IdeCompletion, IdeDiagnostic, IdeHover, IdeLocation, IdeRename, IdeSymbol, LibReport, LibSource, LinearOptions, LinearResult, PackageManifest, ParamValue, SimSettings, SimSummary, UnitSummary } from "./types";
 import type { Profile } from "./performance";
 
 /** A call that answers JSON `{"error": ...}` on failure: thrown as an Error. */
@@ -112,6 +112,14 @@ export const api = {
   values: (names: string[]) => call<{ time: Float64Array; cols: Float64Array[] }>("values", names),
   resultMat: () => call<Uint8Array>("resultMat"),
   resultCsv: (names: string) => call<string>("resultCsv", names),
+  // editor intelligence: offsets are string indices into `text`, the document's current text
+  ideUpdate: (uri: string, text: string) => call<IdeDiagnostic[]>("ideUpdate", uri, text),
+  ideDefinition: (uri: string, text: string, pos: number) => call<IdeLocation[]>("ide", "definition", uri, text, pos),
+  ideReferences: (uri: string, text: string, pos: number) => call<IdeLocation[]>("ide", "references", uri, text, pos),
+  ideRename: (uri: string, text: string, pos: number, name: string) => call<IdeRename>("ide", "rename", uri, text, pos, name),
+  ideCompletion: (uri: string, text: string, pos: number) => call<IdeCompletion>("ide", "completion", uri, text, pos),
+  ideHover: (uri: string, text: string, pos: number) => call<IdeHover | null>("ide", "hover", uri, text, pos),
+  ideSymbols: (uri: string, text: string) => call<IdeSymbol[]>("ide", "symbols", uri, text, 0),
   /** Structure report (see structure.ts); `opts.stateOverrides` are `[name, tier]` pairs. */
   structure: (model: string, opts: Record<string, unknown>) => call<unknown>("structure", model, opts),
   /** Performance profile and event log of the last simulation (null unless profiled). */
