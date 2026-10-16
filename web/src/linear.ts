@@ -535,6 +535,11 @@ export class LinearView {
     return this.result?.analysis?.pairs[0] ?? null;
   }
 
+  /** Redraw Bode, pole-zero, and response canvases after a theme change. */
+  redraw() {
+    this.render();
+  }
+
   render() {
     const a = this.result?.analysis ?? null;
     const p = this.pair();

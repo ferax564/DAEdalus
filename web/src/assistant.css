@@ -1,13 +1,15 @@
-/* In-app assistant drawer (assistant.ts). */
+/* In-app assistant, docked in the right column so the diagram stays visible. */
 .assistant-panel {
-  position: fixed; top: var(--topbar-h, 44px); right: 8px; bottom: 8px; width: min(440px, calc(100vw - 16px));
-  display: flex; flex-direction: column; z-index: 50; overflow: hidden;
+  position: relative; flex: 1; min-height: 0; width: auto; margin: 6px;
+  display: flex; flex-direction: column; z-index: 1; overflow: hidden;
   background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.18);
 }
 .assistant-panel.hidden { display: none; }
 .assistant-panel .pane-title { display: flex; align-items: center; gap: 6px; }
 .assistant-panel .pane-title .close { margin-left: auto; border: none; background: none; }
+.assistant-starters { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+.assistant-starters p { margin: 0; color: var(--muted); font-size: 12px; }
+.assistant-starters button { text-align: left; }
 .assistant-key { padding: 10px 12px; display: grid; gap: 6px; border-bottom: 1px solid var(--line); }
 .assistant-key.hidden { display: none; }
 .assistant-key p { margin: 0; color: var(--muted); font-size: 12px; }

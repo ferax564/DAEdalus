@@ -1,0 +1,102 @@
+/* Workbench colour tokens. :root is light so a stylesheet without data-theme still paints.
+   html[data-theme] is the user's choice. The media query is only the default. */
+:root,
+html[data-theme="light"] {
+  --bg: #f4f5f7;
+  --panel: #ffffff;
+  --fg: #1d2330;
+  --muted: #6b7385;
+  --line: #d9dde5;
+  --grid: #eceef2;
+  --accent: #0b5fff;
+  --accent-soft: #e7efff;
+  --ok: #2b8a3e;
+  --err: #c92a2a;
+  --warn: #b26a00;
+  --sel: #cfdcff;
+  --sel-match: #e4ebff;
+  --active-line: rgba(11, 95, 255, 0.04);
+  --syn-keyword: #7a3e9d;
+  --syn-type: #0b5fff;
+  --syn-string: #b2361f;
+  --syn-number: #1b7f5b;
+  --syn-comment: #6b7385;
+  --syn-atom: #a15c00;
+  /* The diagram is a sheet of paper in both themes. */
+  --canvas: #ffffff;
+  --canvas-ink: #1d2330;
+  --canvas-frame: #c9ced8;
+  --diff-add: #2b8a3e;
+  --diff-del: #c92a2a;
+  --diff-mod: #d9480f;
+  --trace: #7048e8;
+  --shadow: rgba(0, 0, 0, 0.18);
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  color-scheme: light;
+}
+html[data-theme="dark"] {
+  --bg: #15181e;
+  --panel: #1c2028;
+  --fg: #e3e6ec;
+  --muted: #8a92a5;
+  --line: #2d333f;
+  --grid: #262b35;
+  --accent: #5b8cff;
+  --accent-soft: #233150;
+  --ok: #69db7c;
+  --err: #ff8787;
+  --warn: #ffc95c;
+  --sel: #2f4b85;
+  --sel-match: #283a5e;
+  --active-line: rgba(91, 140, 255, 0.07);
+  --syn-keyword: #d0a2f7;
+  --syn-type: #8fb3ff;
+  --syn-string: #ffa8a8;
+  --syn-number: #8ce99a;
+  --syn-comment: #8a92a5;
+  --syn-atom: #ffd08a;
+  --canvas: #ffffff;
+  --canvas-ink: #1d2330;
+  --canvas-frame: #c9ced8;
+  --diff-add: #69db7c;
+  --diff-del: #ff8787;
+  --diff-mod: #ff922b;
+  --trace: #b197fc;
+  --shadow: rgba(0, 0, 0, 0.45);
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  color-scheme: dark;
+}
+@media (prefers-color-scheme: dark) {
+  html:not([data-theme]) {
+    --bg: #15181e;
+    --panel: #1c2028;
+    --fg: #e3e6ec;
+    --muted: #8a92a5;
+    --line: #2d333f;
+    --grid: #262b35;
+    --accent: #5b8cff;
+    --accent-soft: #233150;
+    --ok: #69db7c;
+    --err: #ff8787;
+    --warn: #ffc95c;
+    --sel: #2f4b85;
+    --sel-match: #283a5e;
+    --active-line: rgba(91, 140, 255, 0.07);
+    --syn-keyword: #d0a2f7;
+    --syn-type: #8fb3ff;
+    --syn-string: #ffa8a8;
+    --syn-number: #8ce99a;
+    --syn-comment: #8a92a5;
+    --syn-atom: #ffd08a;
+    --canvas: #ffffff;
+    --canvas-ink: #1d2330;
+    --canvas-frame: #c9ced8;
+    --diff-add: #69db7c;
+    --diff-del: #ff8787;
+    --diff-mod: #ff922b;
+    --trace: #b197fc;
+    --shadow: rgba(0, 0, 0, 0.45);
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    color-scheme: dark;
+  }
+}

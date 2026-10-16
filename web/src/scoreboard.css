@@ -1,35 +1,17 @@
-/* MSL accuracy scoreboard (scoreboard.html). Independent of the workbench styles. */
+/* MSL accuracy scoreboard (scoreboard.html). Shares the workbench theme tokens. */
+@import "./tokens.css";
 :root {
-  --bg: #f4f5f7;
-  --panel: #ffffff;
-  --fg: #1d2330;
-  --muted: #6b7385;
-  --line: #d9dde5;
-  --track: #eceef2;
-  --accent: #0b5fff;
-  --accent-soft: #e7efff;
+  --track: var(--grid);
   /* status colors: icon + label always accompany them */
   --pass: #0ca30c;
   --differ: #fab219;
   --error: #d03b3b;
   --timeout: #ec835a;
   --err-text: #b42323;
-  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  color-scheme: light;
 }
+html[data-theme="dark"] { --err-text: #ff8a8a; --track: var(--grid); }
 @media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #15181e;
-    --panel: #1c2028;
-    --fg: #e3e6ec;
-    --muted: #8a92a5;
-    --line: #2d333f;
-    --track: #262b35;
-    --accent: #5b8cff;
-    --accent-soft: #233150;
-    --err-text: #ff8a8a;
-    color-scheme: dark;
-  }
+  html:not([data-theme]) { --err-text: #ff8a8a; --track: var(--grid); }
 }
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }

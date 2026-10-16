@@ -36,7 +36,7 @@
 .perf-table tr.chatter td { background: rgba(224, 49, 49, 0.08); }
 .perf-table tr.sel td { background: var(--accent-soft); outline: 1px solid var(--accent); }
 .perf-table.events tbody tr { cursor: pointer; }
-.perf .badge { background: #e03131; color: white; border-radius: 3px; padding: 0 5px; font-size: 11px; }
+.perf .badge { background: var(--err); color: white; border-radius: 3px; padding: 0 5px; font-size: 11px; }
 .perf-toolbar { display: flex; gap: 10px; align-items: center; margin: 4px 0 6px; flex-wrap: wrap; }
 .perf-toolbar label { display: flex; gap: 4px; align-items: center; color: var(--muted); }
 .perf-filter { width: 200px; }

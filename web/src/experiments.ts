@@ -556,6 +556,7 @@ function renderRuns() {
   const n = selected.size;
   const info = document.getElementById("runs-info");
   if (info) info.textContent = n ? `${n} selected` : `${runs.length} runs`;
+  document.getElementById("runs-pane")?.classList.toggle("collapsed", runs.length === 0);
   (document.getElementById("runs-overlay") as HTMLButtonElement | null)?.toggleAttribute("disabled", n < 1);
   (document.getElementById("runs-diff") as HTMLButtonElement | null)?.toggleAttribute("disabled", n !== 2);
 }
@@ -581,6 +582,7 @@ function buildRunsPane() {
   const pane = h("section", { class: "pane", id: "runs-pane" });
   const sweepBtn = h("button", { id: "runs-sweep", title: "Parameter sweep over the worker pool" }, "Sweep…");
   sweepBtn.onclick = () => openSweepDialog();
+  pane.classList.add("collapsed");
   pane.append(h("div", { class: "pane-title" }, "Runs", h("span", { id: "runs-info", class: "runs-info" }), sweepBtn));
   const ov = h("button", { id: "runs-overlay", title: "Plot the variables of the active subplot for every selected run" }, "Overlay");
   ov.onclick = () => {

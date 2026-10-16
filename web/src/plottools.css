@@ -17,7 +17,7 @@
 .live-status { color: var(--ok); font-size: 12px; font-family: var(--mono); white-space: nowrap; flex: none; }
 #plot-pane .tabs label { white-space: nowrap; flex: none; }
 #plot-pane .tabs .model-title { flex: none; }
-.var-menu { position: fixed; z-index: 50; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18); min-width: 240px; max-width: 420px; max-height: 60vh; display: flex; flex-direction: column; font-size: 12.5px; }
+.var-menu { position: fixed; z-index: 50; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 6px 24px var(--shadow); min-width: 240px; max-width: 420px; max-height: 60vh; display: flex; flex-direction: column; font-size: 12.5px; }
 .var-menu .vm-title { font-weight: 600; padding: 6px 10px 0; font-family: var(--mono); }
 .var-menu .vm-sub { color: var(--muted); padding: 0 10px 6px; border-bottom: 1px solid var(--line); font-size: 11.5px; }
 .var-menu .vm-list { overflow: auto; padding: 3px 0; }
@@ -30,7 +30,7 @@
 .vm-tag.flow { color: var(--warn); border-color: var(--warn); }
 .vm-tag.across { color: var(--accent); border-color: var(--accent); }
 svg.diagram .connection-hit { fill: none; stroke: transparent; stroke-width: 9px; vector-effect: non-scaling-stroke; cursor: pointer; pointer-events: stroke; }
-svg.diagram .connection-hit:hover { stroke: rgba(11, 95, 255, 0.25); }
+svg.diagram .connection-hit:hover { stroke: color-mix(in srgb, var(--accent) 35%, transparent); }
 svg.diagram.editing .connection-hit { pointer-events: none; }
 /* Plot strip below the diagram on the Modeling page. */
 #plot-strip { display: flex; flex-direction: column; border-top: 1px solid var(--line); height: 260px; min-height: 30px; flex: none; }

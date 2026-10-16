@@ -115,7 +115,9 @@ export function initPerformance(plot: PlotWindow) {
       /* storage unavailable */
     }
   };
-  $("btn-sim").before(cb);
+  const slot = document.getElementById("setup-profile");
+  if (slot) slot.append(cb);
+  else $("btn-sim").before(cb);
 
   // The Performance tab joins the Plot | Animation switch of the results pane.
   const pane = $("plot-pane");
@@ -140,6 +142,12 @@ function showTab(which: "plot" | "perf") {
   $("perf-view").classList.toggle("hidden", which !== "perf");
   if (which === "perf") requestAnimationFrame(() => stepPlot?.draw());
   else requestAnimationFrame(() => mainPlot?.draw());
+}
+
+/** Redraw profile canvases after a theme change (pixels do not follow CSS variables). */
+export function redrawPerformance() {
+  stepPlot?.draw();
+  mainPlot?.draw();
 }
 
 /** After a simulation: fetch and show its profile, or hide the tab when it was not profiled. */
