@@ -26,6 +26,7 @@ pub mod fmu_import;
 pub mod frontend;
 pub mod libraries;
 pub mod ide;
+pub mod jit;
 pub mod lbfgsb;
 pub mod linalg;
 pub mod linearize;

@@ -189,6 +189,10 @@ export interface SimSummary {
   translate_ms: number;
   /** Time spent parsing the library files the model needs (on first use). */
   load_ms?: number;
+  /** The previous run's translation was reused. */
+  cached?: boolean;
+  /** The run went to the local engine (`daedalus serve`). */
+  engine?: boolean;
   stats: {
     solver: {
       steps: number;

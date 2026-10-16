@@ -39,7 +39,7 @@ fn make_job(
     o: SimOptions,
     kind: &str,
     spec: &str,
-) -> Result<Box<dyn Job>, String> {
+) -> Result<Box<dyn Job + Send>, String> {
     let bad = |e: serde_json::Error| format!("bad {kind} specification: {e}");
     Ok(match kind {
         "sensitivity" => {

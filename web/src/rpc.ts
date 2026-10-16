@@ -1,6 +1,7 @@
 // Promise-based calls into the simulation worker.
 import type { BundleInfo, BundleProgress, ClassDiff, ClassEntry, ClassInfo, IdeCompletion, IdeDiagnostic, IdeHover, IdeLocation, IdeRename, IdeSymbol, LibReport, LibSource, LinearOptions, LinearResult, PackageManifest, ParamValue, SimSettings, SimSummary, UnitSummary } from "./types";
 import type { Profile } from "./performance";
+import type { EngineStatus } from "./engine";
 
 /** A call that answers JSON `{"error": ...}` on failure: thrown as an Error. */
 async function checked<T>(p: Promise<T | { error: string }>): Promise<T> {
@@ -18,6 +19,14 @@ let onProgress: ((p: BundleProgress) => void) | null = null;
 /** Called with the progress of a running analysis. */
 let onAnalysis: ((p: { done: number; total: number }) => void) | null = null;
 
+/** The connected local engine (engine.ts), shared with the experiment pool. */
+export const engineState = {
+  url: null as string | null,
+  status: null as EngineStatus | null,
+  /** Called when the worker loses the engine (it stopped); runs fall back to the browser. */
+  onLost: null as ((reason: string) => void) | null,
+};
+
 /** Rows of a live run (see worker.ts): the new time rows from row `from`, and per variable
  * its new values from its own `from`. */
 export interface LiveChunk {
@@ -32,6 +41,12 @@ export interface LiveChunk {
 const liveHandlers = new Map<number, (c: LiveChunk) => void>();
 
 worker.onmessage = (ev) => {
+  if (ev.data.engine) {
+    engineState.url = null;
+    engineState.status = null;
+    engineState.onLost?.(ev.data.engine.lost as string);
+    return;
+  }
   if (ev.data.live) {
     liveHandlers.get(ev.data.live.id)?.(ev.data.live as LiveChunk);
     return;
@@ -138,6 +153,17 @@ export const api = {
     return call<T | { cancelled: true }>("analysisRun", model, kind, spec, settings);
   },
   analysisCancel: () => call<void>("analysisCancel"),
+  /** Connect to the local engine at `url` (null disconnects); resolves to its status. */
+  engine: async (url: string | null) => {
+    engineState.url = null;
+    engineState.status = null;
+    const st = await call<EngineStatus | undefined>("engine", url);
+    if (url && st) {
+      engineState.url = url;
+      engineState.status = st;
+    }
+    return st ?? null;
+  },
   // library management, documentation, parameters, diff and packages
   setResource: (path: string, bytes: ArrayBuffer) => call<void>("setResource", path, bytes),
   resource: (path: string) => call<Uint8Array | null>("resource", path),

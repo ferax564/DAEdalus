@@ -1,6 +1,7 @@
 // DAEdalus workbench: package browser, icon/diagram/text views, simulation and plotting.
 import "./styles.css";
-import { api } from "./rpc";
+import { api, engineState } from "./rpc";
+import { DEFAULT_ENGINE } from "./engine";
 import type { ClassEntry, ClassInfo, ComponentInfo, SimSettings, SimSummary, UnitSummary, VarSummary } from "./types";
 import { DiagramView, type ViewKind } from "./diagram";
 import { TextView } from "./editor";
@@ -787,7 +788,7 @@ async function simulate(opts: { pace?: number; names?: string[] } = {}) {
       const st = s.stats;
       log(
         `${name}: ${st.states} states, ${st.method ? `${st.method}, ` : ""}${st.solver.steps} steps (${st.solver.rejected} rejected), ${st.events} events; ` +
-          `${s.load_ms ? `parse library ${s.load_ms.toFixed(0)} ms, ` : ""}translate ${s.translate_ms.toFixed(0)} ms, simulate ${(st.init_ms + st.sim_ms).toFixed(0)} ms, total ${(performance.now() - t0).toFixed(0)} ms`,
+          `${s.load_ms ? `parse library ${s.load_ms.toFixed(0)} ms, ` : ""}${s.cached ? "translation reused" : `translate ${s.translate_ms.toFixed(0)} ms`}, simulate ${(st.init_ms + st.sim_ms).toFixed(0)} ms, total ${(performance.now() - t0).toFixed(0)} ms${s.engine ? " (local engine)" : ""}`,
         "ok",
       );
     }
@@ -821,6 +822,57 @@ async function simulate(opts: { pace?: number; names?: string[] } = {}) {
 
 $("btn-sim").onclick = () => simulate();
 $("live-stop").onclick = () => void api.liveControl({ stop: true });
+
+// ---------------------------------------------------------------- local engine
+// `daedalus serve` on this computer: simulations, analyses and experiment runs go there.
+// Opt-in (a page on the public site calling 127.0.0.1 makes some browsers ask first); the
+// choice is remembered, and `?engine=URL` connects to another address.
+const ENGINE_KEY = "daedalus.engine";
+const engineBtn = $("btn-engine") as HTMLButtonElement;
+function showEngine() {
+  const st = engineState.status;
+  engineBtn.classList.toggle("active", !!st);
+  engineBtn.textContent = st ? `Local engine · ${st.cores} cores` : "Local engine";
+}
+async function connectEngine(url: string, quiet = false) {
+  engineBtn.disabled = true;
+  try {
+    const st = await api.engine(url);
+    try {
+      localStorage.setItem(ENGINE_KEY, url);
+    } catch {}
+    if (st) log(`Local engine connected at ${url} (${st.cores} cores, version ${st.version}): simulations run natively.`, "ok");
+  } catch (e) {
+    if (!quiet) log(`No local engine at ${url}. Start it with \`daedalus serve\` (${String(e)}); simulations stay in the browser.`, "warn");
+  } finally {
+    engineBtn.disabled = false;
+    showEngine();
+  }
+}
+engineState.onLost = (reason) => {
+  showEngine();
+  log(`Local engine lost (${reason}); simulations run in the browser again.`, "warn");
+};
+engineBtn.onclick = async () => {
+  if (engineState.status) {
+    await api.engine(null);
+    try {
+      localStorage.removeItem(ENGINE_KEY);
+    } catch {}
+    log("Local engine disconnected; simulations run in the browser.");
+    showEngine();
+  } else {
+    await connectEngine(new URLSearchParams(location.search).get("engine") ?? DEFAULT_ENGINE);
+  }
+};
+{
+  let saved: string | null = null;
+  try {
+    saved = localStorage.getItem(ENGINE_KEY);
+  } catch {}
+  const asked = new URLSearchParams(location.search).get("engine");
+  if (asked || saved) void connectEngine((asked || saved)!, !asked);
+}
 decorateMethodSelect($("set-method") as HTMLSelectElement);
 window.addEventListener("keydown", (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {

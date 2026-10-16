@@ -20,13 +20,36 @@ extern "C" {
     fn perf_now() -> f64;
 }
 
+// Compiled tapes: the page instantiates each generated tape module against this module's
+// memory and function table (worker.ts); see `daedalus_core::jit`.
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(catch, js_namespace = globalThis, js_name = daedalusJitInstall)]
+    fn js_jit_install(bytes: &[u8]) -> Result<JsValue, JsValue>;
+    #[wasm_bindgen(catch, js_namespace = globalThis, js_name = daedalusJitRemove)]
+    fn js_jit_remove(slot: u32) -> Result<JsValue, JsValue>;
+}
+
+#[cfg(target_arch = "wasm32")]
+fn jit_install(bytes: &[u8]) -> Option<u32> {
+    js_jit_install(bytes).ok()?.as_f64().map(|v| v as u32)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn jit_remove(slot: u32) {
+    let _ = js_jit_remove(slot);
+}
+
 #[cfg(target_arch = "wasm32")]
 fn now_ms() -> f64 {
     perf_now()
 }
+/// Natively (the local engine, `daedalus serve`): milliseconds since the first call.
 #[cfg(not(target_arch = "wasm32"))]
 fn now_ms() -> f64 {
-    0.0
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    START.get_or_init(std::time::Instant::now).elapsed().as_secs_f64() * 1e3
 }
 
 #[wasm_bindgen]
@@ -52,7 +75,7 @@ pub struct Workspace {
     /// Performance profile of the last simulation (JSON), when it was asked for.
     profile: Option<String>,
     /// The running analysis (see `analysis.rs`).
-    job: Option<Box<dyn daedalus_core::uq::Job>>,
+    job: Option<Box<dyn daedalus_core::uq::Job + Send>>,
     /// The model last translated for linear analysis (dropped when sources change).
     lin_model: Option<(String, daedalus_core::codegen::Model)>,
     /// The run being advanced in slices (live plotting, dashboards).
@@ -124,8 +147,19 @@ impl Workspace {
     #[wasm_bindgen(constructor)]
     pub fn new() -> Workspace {
         #[cfg(target_arch = "wasm32")]
-        daedalus_core::profile::set_clock(|| perf_now() * 1e-3);
+        {
+            daedalus_core::profile::set_clock(|| perf_now() * 1e-3);
+            daedalus_core::jit::set_wasm_hooks(jit_install, jit_remove);
+        }
         Workspace::default()
+    }
+
+    /// Run the hot tapes of models translated from now on as compiled code (generated
+    /// WebAssembly here, machine code natively) instead of interpreting them. Results are
+    /// the same either way.
+    #[wasm_bindgen(js_name = setCompiledTapes)]
+    pub fn set_compiled_tapes(&mut self, on: bool) {
+        daedalus_core::jit::set_enabled(on);
     }
 
     /// Add or replace a source file; returns a JSON array of parse errors.

@@ -196,6 +196,9 @@ pub struct Model {
     pub stats: crate::backend::Stats,
     pub warnings: Vec<String>,
     pub tape_len: usize,
+    /// Compiled tapes (see `jit.rs`), built on first use.
+    #[serde(skip)]
+    pub jit: crate::jit::JitSlot,
 }
 
 struct Emitter<'a> {
@@ -1075,6 +1078,7 @@ pub fn compile(mut sys: System) -> Model {
         warnings: sys.warnings,
         vars: sys.vars,
         tape_len,
+        jit: Default::default(),
     }
 }
 
@@ -1751,6 +1755,12 @@ pub struct Runtime<'m> {
     pub ext: Option<Box<dyn crate::external_component::Hook>>,
     /// Block timing of the performance analyzer (None: not profiling).
     pub prof: Option<Box<crate::profile::BlockProf>>,
+    /// The model's compiled tapes, when compiled tapes are on.
+    #[cfg(feature = "jit")]
+    jit: Option<std::sync::Arc<crate::jit::Compiled>>,
+    /// A panic raised inside a compiled tape, resumed when the tape returns.
+    #[cfg(feature = "jit")]
+    pub(crate) jit_panic: Option<Box<dyn std::any::Any + Send>>,
 }
 
 impl<'m> Runtime<'m> {
@@ -1786,11 +1796,27 @@ impl<'m> Runtime<'m> {
             delay_right: true,
             ext: None,
             prof: None,
+            #[cfg(feature = "jit")]
+            jit: m.jit.get(m),
+            #[cfg(feature = "jit")]
+            jit_panic: None,
         }
     }
 
     #[inline]
     pub fn run(&mut self, prog: &[Ins]) {
+        #[cfg(feature = "jit")]
+        if let Some(f) = self.jit.as_ref().and_then(|j| j.get(prog)) {
+            let rt = self as *mut Self as *mut u8;
+            let r = self.r.as_mut_ptr();
+            // SAFETY: `f` was compiled from `prog`, a tape of `self.m`, for this register
+            // layout; it reaches the runtime only through `exec_slow`.
+            unsafe { f(rt, r) };
+            if let Some(p) = self.jit_panic.take() {
+                std::panic::resume_unwind(p);
+            }
+            return;
+        }
         let mut pc = 0;
         while pc < prog.len() {
             let ins = &prog[pc];
@@ -1823,49 +1849,57 @@ impl<'m> Runtime<'m> {
                         r[b as usize]
                     }
                 }
-                Ins::Interp(d, vk, x, ne) => {
-                    r[d as usize] = self.m.lookup(vk, r[x as usize], r[ne as usize])
-                }
-                Ins::Interp2(d, tk, a, b) => {
-                    r[d as usize] = self.m.tables2[(tk >> 5) as usize].eval(
-                        tk & 31,
-                        r[a as usize],
-                        r[b as usize],
-                    )
-                }
-                Ins::Delay(d, k, ds) => {
-                    let dl = r[ds as usize];
-                    let b = &mut self.delays[k as usize];
-                    b.d = dl;
-                    if dl > b.d_max {
-                        b.d_max = dl;
-                    }
-                    let tq = r[self.m.layout.time] - dl;
-                    r[d as usize] = b
-                        .at(tq, self.delay_right)
-                        .unwrap_or(r[self.m.delays[k as usize] as usize]);
-                }
-                Ins::Call(d, site, out) => {
-                    let t0 = self.prof.as_mut().map(|p| p.enter());
-                    let v = site_value(
-                        self.m,
-                        &mut self.loops,
-                        site as usize,
-                        out as usize,
-                        &self.r,
-                    );
-                    self.r[d as usize] = v;
-                    if let (Some(t0), Some(p)) = (t0, self.prof.as_mut()) {
-                        p.leave_call(site as usize, t0);
-                    }
-                }
-                Ins::CallD(d, site, k) => {
-                    let v = site_partial(self.m, &mut self.loops, site as usize, k, &self.r);
-                    self.r[d as usize] = v;
-                }
-                Ins::Newton(i) => self.newton(i as usize),
-                Ins::Exec(site) => exec_site(self.m, &mut self.loops, site as usize, &self.r),
+                _ => self.exec_slow(ins),
             }
+        }
+    }
+
+    /// The instructions that read tables, delay buffers or loop programs, or solve a
+    /// Newton block: shared by the interpreter above and the compiled tapes (`jit.rs`),
+    /// so both give the same results.
+    pub(crate) fn exec_slow(&mut self, ins: &Ins) {
+        let r = &mut self.r;
+        match *ins {
+            Ins::Interp(d, vk, x, ne) => {
+                r[d as usize] = self.m.lookup(vk, r[x as usize], r[ne as usize])
+            }
+            Ins::Interp2(d, tk, a, b) => {
+                r[d as usize] =
+                    self.m.tables2[(tk >> 5) as usize].eval(tk & 31, r[a as usize], r[b as usize])
+            }
+            Ins::Delay(d, k, ds) => {
+                let dl = r[ds as usize];
+                let b = &mut self.delays[k as usize];
+                b.d = dl;
+                if dl > b.d_max {
+                    b.d_max = dl;
+                }
+                let tq = r[self.m.layout.time] - dl;
+                r[d as usize] = b
+                    .at(tq, self.delay_right)
+                    .unwrap_or(r[self.m.delays[k as usize] as usize]);
+            }
+            Ins::Call(d, site, out) => {
+                let t0 = self.prof.as_mut().map(|p| p.enter());
+                let v = site_value(
+                    self.m,
+                    &mut self.loops,
+                    site as usize,
+                    out as usize,
+                    &self.r,
+                );
+                self.r[d as usize] = v;
+                if let (Some(t0), Some(p)) = (t0, self.prof.as_mut()) {
+                    p.leave_call(site as usize, t0);
+                }
+            }
+            Ins::CallD(d, site, k) => {
+                let v = site_partial(self.m, &mut self.loops, site as usize, k, &self.r);
+                self.r[d as usize] = v;
+            }
+            Ins::Newton(i) => self.newton(i as usize),
+            Ins::Exec(site) => exec_site(self.m, &mut self.loops, site as usize, &self.r),
+            _ => unreachable!("not a slow instruction: {ins:?}"),
         }
     }
 

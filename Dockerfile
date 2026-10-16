@@ -19,7 +19,7 @@ COPY crates ./crates
 COPY library/packages.json ./library/packages.json
 ENV CARGO_NET_GIT_FETCH_WITH_CLI=true
 RUN cargo build -p daedalus-wasm --profile release-wasm --target wasm32-unknown-unknown \
-    && wasm-bindgen --target web --out-dir /out \
+    && wasm-bindgen --keep-lld-exports --target web --out-dir /out \
        target/wasm32-unknown-unknown/release-wasm/daedalus_wasm.wasm
 
 # 2. Bundle the workbench.
