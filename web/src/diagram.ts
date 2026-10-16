@@ -331,7 +331,7 @@ export class DiagramView {
     const conn = owner.components.find((c) => c.name === connName);
     if (!conn?.type_path) {
       const c = applyM(m, 0, 0);
-      return { p: c, color: diagramInk() };
+      return { p: c, color: diagramInk(undefined) };
     }
     const ct = await this.src.get(conn.type_path);
     const pl = conn.placement as AnnRecord | null;
