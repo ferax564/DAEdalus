@@ -91,6 +91,9 @@ input[type="number"] { width: 72px; }
    (Simulate, Docs, Assistant) ends up hidden behind a horizontal scroll. */
 .tools { display: flex; align-items: center; gap: 6px 10px; flex: 1 1 auto; justify-content: flex-end; flex-wrap: wrap; min-width: 0; }
 .tools > * { flex: none; }
+/* Less-used toolbar controls: all shown inline on wide windows; on phones they open from the More button. */
+.tools-more { display: contents; }
+.tools-menu-btn { display: none; }
 .tools label { color: var(--muted); display: flex; gap: 4px; align-items: center; }
 .sep { width: 1px; height: 20px; background: var(--line); }
 label.file { position: relative; overflow: hidden; border: 1px dashed var(--line); border-radius: 6px; padding: 3px 8px; cursor: pointer; color: var(--fg); }
@@ -178,11 +181,24 @@ canvas.plot { position: absolute; inset: 0; display: block; }
    (packages, then the model or plot, then the component and runs panels). */
 @media (max-width: 900px) {
   #app { grid-template-columns: minmax(0, 1fr); overflow-y: auto; -webkit-overflow-scrolling: touch; }
-  #left { height: 40vh; min-height: 240px; }
+  /* Explicit heights: the grid rows must not collapse when the three panes add up to more than the window. */
+  #left { height: 20vh; min-height: 160px; }
   #center { height: 72vh; min-height: 420px; }
-  #right { height: auto; }
+  #right { height: 45vh; min-height: 260px; }
+  #center .pane { flex: 1 1 auto; }
   #app .pane { margin: 6px; }
-  #left .pane, #center .pane { flex: 1 1 auto; }
+
+  /* The More menu drops down under the toolbar and holds the less-used controls. */
+  #topbar { position: relative; }
+  .tools-menu-btn { display: inline-block; }
+  .tools-more {
+    display: none; position: absolute; top: 100%; left: 8px; right: 8px; z-index: 60;
+    flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.18);
+  }
+  .tools-more.open { display: flex; }
+  .tools-more .sep { display: none; }
 }
 @media (max-height: 700px) {
   body { grid-template-rows: auto 1fr 96px; }

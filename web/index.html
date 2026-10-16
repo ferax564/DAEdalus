@@ -15,26 +15,30 @@
         <button data-mode="analysis">Analysis</button>
       </nav>
       <div class="tools">
-        <a href="./scoreboard.html" title="How DAEdalus results compare with the MSL reference results" style="color: var(--muted)">Scoreboard</a>
-        <label class="file" title="Open .mo files, shape files, or a model package / library .zip">Open<input id="open-files" type="file" multiple accept=".mo,.stl,.obj,.zip" /></label>
-        <label class="file" title="Load a library folder">Folder<input id="open-dir" type="file" webkitdirectory /></label>
-        <button id="btn-libs" title="Install libraries (Buildings, ThermoSysPro, OpenIPSL, ...) and check the versions loaded">Libraries</button>
-        <button id="btn-save-zip" title="Save the open model with the files and resources it needs as a .zip">Save .zip</button>
-        <span class="sep"></span>
+        <!-- Less-used controls: on phones they open from the More menu (see styles.css). -->
+        <div id="tools-more" class="tools-more">
+          <a href="./scoreboard.html" title="How DAEdalus results compare with the MSL reference results" style="color: var(--muted)">Scoreboard</a>
+          <label class="file" title="Open .mo files, shape files, or a model package / library .zip">Open<input id="open-files" type="file" multiple accept=".mo,.stl,.obj,.zip" /></label>
+          <label class="file" title="Load a library folder">Folder<input id="open-dir" type="file" webkitdirectory /></label>
+          <button id="btn-libs" title="Install libraries (Buildings, ThermoSysPro, OpenIPSL, ...) and check the versions loaded">Libraries</button>
+          <button id="btn-save-zip" title="Save the open model with the files and resources it needs as a .zip">Save .zip</button>
+          <span class="sep"></span>
+          <label>Stop <input id="set-stop" type="number" step="any" placeholder="auto" /></label>
+          <label>Intervals <input id="set-n" type="number" min="1" placeholder="auto" /></label>
+          <label>Tol <input id="set-tol" type="text" placeholder="auto" size="6" /></label>
+          <label>Method
+            <select id="set-method">
+              <option value="">model default</option>
+              <optgroup label="Stiff"><option value="Bdf">BDF</option><option value="Radau">Radau IIA</option><option value="Esdirk">ESDIRK</option></optgroup>
+              <optgroup label="Switching"><option value="Auto">Auto (Dopri5/BDF)</option></optgroup>
+              <optgroup label="Non-stiff"><option value="Dopri5">Dopri5</option></optgroup>
+              <optgroup label="Fixed step"><option value="Rk4">RK4</option><option value="Euler">Euler</option></optgroup>
+            </select>
+          </label>
+          <button id="solver-hint" class="solver-hint hidden" type="button"></button>
+        </div>
+        <button id="tools-menu-btn" class="tools-menu-btn" type="button" aria-controls="tools-more" aria-expanded="false">More ▾</button>
         <button id="btn-check" title="Translate and check the model">Check</button>
-        <label>Stop <input id="set-stop" type="number" step="any" placeholder="auto" /></label>
-        <label>Intervals <input id="set-n" type="number" min="1" placeholder="auto" /></label>
-        <label>Tol <input id="set-tol" type="text" placeholder="auto" size="6" /></label>
-        <label>Method
-          <select id="set-method">
-            <option value="">model default</option>
-            <optgroup label="Stiff"><option value="Bdf">BDF</option><option value="Radau">Radau IIA</option><option value="Esdirk">ESDIRK</option></optgroup>
-            <optgroup label="Switching"><option value="Auto">Auto (Dopri5/BDF)</option></optgroup>
-            <optgroup label="Non-stiff"><option value="Dopri5">Dopri5</option></optgroup>
-            <optgroup label="Fixed step"><option value="Rk4">RK4</option><option value="Euler">Euler</option></optgroup>
-          </select>
-        </label>
-        <button id="solver-hint" class="solver-hint hidden" type="button"></button>
         <button id="btn-sim" class="primary" title="Translate and simulate (Ctrl+Enter)">▶ Simulate</button>
         <button id="btn-engine" title="Simulate on this computer with the local engine (run `daedalus serve`): native speed and every core">Local engine</button>
         <a id="docs-link" href="docs/" target="_blank" rel="noopener" title="Documentation, examples and feature guides">Docs</a>
