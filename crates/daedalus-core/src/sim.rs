@@ -48,7 +48,7 @@ impl Method {
     }
 
     /// Lower-case name as `--method` takes it.
-    pub fn name(self) -> &'static str {
+    pub const fn name(self) -> &'static str {
         match self {
             Method::Bdf => "bdf",
             Method::Dopri5 => "dopri5",
@@ -58,6 +58,30 @@ impl Method {
             Method::Esdirk => "esdirk",
             Method::Auto => "auto",
         }
+    }
+
+    /// Every method `name()` returns, in a stable order. The Python error text and
+    /// `Model.simulate` docstring are built from this so a new variant cannot be
+    /// accepted by `parse` and omitted from the message.
+    pub fn all() -> &'static [Method] {
+        &[
+            Method::Bdf,
+            Method::Dopri5,
+            Method::Rk4,
+            Method::Euler,
+            Method::Radau,
+            Method::Esdirk,
+            Method::Auto,
+        ]
+    }
+
+    /// `bdf | dopri5 | rk4 | euler | radau | esdirk | auto`.
+    pub fn names() -> String {
+        Self::all()
+            .iter()
+            .map(|m| m.name())
+            .collect::<Vec<_>>()
+            .join(" | ")
     }
 }
 

@@ -6,7 +6,10 @@ members = [
     "crates/daedalus-wasm",
     "crates/daedalus-fmi",
 ]
-# The Python extension is built with maturin (crates/daedalus-py/pyproject.toml).
+# The Python extension is built with maturin (crates/daedalus-py/pyproject.toml)
+# and stays excluded: maturin requires its own manifest. It has a separate
+# lockfile at crates/daedalus-py/Cargo.lock; tools/lockfile_versions.py (CI)
+# checks that every shared crate version there is one this workspace resolves.
 exclude = ["crates/daedalus-py"]
 
 [workspace.package]

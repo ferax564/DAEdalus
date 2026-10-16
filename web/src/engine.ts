@@ -5,6 +5,21 @@
 
 export const DEFAULT_ENGINE = "http://127.0.0.1:7878";
 
+/** Bearer token printed by `daedalus serve`, kept next to `daedalus.engine` in localStorage. */
+let engineToken: string | null = null;
+export function setEngineToken(token: string | null) {
+  engineToken = token;
+}
+export function currentEngineToken(): string | null {
+  return engineToken;
+}
+function authHeaders(json: boolean): Record<string, string> {
+  const h: Record<string, string> = {};
+  if (json) h["Content-Type"] = "application/json";
+  if (engineToken) h.Authorization = `Bearer ${engineToken}`;
+  return h;
+}
+
 export interface EngineStatus {
   engine: string;
   version: string;
@@ -17,7 +32,7 @@ async function check(r: Response): Promise<Response> {
 }
 
 export async function engineStatus(base: string): Promise<EngineStatus> {
-  const r = await check(await fetch(`${base}/status`));
+  const r = await check(await fetch(`${base}/status`, { headers: authHeaders(false) }));
   const s = (await r.json()) as EngineStatus;
   if (s.engine !== "daedalus") throw new Error(`${base} is not a DAEdalus engine`);
   return s;
@@ -27,7 +42,7 @@ export async function enginePost(base: string, path: string, body: unknown): Pro
   return check(
     await fetch(`${base}${path}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: authHeaders(true),
       body: JSON.stringify(body),
     }),
   );

@@ -1131,6 +1131,24 @@ impl<'a, 't> Flattener<'a, 't> {
                     let names: Vec<&str> = vars.iter().map(|&v| self.model.var_name(v)).collect();
                     eprintln!("  unknowns: {}", names.join(", "));
                 }
+                let shown: Vec<String> = es
+                    .iter()
+                    .map(|q| format!("{} = {}", self.model.show(q.lhs), self.model.show(q.rhs)))
+                    .collect();
+                // `x = pre(x) + h*pre(der(x))` (the ControlledMixingUnit filter step) is
+                // not a generic singular system: the previous derivative is not an
+                // unknown of this tick, and matching it as one reports "singular".
+                if shown.iter().any(|s| s.contains("pre(der(")) {
+                    bail!(
+                        "unsupported: a clocked state is updated from its own pre(der(x)) ({}); \
+                         that previous derivative is not solved as an unknown of the same tick",
+                        shown
+                            .iter()
+                            .find(|s| s.contains("pre(der("))
+                            .map(|s| s.as_str())
+                            .unwrap_or("")
+                    );
+                }
                 bail!(
                     "clocked partition is singular at '{} = {}'",
                     self.model.show(es[e].lhs),

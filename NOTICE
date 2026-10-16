@@ -1,0 +1,14 @@
+DAEdalus
+Copyright 2026 the DAEdalus authors
+
+This product includes the Rumoca parser and AST, developed as part of
+CogniPilot and licensed under the Apache License, Version 2.0.
+
+  Repository: https://github.com/CogniPilot/rumoca
+  Pinned revision: ad00214a2294682bd3313f8d74d4afd372143fac
+
+The crates taken from that revision are rumoca-phase-parse, rumoca-ir-ast and
+rumoca-core (see the workspace Cargo.toml).
+
+The browser workbench also bundles third-party JavaScript (KaTeX, marked,
+Three.js and the Anthropic SDK) under the licenses named in web/package.json.

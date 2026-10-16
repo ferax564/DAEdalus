@@ -1,7 +1,7 @@
 // DAEdalus workbench: package browser, icon/diagram/text views, simulation and plotting.
 import "./styles.css";
 import { api, engineState } from "./rpc";
-import { DEFAULT_ENGINE } from "./engine";
+import { DEFAULT_ENGINE, setEngineToken } from "./engine";
 import type { ClassEntry, ClassInfo, ComponentInfo, SimSettings, SimSummary, UnitSummary, VarSummary } from "./types";
 import { DiagramView, type ViewKind } from "./diagram";
 import { TextView } from "./editor";
@@ -228,7 +228,11 @@ text.ide = {
 };
 
 function setActive(container: HTMLElement, attr: string, value: string) {
-  container.querySelectorAll<HTMLButtonElement>(`button[${attr}]`).forEach((b) => b.classList.toggle("active", b.getAttribute(attr) === value));
+  container.querySelectorAll<HTMLButtonElement>(`button[${attr}]`).forEach((b) => {
+    const on = b.getAttribute(attr) === value;
+    b.classList.toggle("active", on);
+    if (b.getAttribute("role") === "tab") b.setAttribute("aria-selected", String(on));
+  });
 }
 
 async function showView() {
@@ -814,7 +818,9 @@ async function simulate(opts: { pace?: number; names?: string[] } = {}) {
     experiments.recordSimulation(name, settings(), s, cache.time, cache.cols);
     await loadAnimation(s, name);
   } catch (e) {
-    log(String(e), "err");
+    const msg = e instanceof Error ? e.message : String(e);
+    if (msg.startsWith("worker restarted")) log("Simulation worker stopped; it was restarted. Run Simulate again.", "warn");
+    else log(msg, "err");
   } finally {
     btn.disabled = false;
   }
@@ -828,18 +834,36 @@ $("live-stop").onclick = () => void api.liveControl({ stop: true });
 // Opt-in (a page on the public site calling 127.0.0.1 makes some browsers ask first); the
 // choice is remembered, and `?engine=URL` connects to another address.
 const ENGINE_KEY = "daedalus.engine";
+const ENGINE_TOKEN_KEY = "daedalus.engine.token";
 const engineBtn = $("btn-engine") as HTMLButtonElement;
 function showEngine() {
   const st = engineState.status;
   engineBtn.classList.toggle("active", !!st);
   engineBtn.textContent = st ? `Local engine · ${st.cores} cores` : "Local engine";
 }
+function rememberedToken(): string | null {
+  const q = new URLSearchParams(location.search).get("token");
+  if (q) return q;
+  try {
+    return localStorage.getItem(ENGINE_TOKEN_KEY);
+  } catch {
+    return null;
+  }
+}
 async function connectEngine(url: string, quiet = false) {
+  let token = rememberedToken();
+  if (!token && !quiet) token = window.prompt("Paste the token printed by daedalus serve")?.trim() || null;
+  if (!token) {
+    if (!quiet) log("Local engine needs the token printed by `daedalus serve`.", "warn");
+    return;
+  }
+  setEngineToken(token);
   engineBtn.disabled = true;
   try {
     const st = await api.engine(url);
     try {
       localStorage.setItem(ENGINE_KEY, url);
+      localStorage.setItem(ENGINE_TOKEN_KEY, token);
     } catch {}
     if (st) log(`Local engine connected at ${url} (${st.cores} cores, version ${st.version}): simulations run natively.`, "ok");
   } catch (e) {
@@ -856,8 +880,10 @@ engineState.onLost = (reason) => {
 engineBtn.onclick = async () => {
   if (engineState.status) {
     await api.engine(null);
+    setEngineToken(null);
     try {
       localStorage.removeItem(ENGINE_KEY);
+      localStorage.removeItem(ENGINE_TOKEN_KEY);
     } catch {}
     log("Local engine disconnected; simulations run in the browser.");
     showEngine();
@@ -883,20 +909,30 @@ window.addEventListener("keydown", (e) => {
 
 $("btn-check").onclick = async () => {
   if (!current) return;
-  const r = await api.check(current.path);
-  if (r.ok) {
-    const st = r.stats ?? {};
-    log(
-      `Check of ${current.path}: ${r.states} states, ${st.equations_after_alias ?? "?"} equations after alias elimination, ` +
-        `${st.algebraic_loops ?? 0} algebraic loops (largest ${st.largest_loop ?? 0}), ${st.dummy_derivatives ?? 0} dummy derivatives`,
-      "ok",
-    );
-    for (const w of r.warnings ?? []) log(`warning: ${w}`, "warn");
-  } else {
-    const path = current.path;
-    logLink(r.error ?? "check failed", "err", "Diagnose ▸", () => void openDebugger(path, false));
+  const btn = $("btn-check") as HTMLButtonElement;
+  btn.disabled = true;
+  try {
+    const r = await api.check(current.path);
+    if (r.ok) {
+      const st = r.stats ?? {};
+      log(
+        `Check of ${current.path}: ${r.states} states, ${st.equations_after_alias ?? "?"} equations after alias elimination, ` +
+          `${st.algebraic_loops ?? 0} algebraic loops (largest ${st.largest_loop ?? 0}), ${st.dummy_derivatives ?? 0} dummy derivatives`,
+        "ok",
+      );
+      for (const w of r.warnings ?? []) log(`warning: ${w}`, "warn");
+    } else {
+      const path = current.path;
+      logLink(r.error ?? "check failed", "err", "Diagnose ▸", () => void openDebugger(path, false));
+    }
+    logUnits(r.units);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (msg.startsWith("worker restarted")) log("Simulation worker stopped; it was restarted. Run Check again.", "warn");
+    else log(msg, "err");
+  } finally {
+    btn.disabled = false;
   }
-  logUnits(r.units);
 };
 
 /** Unit issues of a Check, as warnings in the messages panel. */
@@ -1273,6 +1309,26 @@ function setMode(m: typeof mode) {
   } else if (m === "modeling") showView();
 }
 $("topbar").querySelectorAll<HTMLButtonElement>("button[data-mode]").forEach((b) => (b.onclick = () => setMode(b.dataset.mode as typeof mode)));
+// Phones: Packages and Messages start collapsed so the diagram is the first screen.
+const narrow = window.matchMedia("(max-width: 900px)");
+const collapsible = ["browser-pane", "vars-pane", "messages"].map((id) => $(id));
+function applyNarrow(on: boolean) {
+  for (const pane of collapsible) {
+    pane.classList.toggle("collapsed", on);
+    pane.querySelector(".pane-toggle")?.setAttribute("aria-expanded", String(!on));
+  }
+}
+applyNarrow(narrow.matches);
+narrow.addEventListener("change", () => applyNarrow(narrow.matches));
+document.querySelectorAll<HTMLButtonElement>(".pane-toggle").forEach((btn) => {
+  btn.onclick = () => {
+    if (!narrow.matches) return;
+    const pane = btn.closest<HTMLElement>("#browser-pane, #vars-pane, #messages");
+    if (!pane) return;
+    const collapsed = pane.classList.toggle("collapsed");
+    btn.setAttribute("aria-expanded", String(!collapsed));
+  };
+});
 // The More menu (phones): opens the less-used toolbar controls; a tap outside or Escape closes it.
 const moreBtn = $("tools-menu-btn"), moreMenu = $("tools-more");
 const setMoreOpen = (open: boolean) => {
@@ -1511,11 +1567,14 @@ async function loadMsl(): Promise<boolean> {
   label.textContent = "Modelica Standard Library…";
   try {
     // Relative to the page, not to the worker script under assets/.
+    bar.setAttribute("aria-valuemin", "0");
+    bar.setAttribute("aria-valuemax", "100");
     const info = await api.loadBundle(new URL("msl/", document.baseURI).href, "msl/", (p) => {
       const frac = p.total ? p.done / p.total : 0;
       // download 0–70 %, unpack 70–75 %, indexing 75–100 %
       const pct = p.phase === "download" ? 70 * frac : p.phase === "unpack" ? 72 : 75 + 25 * frac;
       fill.style.width = `${pct.toFixed(1)}%`;
+      bar.setAttribute("aria-valuenow", String(Math.round(pct)));
       label.textContent =
         p.phase === "download" ? `${PHASE[p.phase]} Modelica Standard Library… ${(p.done / 1e6).toFixed(1)} / ${(p.total / 1e6).toFixed(1)} MB` : `${PHASE[p.phase]} Modelica Standard Library…`;
     });

@@ -1,7 +1,7 @@
 // Promise-based calls into the simulation worker.
 import type { BundleInfo, BundleProgress, ClassDiff, ClassEntry, ClassInfo, IdeCompletion, IdeDiagnostic, IdeHover, IdeLocation, IdeRename, IdeSymbol, LibReport, LibSource, LinearOptions, LinearResult, PackageManifest, ParamValue, SimSettings, SimSummary, UnitSummary } from "./types";
 import type { Profile } from "./performance";
-import type { EngineStatus } from "./engine";
+import { currentEngineToken, type EngineStatus } from "./engine";
 
 /** A call that answers JSON `{"error": ...}` on failure: thrown as an Error. */
 async function checked<T>(p: Promise<T | { error: string }>): Promise<T> {
@@ -10,9 +10,10 @@ async function checked<T>(p: Promise<T | { error: string }>): Promise<T> {
   return r as T;
 }
 
-const worker = new Worker(new URL("./worker.ts", import.meta.url), { type: "module" });
+let worker: Worker;
 let nextId = 1;
 const pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
+let restarts = 0;
 /** Called with the progress of a library bundle being loaded. */
 let onProgress: ((p: BundleProgress) => void) | null = null;
 
@@ -40,7 +41,7 @@ export interface LiveChunk {
 }
 const liveHandlers = new Map<number, (c: LiveChunk) => void>();
 
-worker.onmessage = (ev) => {
+function onWorkerMessage(ev: MessageEvent) {
   if (ev.data.engine) {
     engineState.url = null;
     engineState.status = null;
@@ -64,9 +65,51 @@ worker.onmessage = (ev) => {
   liveHandlers.delete(id);
   if (!p) return;
   pending.delete(id);
-  if (ok) p.resolve(result);
-  else p.reject(new Error(error));
-};
+  if (ok) {
+    restarts = 0;
+    p.resolve(result);
+  } else p.reject(new Error(error));
+}
+
+function spawnWorker() {
+  worker = new Worker(new URL("./worker.ts", import.meta.url), { type: "module" });
+  worker.onmessage = onWorkerMessage;
+  worker.onerror = (ev) => {
+    ev.preventDefault();
+    recover(ev.message || "worker error");
+  };
+  worker.onmessageerror = () => recover("worker messageerror");
+}
+
+/** The worker died (a trap, not a caught Rust error). Reject what was in flight and start a new one. */
+function recover(reason: string) {
+  const err = new Error(`worker restarted (${reason})`);
+  for (const p of pending.values()) p.reject(err);
+  pending.clear();
+  liveHandlers.clear();
+  try {
+    worker.terminate();
+  } catch {
+    /* already gone */
+  }
+  restarts += 1;
+  if (restarts > 4) return;
+  spawnWorker();
+  void replaySources();
+}
+
+/** Put the recorded documents and library bundle back on a fresh worker. */
+async function replaySources() {
+  const docs: [string, string][] = [];
+  for (const [uri, d] of sources.docs) if (d.text != null) docs.push([uri, d.text]);
+  try {
+    if (docs.length) await call("setDocuments", docs);
+    if (sources.bundle) await call("loadBundle", sources.bundle.base, sources.bundle.prefix);
+    if (engineState.url) await call("engine", engineState.url, currentEngineToken());
+  } catch {
+    /* a second death rejects these itself */
+  }
+}
 
 function call<T>(op: string, ...args: unknown[]): Promise<T> {
   const id = nextId++;
@@ -75,6 +118,8 @@ function call<T>(op: string, ...args: unknown[]): Promise<T> {
     worker.postMessage({ id, op, args });
   });
 }
+
+spawnWorker();
 
 /**
  * The documents and library bundle loaded into the worker, so that other workers (the
@@ -157,7 +202,7 @@ export const api = {
   engine: async (url: string | null) => {
     engineState.url = null;
     engineState.status = null;
-    const st = await call<EngineStatus | undefined>("engine", url);
+    const st = await call<EngineStatus | undefined>("engine", url, currentEngineToken());
     if (url && st) {
       engineState.url = url;
       engineState.status = st;

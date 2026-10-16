@@ -12,14 +12,16 @@
     "build": "node scripts/copy-conformance.mjs && tsc --noEmit && vite build && node scripts/build-docs.mjs",
     "docs": "node scripts/build-docs.mjs",
     "preview": "vite preview",
-    "test": "tsc --noEmit",
+    "test": "vitest run",
     "wasm-opt": "wasm-opt -O3 --enable-simd --enable-bulk-memory --enable-nontrapping-float-to-int --enable-sign-ext --enable-mutable-globals --enable-multivalue --enable-reference-types src/wasm/daedalus_wasm_bg.wasm -o src/wasm/daedalus_wasm_bg.wasm"
   },
   "devDependencies": {
     "@types/three": "0.169.0",
     "binaryen": "123.0.0",
+    "happy-dom": "^15.11.7",
     "typescript": "5.6.3",
-    "vite": "5.4.10"
+    "vite": "5.4.10",
+    "vitest": "^2.1.9"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "0.134.0",

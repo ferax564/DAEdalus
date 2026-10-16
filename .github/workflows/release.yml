@@ -70,7 +70,7 @@ jobs:
             *)         cp "$out/daedalus" "$out/libdaedalus_fmi.so" "dist/$name/" ;;
           esac
           cp -R library "dist/$name/library"
-          cp LICENSE README.md "dist/$name/"
+          cp LICENSE NOTICE README.md "dist/$name/"
           cd dist
           case "${{ matrix.target }}" in
             *windows*) 7z a -tzip -bso0 "$name.zip" "$name"; archive="$name.zip" ;;
@@ -83,12 +83,11 @@ jobs:
         shell: bash
         working-directory: ${{ steps.package.outputs.dir }}
         run: |
+          ./daedalus test-library library/Daedalus -m Daedalus.Examples
           M=Daedalus.Examples.TorqueConverter.StallTest
-          ./daedalus check library/Daedalus -m $M
-          ./daedalus simulate library/Daedalus -m $M -o smoke.csv --vars rpm_engine
           ./daedalus fmu library/Daedalus -m $M -o smoke.fmu
-          test -s smoke.csv && test -s smoke.fmu
-          rm smoke.csv smoke.fmu
+          test -s smoke.fmu && test -f NOTICE
+          rm smoke.fmu
       - uses: actions/upload-artifact@v4
         with:
           name: daedalus-${{ matrix.target }}

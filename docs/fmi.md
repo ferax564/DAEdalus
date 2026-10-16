@@ -93,12 +93,13 @@ Parameters are set the usual way, with `start_values={"engine.J": 0.3}`.
 ## Importing FMUs
 
 DAEdalus also runs FMUs from other tools, FMI 2.0 or 3.0, on their own or as components
-of a Modelica model:
+of a Modelica model. Loading an FMU executes the native binary inside it. That is refused
+unless you pass `--allow-fmu-code`, or the FMU was just written by this same process:
 
 ```sh
 # simulate an FMU on its own: Model Exchange if it has it
-daedalus simulate StallTest.fmu -o fmu.csv --vars rpm_engine
-daedalus simulate StallTest.fmu --fmi-type cs --comm-step 0.004 -o cs.csv
+daedalus --allow-fmu-code simulate StallTest.fmu -o fmu.csv --vars rpm_engine
+daedalus --allow-fmu-code simulate StallTest.fmu --fmi-type cs --comm-step 0.004 -o cs.csv
 
 # a wrapper block to use as a component in any model
 daedalus import-fmu Plant.fmu -o Plant.mo [--fmi-type me|cs] [--comm-step H] [--class NAME] [--within PKG]

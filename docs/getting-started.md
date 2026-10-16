@@ -13,9 +13,11 @@ background (about 2.6 MB, unpacked in the browser).
 1. Pick a model in the **Packages** tree on the left. Models with a ▶ have an
    `experiment` annotation and can be simulated as they are; try
    `Daedalus.Examples.TorqueConverter.StallTest`.
-2. Look at it in the **Icon**, **Diagram**, **Text**, **Documentation** or **Flat model**
-   tab. Click a component in the diagram to see its parameters on the right.
-3. Press **▶ Simulate** (or Ctrl+Enter). The page switches to **Simulation**: the left pane
+2. Look at it in one of the eight views: **Icon**, **Diagram**, **Text**, **Documentation**,
+   **Flat model**, **Structure**, **Linear** or **Diff**. Click a component in the diagram
+   to see its parameters on the right.
+3. The header switches among **Modeling**, **Simulation** and **Analysis**. Press
+   **▶ Simulate** (or Ctrl+Enter). The page switches to **Simulation**: the left pane
    becomes the variable browser, and models with shapes open in **Animation**.
 4. Switch to **Plot** and tick variables to plot them. **New subplot** adds a plot below,
    and the **x-axis** list turns a subplot into a parametric plot.
@@ -29,8 +31,12 @@ Every class has its own address: the URL ends in `#` and the class name, so a li
 opens that model directly, and the browser's Back and Forward buttons (or Alt+← and Alt+→)
 walk through the classes you opened.
 
-Your own models open with **Open .mo** (single files, plus `.stl` and `.obj` meshes for
-3-D shapes) or **Library** (a whole folder, such as a library checkout).
+Your own models open with **Open** (single files, plus `.stl` and `.obj` meshes for
+3-D shapes), **Folder** (a whole folder, such as a library checkout) or **Libraries**
+(a package from the index). **Save .zip** downloads the open model with the files it needs.
+
+Simulation in the page, or through `daedalus serve` on this computer, stays on the machine.
+**✦ Assistant** sends the text it reads and the numbers it asks for to Anthropic.
 
 ## 2. Release binaries
 
@@ -124,6 +130,6 @@ end Pendulum;
 ./target/release/daedalus simulate Pendulum.mo -m Pendulum -o pendulum.csv --vars phi,w
 ```
 
-In the workbench, **Open .mo** loads the same file into the package browser. Models that
+In the workbench, **Open** loads the same file into the package browser. Models that
 use the bundled library or the MSL need no extra setup in the workbench; on the command
 line pass those libraries as extra sources (see [Command line](cli.md)).

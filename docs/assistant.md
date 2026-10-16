@@ -1,5 +1,7 @@
 # AI assistant and MCP server
 
+Simulation in the page or via `daedalus serve` stays on the machine; **✦ Assistant** sends the text it reads and the numbers it asks for to Anthropic (see [Workbench](workbench.md)).
+
 DAEdalus exposes its compiler to AI assistants as tools: browse the libraries, read and
 write classes, check, simulate, linearize, and read the structure report and the
 performance profile. In the workbench that is the **✦ Assistant**; on the command line

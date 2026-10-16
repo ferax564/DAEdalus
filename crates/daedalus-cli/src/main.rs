@@ -9,8 +9,8 @@ mod fmu;
 mod fmu_import;
 mod manage;
 mod mcp;
-mod serve;
 mod mos;
+mod serve;
 mod sweep;
 
 use std::path::Path;
@@ -144,6 +144,9 @@ OPTIONS:
                           executable, or $DAEDALUS_FMI_LIB)
   --timeout S             per-model time limit for test-library (default 60)
   --fmi-version V         fmu: 2 (default) or 3
+  --allow-fmu-code        load an FMU's native binary (it is machine code).
+                          Printed and refused otherwise, unless this process
+                          just wrote that FMU
   --fmi-type T            import-fmu, import-ssp, simulate X.fmu/.ssp: me | cs
                           (default: Model Exchange for an FMU if it has it,
                           Co-Simulation for SSP components)
@@ -290,7 +293,11 @@ fn main() -> ExitCode {
 }
 
 fn run() -> anyhow::Result<()> {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|a| a == "--allow-fmu-code") {
+        daedalus_core::fmu_import::allow_fmu_code(true);
+        args.retain(|a| a != "--allow-fmu-code");
+    }
     if args.is_empty() || args[0] == "-h" || args[0] == "--help" {
         print!("{}", usage());
         return Ok(());
