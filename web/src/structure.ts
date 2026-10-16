@@ -1,6 +1,7 @@
 // Structure view: BLT blocks, incidence matrix, state selection with user overrides, and
 // the state Jacobian (heatmap, eigenvalues, participation) at a chosen time point.
 import { api } from "./rpc";
+import { type EqTrace, type InitReport, type VarTrace, eqTraceHtml, initHtml, varTraceHtml } from "./debug";
 
 // ---------------------------------------------------------------- report shapes (crates/daedalus-core/src/structure.rs)
 interface BlockEq { eq: number; var: string | null }
@@ -85,7 +86,11 @@ export interface StructureContext {
   log(msg: string, cls?: string): void;
   /** Re-run the simulation (with the overrides). */
   simulate(): void;
+  /** Show `file` at `line` (a source position of the debugger). */
+  openLocation?(file: string, line: number): void;
 }
+
+type TraceState = { key: string; busy: boolean; var?: VarTrace; equation?: EqTrace; error?: string };
 
 export class StructureView {
   private model = "";
@@ -97,22 +102,195 @@ export class StructureView {
   private busy = false;
   private gen = 0;
   private tip: HTMLDivElement;
+  /** Debugger: the traced variable or equation, and the initialization report. */
+  private trace: TraceState | null = null;
+  private init: InitReport | null = null;
+  private initBusy = false;
+  private initAll = false;
 
   constructor(private host: HTMLElement, private ctx: StructureContext) {
     host.classList.add("structure");
     this.tip = document.createElement("div");
     this.tip.className = "st-tip hidden";
     document.body.appendChild(this.tip);
+    // Debugger links anywhere in the view (delegated: the content is re-rendered often).
+    host.addEventListener("click", (e) => {
+      const t = e.target as HTMLElement;
+      const v = t.closest<HTMLElement>("[data-trace-var]");
+      if (v) {
+        e.stopPropagation();
+        void this.traceVar(v.dataset.traceVar!);
+        return;
+      }
+      const q = t.closest<HTMLElement>("[data-trace-eq]");
+      if (q) {
+        e.stopPropagation();
+        void this.traceEq(+q.dataset.traceEq!);
+        return;
+      }
+      const b = t.closest<HTMLElement>("[data-goto-block]");
+      if (b) {
+        this.gotoBlock(+b.dataset.gotoBlock!);
+        return;
+      }
+      const l = t.closest<HTMLElement>("[data-loc-file]");
+      if (l && this.ctx.openLocation) {
+        e.preventDefault();
+        this.ctx.openLocation(l.dataset.locFile!, +l.dataset.locLine!);
+        return;
+      }
+      if (t.closest(".dbg-run-init")) void this.runInit();
+    });
+    host.addEventListener("change", (e) => {
+      const t = e.target as HTMLInputElement;
+      if (t.classList.contains("dbg-showall")) {
+        this.initAll = t.checked;
+        this.renderInit();
+      }
+    });
+  }
+
+  /** Open the initialization debugger of `model` (from a failure in the messages); with
+   * `simulation`, also examine the nonlinear solve that stopped the last run. */
+  async showInit(model: string, simulation = false) {
+    if (model !== this.model || !this.report) {
+      if (model !== this.model) this.resetModel();
+      this.model = model;
+      const run = this.runInit(simulation);
+      await this.analyse();
+      await run;
+    } else {
+      this.render();
+      await this.runInit(simulation);
+    }
+    this.host.querySelector(".dbg-init-card")?.scrollIntoView({ block: "start" });
+  }
+
+  private resetModel() {
+    this.previous = null;
+    this.selectedBlock = null;
+    this.expandedSets.clear();
+    this.trace = null;
+    this.init = null;
+    this.report = null;
+  }
+
+  private dbgOptions() {
+    const s = this.ctx.settings();
+    return { stop_time: s.stop_time, tolerance: s.tolerance, params: s.params, stateOverrides: [...this.overrides()] };
+  }
+
+  private async traceVar(name: string) {
+    await this.runTrace(`var:${name}`, { var: name });
+  }
+
+  private async traceEq(id: number) {
+    await this.runTrace(`eq:${id}`, { equation: id });
+  }
+
+  private async runTrace(key: string, opts: Record<string, unknown>) {
+    this.trace = { key, busy: true };
+    this.renderTrace();
+    this.host.querySelector(".dbg-trace-card")?.scrollIntoView({ block: "nearest" });
+    try {
+      const r = (await api.debug(this.model, { ...this.dbgOptions(), ...opts })) as { ok: boolean; var?: VarTrace; equation?: EqTrace; error?: string };
+      if (this.trace?.key !== key) return;
+      this.trace = { key, busy: false, var: r.var, equation: r.equation, error: r.ok ? undefined : (r.error ?? "failed") };
+    } catch (e) {
+      this.trace = { key, busy: false, error: String(e) };
+    }
+    this.renderTrace();
+  }
+
+  private async runInit(simulation = false) {
+    if (this.initBusy) return;
+    this.initBusy = true;
+    this.renderInit();
+    const model = this.model;
+    try {
+      const r = (await api.debug(model, { ...this.dbgOptions(), init: true, simulation })) as InitReport;
+      if (model !== this.model) return;
+      this.init = r;
+    } catch (e) {
+      this.ctx.log(String(e), "err");
+    } finally {
+      this.initBusy = false;
+      this.renderInit();
+    }
+  }
+
+  private gotoBlock(b: number) {
+    if (!this.report?.ok) return;
+    this.selectedBlock = b;
+    const list = this.host.querySelector(".st-blocks");
+    if (!list) return;
+    list.innerHTML = this.blocksHtml(this.report);
+    this.wire();
+    this.drawIncidence();
+    list.querySelector(".st-block.open")?.scrollIntoView({ block: "nearest" });
+  }
+
+  private traceBody(): string {
+    const t = this.trace;
+    if (!t) return `<div class="muted">Click a variable or an equation (in the blocks, the state selection or the initialization table), or type a name, to see how it is computed: the equation as written (component, file:line), alias substitution, index reduction, state selection, solving and tearing.</div>`;
+    if (t.busy) return `<div class="muted">Tracing ${esc(t.key.replace(/^(var|eq):/, ""))}…</div>`;
+    if (t.error) return `<div class="st-warn">${esc(t.error)}</div>`;
+    if (t.var) return varTraceHtml(t.var);
+    if (t.equation) return eqTraceHtml(t.equation);
+    return "";
+  }
+
+  private renderTrace() {
+    const el = this.host.querySelector(".dbg-trace-body");
+    if (el) el.innerHTML = this.traceBody();
+  }
+
+  private initBody(): string {
+    if (this.initBusy) return `<div class="muted">Checking initialization…</div>`;
+    if (!this.init) return `<div class="muted">Solves the initial equations and lists the unknowns of the initial system with the start values used (fixed, defaulted or iteration guess, and where they were set); on failure, the failing block's residuals and largest Newton updates; for a model that does not translate, its over- and underdetermined parts.</div>`;
+    return initHtml(this.init, this.initAll);
+  }
+
+  private renderInit() {
+    const el = this.host.querySelector(".dbg-init-body");
+    if (el) el.innerHTML = this.initBody();
+    const b = this.host.querySelector<HTMLButtonElement>(".dbg-run-init");
+    if (b) {
+      b.disabled = this.initBusy;
+      b.textContent = this.init ? "Check again" : "Check initialization";
+    }
+  }
+
+  private debuggerHtml(r: StructureReport | null): string {
+    const names = r?.ok ? r.variables.filter((v) => v.role !== "parameter").slice(0, 4000) : [];
+    return `<div class="st-grid dbg-grid">
+      <section class="st-card dbg-trace-card">
+        <h4>Transformation chain <span class="muted">(how a variable is computed)</span></h4>
+        <form class="dbg-trace-form"><input class="dbg-trace-name" placeholder="variable, e.g. ${esc(names[0]?.name ?? "x")}" list="dbg-vars"/><button>Trace</button></form>
+        <datalist id="dbg-vars">${names.map((v) => `<option value="${esc(v.name)}">`).join("")}</datalist>
+        <div class="dbg-trace-body">${this.traceBody()}</div>
+      </section>
+      <section class="st-card dbg-init-card">
+        <h4>Initialization <button class="dbg-run-init"${this.initBusy ? " disabled" : ""}>${this.init ? "Check again" : "Check initialization"}</button></h4>
+        <div class="dbg-init-body">${this.initBody()}</div>
+      </section>
+    </div>`;
+  }
+
+  private wireDebugger() {
+    const f = this.host.querySelector<HTMLFormElement>(".dbg-trace-form");
+    if (f)
+      f.onsubmit = (e) => {
+        e.preventDefault();
+        const n = this.host.querySelector<HTMLInputElement>(".dbg-trace-name")!.value.trim();
+        if (n) void this.traceVar(n);
+      };
   }
 
   /** Show the structure of `model` (analysing it unless already shown). */
   async show(model: string) {
     if (model !== this.model || !this.report) {
-      if (model !== this.model) {
-        this.previous = null;
-        this.selectedBlock = null;
-        this.expandedSets.clear();
-      }
+      if (model !== this.model) this.resetModel();
       this.model = model;
       await this.analyse();
     } else this.render();
@@ -168,7 +346,11 @@ export class StructureView {
     const r = this.report;
     const h = this.host;
     if (!r || !r.ok) {
-      h.innerHTML = `<div class="st-busy">${esc(r?.error ?? "No report")}</div>`;
+      // The model does not translate: the initialization card carries the structural
+      // diagnosis (over- and underdetermined parts, unconnected connectors).
+      h.innerHTML = `<div class="st-warn">${esc(r?.error ?? "No report")}</div>${this.debuggerHtml(null)}`;
+      this.wireDebugger();
+      if (r && !this.init && !this.initBusy) void this.runInit();
       return;
     }
     const j = r.jacobian;
@@ -196,11 +378,12 @@ export class StructureView {
       ${changed ? `<div class="st-diff">States changed: <b>${esc(prev!.states.join(", "))}</b> → <b>${esc(r.states.join(", "))}</b>. Simulate to use them.</div>` : ""}
       ${r.warnings.filter((w) => /state/.test(w)).map((w) => `<div class="st-warn">${esc(w)}</div>`).join("")}
       ${r.jacobian_error ? `<div class="st-warn">Jacobian analysis failed: ${esc(r.jacobian_error)}</div>` : ""}
+      ${this.debuggerHtml(r)}
       <div class="st-grid">
         <div class="st-col">
           <section class="st-card">
             <h4>State selection</h4>
-            <div class="st-states">${r.state_reasons.map((s) => `<div><b>${esc(s.state)}</b> <span class="muted">${esc(s.reason)}</span></div>`).join("") || "<div class='muted'>No states.</div>"}</div>
+            <div class="st-states">${r.state_reasons.map((s) => `<div><b><a class="dbg-var" data-trace-var="${esc(s.state)}">${esc(s.state)}</a></b> <span class="muted">${esc(s.reason)}</span></div>`).join("") || "<div class='muted'>No states.</div>"}</div>
             ${r.state_sets.map((s) => this.setHtml(s)).join("")}
             <div class="st-ov">
               <div class="st-ov-title">Overrides ${ov.size ? "" : "<span class='muted'>(none: pick a tier for a candidate above, or add any variable)</span>"}</div>
@@ -237,6 +420,7 @@ export class StructureView {
         </div>
       </div>`;
     this.wire();
+    this.wireDebugger();
     requestAnimationFrame(() => this.drawAll());
   }
 
@@ -253,7 +437,7 @@ export class StructureView {
         const cur = ov.get(c.var);
         return `<tr class="${c.chosen}">
           <td>${c.chosen === "state" ? "● state" : "○ dummy"}</td>
-          <td><code>${esc(c.var)}</code>${c.flags.length ? ` <span class="muted">(${c.flags.join(", ")})</span>` : ""}</td>
+          <td><code><a class="dbg-var" data-trace-var="${esc(c.var)}">${esc(c.var)}</a></code>${c.flags.length ? ` <span class="muted">(${c.flags.join(", ")})</span>` : ""}</td>
           <td>${esc(c.state_select)}${c.overridden ? " <span class='st-ovmark' title='overridden'>✎</span>" : ""}</td>
           <td><select data-var="${esc(c.var)}" title="Override stateSelect"><option value="">model</option>${TIERS.map((t) => `<option${cur === t ? " selected" : ""}>${t}</option>`).join("")}</select>
           <button data-pin="${esc(c.var)}" title="Pin as state (prefer)">📌</button><button data-forbid="${esc(c.var)}" title="Forbid as state (avoid)">⊘</button></td>
@@ -283,7 +467,7 @@ export class StructureView {
             ? `<div class="st-eqs">${b.eqs
                 .map((e) => {
                   const q = r.equations[e.eq];
-                  return `<div><span class="st-lhs">${e.var ? `${esc(e.var)} :=` : "residual"}</span> <code>${esc(q.text)}</code>${q.differentiated ? ` <span class="muted">(differentiated ${q.differentiated}×)</span>` : ""}<div class="muted st-origin">${esc(q.origin)}</div></div>`;
+                  return `<div><span class="st-lhs">${e.var ? `<a class="dbg-var" data-trace-var="${esc(e.var)}" title="Trace ${esc(e.var)}">${esc(e.var)}</a> :=` : "residual"}</span> <code><a class="dbg-eqlink" data-trace-eq="${e.eq}" title="Show the transformations of this equation">${esc(q.text)}</a></code>${q.differentiated ? ` <span class="muted">(differentiated ${q.differentiated}×)</span>` : ""}<div class="muted st-origin">${esc(q.origin)}</div></div>`;
                 })
                 .join("")}${b.tears.length ? `<div class="muted">tears: ${esc(b.tears.join(", "))}</div>` : ""}</div>`
             : "";

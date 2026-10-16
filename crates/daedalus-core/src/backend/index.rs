@@ -259,7 +259,7 @@ pub fn create_derivative_vars(w: &mut Work) {
 
 /// Check that the number of equations matches the number of unknowns
 /// (unknowns whose derivative appears count as determined by integration).
-fn check_balance(w: &Work) -> Result<()> {
+fn check_balance(w: &mut Work) -> Result<()> {
     let n_unknown = w.unknown.iter().filter(|&&u| u).count();
     let n_diff = (0..w.vars.len())
         .filter(|&v| w.unknown[v] && w.der_of[v].is_some())
@@ -272,6 +272,11 @@ fn check_balance(w: &Work) -> Result<()> {
         } else {
             "underdetermined"
         };
+        if w.trace.is_some() {
+            let active: Vec<bool> = w.der_of.iter().map(|d| d.is_none()).collect();
+            let eqs = w.eqs.clone();
+            w.record_singular("model", &eqs, &|v| active[v as usize]);
+        }
         bail!(
             "model is {what}: {n_eq} equations for {need} unknowns ({n_unknown} variables, {n_diff} of them appear differentiated){}",
             unmatched_hint(w)
@@ -401,6 +406,13 @@ pub fn pantelides(w: &mut Work) -> Result<()> {
             colored_eqs.sort_unstable();
             let no_unknowns = colored_eqs.iter().all(|&e| adj[e].is_empty());
             if no_unknowns || level > 10 || w.eqs.len() > max_eqs {
+                if w.trace.is_some() {
+                    let active: Vec<bool> = (0..w.vars.len())
+                        .map(|v| w.der_of[v].is_none() && !invariant.contains(&(v as VarId)))
+                        .collect();
+                    let eqs = w.eqs.clone();
+                    w.record_singular("index reduction", &eqs, &|v| active[v as usize]);
+                }
                 let mut msg = String::from(
                     "structurally singular system; the following equations cannot be solved:\n",
                 );
@@ -432,6 +444,7 @@ pub fn pantelides(w: &mut Work) -> Result<()> {
                     origin: eq.origin,
                     parent: Some(l),
                     derived: None,
+                    src: eq.src,
                 };
                 w.eqs.push(new);
                 let ni = w.eqs.len() - 1;
@@ -582,6 +595,7 @@ fn prefer_state_change(w: &mut Work) {
             origin: eq.origin,
             parent: Some(l),
             derived: None,
+            src: eq.src,
         });
         let ni = w.eqs.len() - 1;
         w.eqs[l].derived = Some(ni);

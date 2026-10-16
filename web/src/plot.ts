@@ -17,8 +17,27 @@ export interface Series {
   band?: { lo: Float64Array; hi: Float64Array };
   /** Draw markers at the points instead of a line (measured data). */
   points?: boolean;
+  /** Expression over result variables (signal.ts): evaluated again for every new result. */
+  expr?: string;
   /** Line dash pattern. */
   dash?: number[];
+  /** Units the series can be shown in (from the unit table of the result). */
+  choices?: DisplayChoices;
+}
+
+/** One display unit: shown = value * scale + offset. */
+export interface UnitOption {
+  unit: string;
+  scale: number;
+  offset: number;
+  imperial: boolean;
+}
+
+/** Display units of one (unit, displayUnit) pair; see `units::display_choices` in daedalus-core. */
+export interface DisplayChoices {
+  options: UnitOption[];
+  si_default: string;
+  imperial_default: string;
 }
 
 export interface Subplot {
@@ -26,10 +45,33 @@ export interface Subplot {
   /** Parametric plot: the name of the x variable, if not time. */
   xName?: string;
   xUnit?: string;
+  /** Display units of the parametric x variable. */
+  xChoices?: DisplayChoices;
+  /** Unit the user picked for the y axis (else the default of the unit system). */
+  yUnit?: string;
+  /** Unit the user picked for the x axis. */
+  xDisplay?: string;
   /** Zoomed x range of a parametric subplot (time subplots share one range). */
   xZoom?: [number, number];
   /** Logarithmic y axis (values <= 0 are left out). */
   logY?: boolean;
+}
+
+const TIME_CHOICES: DisplayChoices = {
+  options: [
+    { unit: "s", scale: 1, offset: 0, imperial: false },
+    { unit: "ms", scale: 1000, offset: 0, imperial: false },
+    { unit: "min", scale: 1 / 60, offset: 0, imperial: false },
+    { unit: "h", scale: 1 / 3600, offset: 0, imperial: false },
+  ],
+  si_default: "s",
+  imperial_default: "s",
+};
+
+/** The option a unit system defaults to, or the one picked (when the choices have it). */
+export function pickUnit(c: DisplayChoices, imperial: boolean, picked?: string): UnitOption {
+  const want = picked && c.options.some((o) => o.unit === picked) ? picked : imperial ? c.imperial_default : c.si_default;
+  return c.options.find((o) => o.unit === want) ?? c.options[0];
 }
 
 const PALETTE = ["#0b5fff", "#d9480f", "#2b8a3e", "#ae3ec9", "#f08c00", "#1098ad", "#c2255c", "#5c940d", "#364fc7", "#862e9c"];
@@ -76,36 +118,70 @@ const fmtTick = (v: number) => {
   return String(+v.toPrecision(6));
 };
 
+/** Rectangle of one subplot cell in CSS pixels. */
+interface Cell {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
 export class PlotWindow {
   readonly canvas: HTMLCanvasElement;
   subplots: Subplot[] = [{ series: [] }];
   active = 0;
+  /** Matrix layout (rows x cols); null stacks the subplots in one column. Extra subplots
+   * add rows. */
+  layout: { rows: number; cols: number } | null = null;
+  /** Time range shown while a live run streams in (start and stop time), unless zoomed. */
+  liveRange: [number, number] | null = null;
   private xRange: [number, number] | null = null;
   private hover: { px: number; py: number } | null = null;
   private dragStart: number | null = null;
   private dragNow: number | null = null;
+  /** Subplot the drag started in. */
+  private dragSub = 0;
+  /** Shift+drag pans the x axis: where it started and the range then. */
+  private pan: { px: number; range: [number, number]; sub: number } | null = null;
   private colorIndex = 0;
   onChange: () => void = () => {};
+  /** Called after every draw (the visible range may have changed). */
+  onView: () => void = () => {};
   /** Vertical marker lines at these times (time subplots). */
   markers: { t: number; color: string }[] = [];
   /** Shown when nothing is plotted. */
   emptyText = "Tick variables in the variable browser to plot them";
+  private host: HTMLElement;
+  private resizeObs: ResizeObserver;
 
-  constructor(private host: HTMLElement) {
+  constructor(host: HTMLElement) {
+    this.host = host;
     this.canvas = document.createElement("canvas");
     this.canvas.className = "plot";
     host.appendChild(this.canvas);
-    new ResizeObserver(() => this.draw()).observe(host);
+    this.resizeObs = new ResizeObserver(() => this.draw());
+    this.resizeObs.observe(host);
     // Colours come from CSS variables: redraw when the theme changes.
     window.matchMedia?.("(prefers-color-scheme: dark)").addEventListener?.("change", () => this.draw());
     new MutationObserver(() => this.draw()).observe(document.documentElement, {
       attributes: true,
       attributeFilter: ["data-theme", "class"],
     });
-    this.canvas.addEventListener("pointermove", (e) => {
+    const pos = (e: { clientX: number; clientY: number }) => {
       const r = this.canvas.getBoundingClientRect();
-      this.hover = { px: e.clientX - r.left, py: e.clientY - r.top };
-      if (this.dragStart !== null) this.dragNow = this.hover.px;
+      return { px: e.clientX - r.left, py: e.clientY - r.top };
+    };
+    this.canvas.addEventListener("pointermove", (e) => {
+      this.hover = pos(e);
+      if (this.pan) {
+        const sp = this.subplots[this.pan.sub];
+        const { width } = this.area(this.pan.sub);
+        const [a, b] = this.pan.range;
+        const d = ((this.hover.px - this.pan.px) / width) * (b - a);
+        const r: [number, number] = [a - d, b - d];
+        if (sp?.xName) sp.xZoom = r;
+        else this.xRange = r;
+      } else if (this.dragStart !== null) this.dragNow = this.hover.px;
       this.draw();
     });
     this.canvas.addEventListener("pointerleave", () => {
@@ -113,24 +189,36 @@ export class PlotWindow {
       this.draw();
     });
     this.canvas.addEventListener("pointerdown", (e) => {
-      const r = this.canvas.getBoundingClientRect();
-      this.dragStart = e.clientX - r.left;
-      this.dragNow = this.dragStart;
-      const py = e.clientY - r.top;
-      const idx = this.subplotAt(py);
+      const { px, py } = pos(e);
+      const idx = this.subplotAt(px, py);
       if (idx !== null) {
-        this.active = idx;
-        this.onChange();
+        if (idx !== this.active) {
+          this.active = idx;
+          this.onChange();
+        }
+        this.dragSub = idx;
       }
       this.canvas.setPointerCapture(e.pointerId);
+      if (e.shiftKey && idx !== null) {
+        const sp = this.subplots[idx];
+        this.pan = { px, range: sp.xName ? this.parametricRange(sp) : this.currentXRange(), sub: idx };
+        return;
+      }
+      this.dragStart = px;
+      this.dragNow = px;
     });
     this.canvas.addEventListener("pointerup", () => {
+      if (this.pan) {
+        this.pan = null;
+        this.draw();
+        return;
+      }
       if (this.dragStart !== null && this.dragNow !== null && Math.abs(this.dragNow - this.dragStart) > 6) {
         const [a, b] = [this.dragStart, this.dragNow].sort((p, q) => p - q);
         // A parametric subplot zooms its own x axis; time subplots share theirs.
-        const sp = this.subplots[this.active];
+        const sp = this.subplots[this.dragSub];
         const xr = sp?.xName ? this.parametricRange(sp) : this.currentXRange();
-        const { left, width } = this.plotArea();
+        const { left, width } = this.area(this.dragSub);
         const t = (px: number) => xr[0] + ((px - left) / width) * (xr[1] - xr[0]);
         if (sp?.xName) sp.xZoom = [t(a), t(b)];
         else this.xRange = [t(a), t(b)];
@@ -144,6 +232,41 @@ export class PlotWindow {
       else this.xRange = null;
       this.draw();
     });
+    // Wheel zooms the x axis around the cursor (every time subplot together).
+    this.canvas.addEventListener(
+      "wheel",
+      (e) => {
+        const { px, py } = pos(e);
+        const idx = this.subplotAt(px, py);
+        if (idx === null) return;
+        e.preventDefault();
+        const sp = this.subplots[idx];
+        const xr = sp.xName ? this.parametricRange(sp) : this.currentXRange();
+        const { left, width } = this.area(idx);
+        const f = Math.min(0.99, Math.max(0, (px - left) / width));
+        const at = xr[0] + f * (xr[1] - xr[0]);
+        const k = Math.exp(e.deltaY * 0.0015);
+        const r: [number, number] = [at - (at - xr[0]) * k, at + (xr[1] - at) * k];
+        if (sp.xName) sp.xZoom = r;
+        else this.xRange = r;
+        this.draw();
+      },
+      { passive: false },
+    );
+  }
+
+  /** Draw into another element (the plot moves between the Modeling and Simulation pages). */
+  moveTo(host: HTMLElement) {
+    if (host === this.host) return;
+    this.resizeObs.unobserve(this.host);
+    this.host = host;
+    host.appendChild(this.canvas);
+    this.resizeObs.observe(host);
+    this.draw();
+  }
+
+  get hostElement(): HTMLElement {
+    return this.host;
   }
 
   nextColor(): string {
@@ -168,9 +291,63 @@ export class PlotWindow {
     const i = sp.series.findIndex((x) => x.name === s.name);
     if (i >= 0) sp.series.splice(i, 1);
     else {
-      const du = displayUnit(s.unit);
-      sp.series.push({ ...s, color: this.nextColor(), scale: du.scale, offset: du.offset, displayUnit: du.unit });
+      const ns: Series = { ...s, color: this.nextColor() };
+      this.applySeries(sp, ns);
+      sp.series.push(ns);
     }
+    this.draw();
+    this.onChange();
+  }
+
+  /** Default to Imperial units (ft, lbf, psi, mph, degF, hp, ...) instead of SI / displayUnit. */
+  imperial = false;
+
+  /** Recompute every display transform (after a unit pick or a unit-system switch). */
+  applyUnits() {
+    for (const sp of this.subplots) for (const s of sp.series) this.applySeries(sp, s);
+    this.draw();
+  }
+
+  private applySeries(sp: Subplot, s: Series) {
+    if (s.choices?.options.length) {
+      const o = pickUnit(s.choices, this.imperial, sp.yUnit);
+      s.scale = o.scale;
+      s.offset = o.offset;
+      s.displayUnit = o.unit;
+    } else {
+      const du = displayUnit(s.unit);
+      s.scale = du.scale;
+      s.offset = du.offset;
+      s.displayUnit = du.unit;
+    }
+  }
+
+  /** Units offered for the y axis of a subplot: those of its first series that has some. */
+  yChoices(sp: Subplot | undefined = this.subplots[this.active]): DisplayChoices | undefined {
+    return sp?.series.find((s) => s.choices?.options.length)?.choices;
+  }
+
+  /** Units offered for the x axis: time units, or those of the parametric x variable. */
+  xChoices(sp: Subplot | undefined = this.subplots[this.active]): DisplayChoices | undefined {
+    if (!sp?.xName) return TIME_CHOICES;
+    return sp.xChoices?.options.length ? sp.xChoices : undefined;
+  }
+
+  private xTransform(sp: Subplot): UnitOption {
+    const c = this.xChoices(sp);
+    if (c) return pickUnit(c, this.imperial, sp.xDisplay);
+    return { unit: sp.xUnit ?? "", scale: 1, offset: 0, imperial: false };
+  }
+
+  /** Add a series to subplot `k` (default: the active one); replaces one of the same name. */
+  add(s: Omit<Series, "color"> & { color?: string }, k = this.active) {
+    const sp = this.subplots[k];
+    const i = sp.series.findIndex((x) => x.name === s.name);
+    const du = displayUnit(s.unit);
+    const full: Series = { scale: du.scale, offset: du.offset, displayUnit: du.unit, ...s, color: s.color ?? (i >= 0 ? sp.series[i].color : this.nextColor()) };
+    this.applySeries(sp, full);
+    if (i >= 0) sp.series[i] = full;
+    else sp.series.push(full);
     this.draw();
     this.onChange();
   }
@@ -182,8 +359,20 @@ export class PlotWindow {
     this.onChange();
   }
 
+  /** Arrange the subplots in `rows` x `cols` (null: one column), adding empty subplots
+   * to fill the matrix. */
+  setLayout(layout: { rows: number; cols: number } | null) {
+    this.layout = layout && layout.rows * layout.cols > 1 ? layout : null;
+    if (this.layout) while (this.subplots.length < this.layout.rows * this.layout.cols) this.subplots.push({ series: [] });
+    else this.subplots = this.subplots.filter((sp, i) => sp.series.length || i === 0);
+    this.active = Math.min(this.active, this.subplots.length - 1);
+    this.draw();
+    this.onChange();
+  }
+
   clear() {
     this.subplots = [{ series: [] }];
+    if (this.layout) while (this.subplots.length < this.layout.rows * this.layout.cols) this.subplots.push({ series: [] });
     this.active = 0;
     this.xRange = null;
     this.colorIndex = 0;
@@ -194,12 +383,13 @@ export class PlotWindow {
   /** Replace the data of plotted series after a new simulation (same names); series the
    * new result does not have (another model) are dropped, and a zoom outside the new time
    * range is reset. */
-  update(lookup: (name: string) => { x: Float64Array; y: Float64Array } | null) {
+  update(lookup: (name: string, s: Series) => { x: Float64Array; y: Float64Array } | null) {
     let dropped = false;
+    this.liveRange = null;
     for (const sp of this.subplots) {
       sp.series = sp.series.filter((s) => {
         if (s.run) return true;
-        const d = lookup(s.name);
+        const d = lookup(s.name, s);
         if (!d) {
           dropped = true;
           return false;
@@ -208,9 +398,11 @@ export class PlotWindow {
         s.y = d.y;
         return true;
       });
-      sp.xZoom = undefined;
+      // A spectrum keeps its frequency range; other parametric plots show their new data.
+      if (sp.xName !== "frequency") sp.xZoom = undefined;
     }
-    if (this.subplots.length > 1) this.subplots = this.subplots.filter((sp) => sp.series.length > 0);
+    const keep = this.layout ? this.layout.rows * this.layout.cols : 1;
+    if (this.subplots.length > keep) this.subplots = this.subplots.filter((sp, i) => sp.series.length > 0 || i < keep);
     if (this.subplots.length === 0) this.subplots = [{ series: [] }];
     this.active = Math.min(this.active, this.subplots.length - 1);
     if (this.xRange) {
@@ -223,20 +415,65 @@ export class PlotWindow {
     this.onChange();
   }
 
-  private plotArea() {
-    const w = this.canvas.clientWidth;
-    return { left: 64, width: Math.max(10, w - 64 - 16) };
+  /** Data of a run still streaming in: series found by `lookup` get the rows so far,
+   * the others are kept as they are. */
+  setLive(lookup: (name: string, s: Series) => { x: Float64Array; y: Float64Array } | null) {
+    for (const sp of this.subplots) {
+      for (const s of sp.series) {
+        if (s.run) continue;
+        const d = lookup(s.name, s);
+        if (d) {
+          s.x = d.x;
+          s.y = d.y;
+        }
+      }
+    }
+    this.draw();
   }
 
-  private subplotAt(py: number): number | null {
-    const h = this.canvas.clientHeight;
+  /** Grid of the matrix layout: rows and columns used for `n` subplots. */
+  private grid(): { rows: number; cols: number } {
     const n = this.subplots.length;
-    const i = Math.floor((py / h) * n);
-    return i >= 0 && i < n ? i : null;
+    if (!this.layout) return { rows: n, cols: 1 };
+    const cols = this.layout.cols;
+    return { rows: Math.max(this.layout.rows, Math.ceil(n / cols)), cols };
+  }
+
+  private cell(k: number, W = this.canvas.clientWidth, H = this.canvas.clientHeight): Cell {
+    const { rows, cols } = this.grid();
+    const r = Math.floor(k / cols);
+    const c = k % cols;
+    return { x: (c * W) / cols, y: (r * H) / rows, w: W / cols, h: H / rows };
+  }
+
+  /** Horizontal extent of the plotting area of subplot `k`. */
+  private area(k: number) {
+    const c = this.cell(k);
+    return { left: c.x + 64, width: Math.max(10, c.w - 64 - 16) };
+  }
+
+  private subplotAt(px: number, py: number): number | null {
+    for (let k = 0; k < this.subplots.length; k++) {
+      const c = this.cell(k);
+      if (px >= c.x && px < c.x + c.w && py >= c.y && py < c.y + c.h) return k;
+    }
+    return null;
+  }
+
+  /** Time range shown by the time subplots. */
+  visibleRange(): [number, number] {
+    return this.currentXRange();
+  }
+
+  /** Zoom every time subplot to `[a, b]` (null: everything). */
+  setRange(r: [number, number] | null) {
+    this.xRange = r;
+    this.draw();
   }
 
   private currentXRange(): [number, number] {
     if (this.xRange) return this.xRange;
+    if (this.liveRange) return this.liveRange;
     let lo = Infinity;
     let hi = -Infinity;
     for (const sp of this.subplots) {
@@ -270,10 +507,22 @@ export class PlotWindow {
     g.clearRect(0, 0, W, H);
     g.font = "11px system-ui, sans-serif";
     const n = this.subplots.length;
-    const { left, width } = this.plotArea();
     const timeRange = this.currentXRange();
+    // The cursor time, shown in every time subplot (they share the axis).
+    let hoverT: number | null = null;
+    let hoverSub: number | null = null;
+    if (this.hover && this.dragStart === null && !this.pan) {
+      hoverSub = this.subplotAt(this.hover.px, this.hover.py);
+      if (hoverSub !== null && !this.subplots[hoverSub].xName) {
+        const { left, width } = this.area(hoverSub);
+        if (this.hover.px >= left && this.hover.px <= left + width) hoverT = timeRange[0] + ((this.hover.px - left) / width) * (timeRange[1] - timeRange[0]);
+      }
+    }
     for (let k = 0; k < n; k++) {
       const sp = this.subplots[k];
+      const cell = this.cell(k, W, H);
+      const left = cell.x + 64;
+      const width = Math.max(10, cell.w - 64 - 16);
       // Legend entries wrap onto as many rows as the width needs.
       const legend: { s: Series; label: string; x: number; row: number }[] = [];
       {
@@ -292,12 +541,12 @@ export class PlotWindow {
       }
       const rows = legend.length ? legend[legend.length - 1].row + 1 : 1;
       const head = 8 + 14 * rows;
-      const top = (k * H) / n + head;
-      const height = H / n - head - 26;
+      const top = cell.y + head;
+      const height = cell.h - head - 26;
       if (height < 20) continue;
       if (n > 1 && k === this.active) {
         g.fillStyle = accent;
-        g.fillRect(0, top - head, 3, height + head + 26);
+        g.fillRect(cell.x, top - head, 3, height + head + 26);
       }
       const xr = sp.xName ? this.parametricRange(sp) : timeRange;
       // Values in axis space (log10 on a logarithmic axis).
@@ -358,8 +607,11 @@ export class PlotWindow {
       }
       g.textAlign = "center";
       g.textBaseline = "top";
-      for (const t of niceTicks(xr[0], xr[1], Math.max(2, Math.floor(width / 90)))) {
-        const x = Math.round(X(t)) + 0.5;
+      // x ticks are nice numbers in the x display unit
+      const xu = this.xTransform(sp);
+      const [d0, d1] = [xr[0] * xu.scale + xu.offset, xr[1] * xu.scale + xu.offset].sort((a, b) => a - b);
+      for (const t of niceTicks(d0, d1, Math.max(2, Math.floor(width / 90)))) {
+        const x = Math.round(X((t - xu.offset) / xu.scale)) + 0.5;
         g.beginPath();
         g.moveTo(x, top);
         g.lineTo(x, top + height);
@@ -369,7 +621,7 @@ export class PlotWindow {
       g.strokeStyle = muted;
       g.strokeRect(left + 0.5, top + 0.5, width, height);
       g.textAlign = "right";
-      g.fillText(sp.xName ? `${sp.xName}${sp.xUnit ? ` [${sp.xUnit}]` : ""}` : "time [s]", left + width, top + height + 14);
+      g.fillText(`${sp.xName ?? "time"}${xu.unit ? ` [${xu.unit}]` : ""}`, left + width, top + height + 14);
       // series
       g.save();
       g.beginPath();
@@ -386,7 +638,7 @@ export class PlotWindow {
           continue;
         }
         if (s.dash) g.setLineDash(s.dash);
-        this.drawSeries(g, s, xr, X, Yt, !!sp.xName);
+        this.drawSeries(g, s, xr, X, Yt, !!sp.xName, width);
         g.setLineDash([]);
       }
       if (!sp.xName) {
@@ -411,14 +663,15 @@ export class PlotWindow {
         g.fillStyle = fg;
         g.fillText(label, x + 18, ly);
       }
-      // crosshair readout
-      if (this.hover && !sp.xName && this.hover.px >= left && this.hover.px <= left + width) {
-        const t = xr[0] + ((this.hover.px - left) / width) * (xr[1] - xr[0]);
+      // crosshair readout: the cursor time in every time subplot
+      if (hoverT !== null && !sp.xName && hoverT >= xr[0] && hoverT <= xr[1]) {
+        const t = hoverT;
+        const hx = X(t);
         g.strokeStyle = muted;
         g.setLineDash([3, 3]);
         g.beginPath();
-        g.moveTo(Math.round(this.hover.px) + 0.5, top);
-        g.lineTo(Math.round(this.hover.px) + 0.5, top + height);
+        g.moveTo(Math.round(hx) + 0.5, top);
+        g.lineTo(Math.round(hx) + 0.5, top + height);
         g.stroke();
         g.setLineDash([]);
         let ry = top + 14;
@@ -428,23 +681,24 @@ export class PlotWindow {
           return { s, v, text: `${s.name} = ${fmtTick(v)}${s.displayUnit ? ` ${s.displayUnit}` : ""}` };
         });
         const boxW = Math.max(60, ...lines.map((l) => g.measureText(l.text).width)) + 8;
-        const boxX = this.hover.px + 8 + boxW > left + width ? this.hover.px - 8 - boxW : this.hover.px + 8;
+        const boxX = hx + 8 + boxW > left + width ? hx - 8 - boxW : hx + 8;
         for (const { s, v, text } of lines) {
           g.fillStyle = s.color;
           g.beginPath();
-          g.arc(this.hover.px, Y(ty(v)), 3, 0, 2 * Math.PI);
+          g.arc(hx, Y(ty(v)), 3, 0, 2 * Math.PI);
           g.fill();
           g.fillText(text, boxX, ry);
           ry += 14;
         }
         g.fillStyle = muted;
-        g.fillText(`t = ${fmtTick(t)}`, boxX, ry);
+        g.fillText(`t = ${fmtTick(t * xu.scale + xu.offset)} ${xu.unit}`, boxX, ry);
       }
     }
     if (this.dragStart !== null && this.dragNow !== null) {
+      const c = this.cell(this.dragSub, W, H);
       g.fillStyle = accent;
       g.globalAlpha = 0.14;
-      g.fillRect(Math.min(this.dragStart, this.dragNow), 0, Math.abs(this.dragNow - this.dragStart), H);
+      g.fillRect(Math.min(this.dragStart, this.dragNow), c.y, Math.abs(this.dragNow - this.dragStart), c.h);
       g.globalAlpha = 1;
     }
     if (this.subplots.every((s) => s.series.length === 0)) {
@@ -453,6 +707,7 @@ export class PlotWindow {
       g.font = "13px system-ui, sans-serif";
       g.fillText(this.emptyText, W / 2, H / 2);
     }
+    this.onView();
   }
 
   private parametricRange(sp: Subplot): [number, number] {
@@ -500,27 +755,22 @@ export class PlotWindow {
     }
   }
 
-  private drawSeries(g: CanvasRenderingContext2D, s: Series, xr: [number, number], X: (x: number) => number, Y: (y: number) => number, parametric: boolean) {
-    const n = s.x.length;
+  private drawSeries(g: CanvasRenderingContext2D, s: Series, xr: [number, number], X: (x: number) => number, Y: (y: number) => number, parametric: boolean, width: number) {
+    const n = Math.min(s.x.length, s.y.length);
     if (n === 0) return;
     const sc = s.scale ?? 1;
     const of = s.offset ?? 0;
-    if (s.points) {
-      for (let i = 0; i < n; i++) {
-        if (s.x[i] < xr[0] || s.x[i] > xr[1]) continue;
-        const py = Y(s.y[i] * sc + of);
-        if (!Number.isFinite(py)) continue;
-        g.fillRect(X(s.x[i]) - 2, py - 2, 4, 4);
-      }
-      return;
-    }
     g.beginPath();
-    if (parametric || n < 4 * this.canvas.clientWidth) {
+    if (parametric || n < 4 * width) {
       let started = false;
       for (let i = 0; i < n; i++) {
         if (!parametric && (i + 1 < n && s.x[i + 1] < xr[0])) continue;
         const px = X(s.x[i]);
         const py = Y(s.y[i] * sc + of);
+        if (!Number.isFinite(py)) {
+          started = false;
+          continue;
+        }
         if (!started) {
           g.moveTo(px, py);
           started = true;

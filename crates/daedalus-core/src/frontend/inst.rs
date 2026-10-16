@@ -20,8 +20,19 @@ use std::rc::Rc;
 
 #[path = "clocks.rs"]
 mod clocks;
+#[path = "statemachines.rs"]
+mod statemachines;
 
 pub type InstId = u32;
+
+/// Source position of an AST node, for the equation debugger.
+fn src_loc(l: Option<&rumoca_core::Location>) -> Option<SrcLoc> {
+    l.filter(|l| l.start_line > 0).map(|l| SrcLoc {
+        source: l.source.0,
+        line: l.start_line,
+        col: l.start_column,
+    })
+}
 
 /// Lexical environment for class lookups, carrying redeclared class overrides.
 pub struct Env {
@@ -92,6 +103,8 @@ pub fn merge<'a>(outer: &Mod<'a>, inner: &Mod<'a>) -> Mod<'a> {
         r.value = outer.value.clone();
         r.each = outer.each;
     }
+    // `c(final p = x)` makes `p` final whatever its declaration says.
+    r.final_ |= outer.final_;
     for (n, om) in &outer.subs {
         if let Some(pos) = r.subs.iter().position(|(rn, _)| rn == n) {
             let merged = merge(om, &r.subs[pos].1);
@@ -303,6 +316,8 @@ pub struct Flattener<'a, 't> {
     clocked_whens: Vec<(ExprId, Vec<Equation>)>,
     /// A synchronous operator was translated.
     uses_clocks: bool,
+    /// State machines (MLS chapter 17) recorded during translation.
+    sm: statemachines::SmLog,
     depth: usize,
     /// Next id of a [`Node::Local`] standing for a loop variable while a loop body is
     /// translated (unique, so nested loops never mix their variables up).
@@ -386,6 +401,7 @@ impl<'a, 't> Flattener<'a, 't> {
             clock_vars: FxHashSet::default(),
             clocked_whens: Vec::new(),
             uses_clocks: false,
+            sm: Default::default(),
             depth: 0,
             next_local: 1 << 20,
             outlining: FxHashSet::default(),
@@ -809,12 +825,18 @@ impl<'a, 't> Flattener<'a, 't> {
         self.count_connects()?;
         let n = self.insts.len();
         for i in 0..n {
+            let s0 = self.model.equations.len();
             self.translate_instance(i as InstId)
                 .with_context(|| format!("in component '{}'", self.inst_name(i as InstId)))?;
+            let s1 = self.model.equations.len();
+            if s1 > s0 {
+                self.sm.eq_ranges.push((s0, s1, i as InstId));
+            }
         }
         self.finish_impure_rng();
         self.finish_streams();
         self.finish_connections();
+        self.lower_state_machines()?;
         self.lower_clocks()?;
         self.finish_discrete();
         self.drop_unused_expandable();
@@ -1420,7 +1442,7 @@ impl<'a, 't> Flattener<'a, 't> {
                 v.is_flow = is_flow;
                 v.description = desc.clone();
                 v.is_protected = comp.is_protected;
-                v.is_final = comp.is_final || self.insts[inst as usize].is_final;
+                v.is_final = comp.is_final || m.final_ || self.insts[inst as usize].is_final;
                 v.is_output = causality_output && prefix.is_empty();
                 let vid = self.model.add_var(v);
                 if b == "Clock" {
@@ -2002,6 +2024,7 @@ impl<'a, 't> Flattener<'a, 't> {
                     "declaration of {}",
                     self.model.vars[var as usize].name
                 ));
+                self.model.set_origin_loc(o, src_loc(s.expr.get_location()));
                 self.model.equations.push(Equation {
                     lhs,
                     rhs: e,
@@ -2015,6 +2038,12 @@ impl<'a, 't> Flattener<'a, 't> {
                 "start" | "nominal" | "min" | "max" => {
                     let val = self.translate_scoped(s, &mut ctx)?;
                     let e = self.element_of(val, index, count, sm.each)?;
+                    if attr == "start" {
+                        let scope = s.scope.inst.map(|i| self.insts[i as usize].prefix.clone());
+                        let loc = src_loc(s.expr.get_location());
+                        let scope = scope.unwrap_or_default();
+                        self.model.start_src.insert(var, StartSrc { scope, loc });
+                    }
                     let v = &mut self.model.vars[var as usize];
                     match attr.as_str() {
                         "start" => v.start = Some(e),
@@ -2506,6 +2535,7 @@ impl<'a, 't> Flattener<'a, 't> {
                 let l = self.materialize(l)?;
                 let r = self.materialize(r)?;
                 let o = self.eq_origin(scope, "equation");
+                self.model.set_origin_loc(o, src_loc(eq.get_location()));
                 self.push_residuals(l, r, out, o)?;
             }
             ast::Equation::Connect { lhs, rhs } => {
@@ -2578,6 +2608,7 @@ impl<'a, 't> Flattener<'a, 't> {
                         );
                     }
                     let o = self.eq_origin(scope, "if-equation");
+                    self.model.set_origin_loc(o, src_loc(eq.get_location()));
                     for k in 0..n {
                         let mut res = {
                             let e = ev[k];
@@ -2712,7 +2743,9 @@ impl<'a, 't> Flattener<'a, 't> {
                         }
                     }
                     _ => {
-                        // Function call with no outputs in an equation section: ignore.
+                        // `transition(..)` / `initialState(..)`; any other function call
+                        // with no outputs in an equation section is ignored.
+                        self.sm_equation(&name, args, scope, ctx)?;
                     }
                 }
             }
@@ -5263,6 +5296,11 @@ impl<'a, 't> Flattener<'a, 't> {
         {
             return r;
         }
+        if !name.contains('.')
+            && let Some(r) = self.sm_call(&name, &pos, scope, ctx)
+        {
+            return r;
+        }
         let short = name.rsplit('.').next().unwrap_or(&name).to_string();
         let is_builtin_ns = !name.contains('.') || name.starts_with("Modelica.Math.");
         if is_builtin_ns && let Some(f) = f1(&short) {
@@ -7241,7 +7279,7 @@ impl<'a, 't> Flattener<'a, 't> {
         Ok(vec![r])
     }
 
-    /// An external C function of the MSL implemented natively ([`crate::external`]).
+    /// An external C function of the MSL implemented natively ([`crate::external_component`]).
     /// The outputs and locals of the function are already in `ctx` with their sizes;
     /// the external call's arguments are inputs, or outputs written by the function.
     fn native_external(

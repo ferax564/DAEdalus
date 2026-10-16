@@ -1,6 +1,6 @@
 [package]
 name = "daedalus-fmi"
-description = "FMI 2.0 (Model Exchange and Co-Simulation) runtime for FMUs exported by DAEdalus"
+description = "FMI 2.0 and 3.0 (Model Exchange and Co-Simulation) runtime for FMUs exported by DAEdalus"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

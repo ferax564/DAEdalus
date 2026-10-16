@@ -7,8 +7,8 @@ extra sources (see [Command line](cli.md#libraries)).
 
 ## Coverage
 
-**473 of the 534** MSL 4.1.0 example models translate and simulate to the end, and
-**424** of them match the Modelica Association's reference results (see below). They
+**489 of the 534** MSL 4.1.0 example models translate and simulate to the end, and
+**445** of them match the Modelica Association's reference results (see below). They
 include:
 
 - `Mechanics` (Rotational, Translational, MultiBody), `Electrical` (Analog, Digital,
@@ -33,10 +33,10 @@ that passed in the committed baseline stops passing.
 
 | Result | Models |
 | --- | ---: |
-| Matches the reference results | 424 |
-| Simulates, but a signal differs | 49 |
-| Hits the time limit | 5 |
-| Does not translate or stops | 56 |
+| Matches the reference results | 445 |
+| Simulates, but a signal differs | 44 |
+| Hits the time limit | 4 |
+| Does not translate or stops | 41 |
 | **Total** | **534** |
 
 The [scoreboard](https://daedalus.apps.ezkeel.com/scoreboard.html) lists every example

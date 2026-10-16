@@ -31,7 +31,7 @@ watch the 3-D animation.
   <a class="card" href="assistant.md"><img src="img/assistant/card.webp" alt=""><b>AI assistant and MCP <span class="new">New</span></b><span>Ask Claude to build, check, simulate and explain models, in the workbench or from Claude Code.</span></a>
   <a class="card" href="animation.md"><img src="img/multibody/sevenpost_rig.webp" alt=""><b>3-D animation</b><span>Replays MultiBody results and every example in 3-D, with camera presets, chase cameras and video recording.</span></a>
   <a class="card" href="multibody.md"><img src="img/multibody/kc_rig.webp" alt=""><b>Multibody vehicles</b><span>Double wishbone, pushrod, multilink and MacPherson corners, K&amp;C and seven-post rigs, a full car.</span></a>
-  <a class="card" href="msl.md"><img src="img/msl/card.webp" alt=""><b>Modelica Standard Library</b><span>MSL 4.1.0 loads in the browser out of the box; 424 of its 534 examples match the reference results.</span></a>
+  <a class="card" href="msl.md"><img src="img/msl/card.webp" alt=""><b>Modelica Standard Library</b><span>MSL 4.1.0 loads in the browser out of the box; 445 of its 534 examples match the reference results.</span></a>
   <a class="card" href="https://daedalus.apps.ezkeel.com/scoreboard.html"><img src="img/scoreboard_card.webp" alt=""><b>Accuracy scoreboard <span class="new">New</span></b><span>Every MSL example compared with the reference results, signal by signal, by package.</span></a>
   <a class="card" href="python.md"><img src="img/python_card.webp" alt=""><b>Python API <span class="new">New</span></b><span><code>import daedalus</code>: load, set parameters, simulate to NumPy, linearize and export FMUs in-process.</span></a>
   <a class="card" href="scripting.md"><img src="img/scripting_card.webp" alt=""><b>.mos scripts and trim <span class="new">New</span></b><span>Run Dymola and OpenModelica regression scripts; find steady states and trim with exact Jacobians.</span></a>
@@ -63,7 +63,9 @@ elimination) translates in 2.5 s and simulates for one second in 3.9 s. See
 - [What's new](whats-new.md): the features added most recently.
 - [Example library](examples.md): every bundled example, with its results.
 - [Command line](cli.md): every `daedalus` command and option.
-- [Python API](python.md): scripting DAEdalus from Python and Jupyter.
+- [Python API](python.md): scripting DAEdalus from Python and Jupyter, and
+  [scientific machine learning](sciml.md) on top of it.
+- [Embedded C and processor in the loop](embedded.md): controllers on Arduino and ESP32.
 - [Structure and state selection](structure.md) and [Sensitivity and calibration](analysis.md):
   understanding a model and its parameters.
 

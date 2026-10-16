@@ -80,6 +80,47 @@ pub fn linearize(
     at: Option<f64>,
     method: JacobianMethod,
 ) -> Result<Linearization, String> {
+    linearize_with_outputs(m, opts, at, method, &[])
+}
+
+/// Continuous Real variables that can be appended to the outputs `y` of a
+/// linearization (see [`linearize_with_outputs`]): every non-generated variable that
+/// is neither a parameter, a constant, an input nor a discrete variable.
+pub fn output_candidates(m: &Model) -> Vec<VarId> {
+    (0..m.vars.len() as VarId)
+        .filter(|&v| {
+            let var = &m.vars[v as usize];
+            var.ty == VarType::Real
+                && var.kind == VarKind::Continuous
+                && !var.generated
+                && !var.name.starts_with('$')
+        })
+        .collect()
+}
+
+/// Like [`linearize`], with the named variables (any of [`output_candidates`]) added to
+/// the top-level outputs as extra rows of `C` and `D`.
+pub fn linearize_with_outputs(
+    m: &Model,
+    opts: SimOptions,
+    at: Option<f64>,
+    method: JacobianMethod,
+    extra_outputs: &[String],
+) -> Result<Linearization, String> {
+    let mut extra = Vec::new();
+    let outs = real_outputs(m);
+    for n in extra_outputs {
+        let v = (0..m.vars.len() as VarId)
+            .find(|&v| m.vars[v as usize].name == *n)
+            .ok_or_else(|| format!("unknown variable '{n}'"))?;
+        let var = &m.vars[v as usize];
+        if var.ty != VarType::Real || matches!(var.kind, VarKind::Input) {
+            return Err(format!("'{n}' is not a continuous Real variable"));
+        }
+        if !outs.contains(&v) && !extra.contains(&v) {
+            extra.push(v);
+        }
+    }
     let t_lin = at.unwrap_or(opts.start_time);
     if t_lin < opts.start_time {
         return Err(format!(
@@ -104,14 +145,36 @@ pub fn linearize(
         sim.rt.run(&m.ode);
         sim.rt.run(&m.outputs);
     }
-    linearize_at(&mut sim.rt, method)
+    linearize_at_with(&mut sim.rt, method, &extra)
 }
 
 /// Linearize at the runtime's current (consistent) solution point.
 pub fn linearize_at(rt: &mut Runtime, method: JacobianMethod) -> Result<Linearization, String> {
+    linearize_at_with(rt, method, &[])
+}
+
+/// [`linearize_at`] with extra output variables appended to the top-level outputs.
+pub fn linearize_at_with(
+    rt: &mut Runtime,
+    method: JacobianMethod,
+    extra_outputs: &[VarId],
+) -> Result<Linearization, String> {
     let m = rt.m;
+    if !m.externals.is_empty() {
+        return Err(format!(
+            "{} contains FMU components, which cannot be linearized",
+            m.name
+        ));
+    }
     let inputs = real_inputs(m);
-    let outputs = real_outputs(m);
+    let mut outputs = real_outputs(m);
+    outputs.extend(
+        extra_outputs
+            .iter()
+            .copied()
+            .filter(|v| !outputs.contains(v))
+            .collect::<Vec<_>>(),
+    );
     let name = |v: &VarId| m.vars[*v as usize].name.clone();
     let mut lin = Linearization {
         model: m.name.clone(),

@@ -16,5 +16,9 @@ were assumed. The aim is the same physics and the same kind of result plot, not 
 </ul>
 <p><b>OptimalControl</b> holds plants with top-level inputs for optimal control, MPC and moving horizon
 estimation with CasADi (<code>daedalus export-casadi</code>, <code>python/daedalus_casadi</code>).</p>
+<p><b>Embedded</b> holds a DC motor speed loop with discrete and continuous controllers for
+embedded C code generation and processor in the loop (<code>daedalus codegen-c</code>,
+<code>daedalus hil</code>). <b>SciML</b> holds a motor with unmodelled friction for
+missing-physics discovery, symbolic regression and neural surrogates (<code>daedalus.sciml</code>).</p>
 </html>"));
 end Examples;

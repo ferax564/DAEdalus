@@ -97,6 +97,38 @@ with algebraic loops differentiated implicitly through their symbolic Jacobians
 (`--jacobian fd` uses central differences instead). `--format mo` writes the model
 `linearized_model` in the form OpenModelica writes it.
 
+### Linear analysis
+
+`daedalus linear-analysis` linearizes the model like `linearize` and analyzes the
+chosen input → output pairs: poles, transmission zeros, DC gain and relative degree,
+Bode and Nyquist data with gain and phase margins, step and impulse responses with
+rise time, settling time and overshoot, and PID suggestions (SIMC PI and
+Ziegler–Nichols PID from a first-order-plus-dead-time fit of the step response).
+`--reduce N` adds balanced truncation (reduced A, B, C, D, Hankel singular values,
+the H∞ error bound, and the reduced model's responses for comparison), `--lqr Q,R`
+the LQR gain for `Q = q·I`, `R = r·I` with its closed-loop poles. Outputs may be any
+continuous variable or state, not only top-level outputs.
+
+```sh
+./target/release/daedalus linear-analysis library/Daedalus \
+    -m Daedalus.Examples.OptimalControl.ActiveSuspension \
+    --inputs F_act --outputs a_body,travel --reduce 2 --lqr 1,1e-6 -o suspension.json
+# CSV: Bode data to bode.csv and step responses to bode_step.csv
+./target/release/daedalus linear-analysis model.mo -m MyModel --at 2 --bode --step -o bode.csv
+```
+
+A text summary goes to stdout; `-o file.json` holds everything, `-o file.csv` the
+Bode (`--bode`) and step (`--step`) data. The numerics are in
+`crates/daedalus-core/src/lti.rs`, with no extra dependencies: Bode points are `O(n²)`
+each after a Householder Hessenberg reduction; step responses are exact for a step
+(zero-order hold with the Padé matrix exponential); Lyapunov and Riccati equations are
+solved with the matrix sign function; transmission zeros are the zero-dynamics
+eigenvalues of a Krylov minimal realization of each pair. Balanced truncation needs a
+stable model, and the dense algorithms are meant for up to a few hundred states. In
+the workbench, the **Linear** tab of the model view shows the same analysis with input
+and output pickers, Bode or Nyquist plot, pole-zero map, step or impulse response and
+the summary.
+
 ```sh
 # Steady state: x with der(x) = 0, from the initial state (or after simulating
 # to --at-time T); prints states, derivatives, outputs and the eigenvalues
@@ -113,10 +145,46 @@ Jacobian of the linearization (Levenberg–Marquardt steps where it is singular)
 `run` executes the common scripting commands of both tools so existing
 regression scripts run unchanged; see [docs/scripting.md](docs/scripting.md).
 
+### Units
+
+```sh
+# every variable's declared or inferred unit, then the unit issues (--json, --all)
+./target/release/daedalus units model.mo -m MyModel
+# translate as usual and print unit issues as warnings
+./target/release/daedalus check model.mo -m MyModel --units
+```
+
+The unit checker (`daedalus_core::units`) is a separate pass over the flat model.
+It parses `unit` strings with the grammar of MLS 19.1 (`"kg.m2"`, `"rad/s"`,
+`"W/(m2.K)"`, `"s-1"`, SI prefixes, plus `degC`, `bar`, `rpm`, `l`, `min`, `h` and the
+Imperial `ft`, `in`, `lbf`, `psi`, `mph`, `hp`, `degF`, ...) into the seven SI base
+dimensions and a scale. Terms of sums, the sides of equations, `if` branches, relation
+operands and `min`/`max` must agree; products combine, `der()` divides by seconds,
+`sqrt` halves, and the arguments of `sin`, `exp`, ... must be dimensionless. Functions are
+checked through their inlined bodies with the units of the actual arguments. Variables
+without a unit get one inferred, and the workbench plots them with it.
+
+Findings are warnings, never errors, and the rules are tuned so that MSL's own idioms
+stay quiet: numeric literals are unit-polymorphic (`x + 1`, `1.5*R`), parameters and
+variables declared `unit="1"` (gains, ideal-switch and friction path parameters) are
+polymorphic, each branch of an if-equation is its own equation, `log` takes any unit, a
+clash that involves an inferred unit drops that inference instead of reporting it, and a
+clash by exactly the unit of a folded `constant ... unitTime = 1` is ignored. On the 509
+MSL 4.1.0 examples that flatten and the 19 `Daedalus` / `MultiBodyVehicle` examples it
+reports no issue, and it costs about 1 % of the flattening time. Rotations count as
+dimensionless when checking (`rad/s` agrees with `Hz`) but not when converting for display.
+
+In the workbench, **Check** lists the unit issues in the messages panel. Plots show each
+variable in its `displayUnit` (else a Dymola-style default: rpm, deg, bar, degC, l/min,
+kJ); the plot toolbar picks the unit of the x and y axes from the units that convert, and
+**Imperial** switches the defaults to ft, lbf, lbf.ft, psi, mph, degF, hp, gal/min, ...
+
 ```sh
 # FMI 2.0 FMU (Model Exchange and Co-Simulation) for linux64
 cargo build --release -p daedalus-cli -p daedalus-fmi
 ./target/release/daedalus fmu library/Daedalus -m Daedalus.Examples.TorqueConverter.StallTest -o StallTest.fmu
+# the same as an FMI 3.0 FMU (x86_64-linux)
+./target/release/daedalus fmu library/Daedalus -m Daedalus.Examples.TorqueConverter.StallTest --fmi-version 3 -o StallTest3.fmu
 # validate with FMPy and compare its ME and CS runs with `daedalus simulate`
 ./target/release/daedalus simulate library/Daedalus -m Daedalus.Examples.TorqueConverter.StallTest -o ref.csv --vars rpm_engine
 python3 tools/fmu_check.py StallTest.fmu ref.csv rpm_engine
@@ -129,7 +197,47 @@ in `resources/model.bin`, and the model-independent FMI runtime
 or via `--fmi-lib` / `DAEDALUS_FMI_LIB`) as `binaries/linux64/<id>.so`.
 Co-Simulation steps with the model's own BDF/Dopri5 solver and event handling;
 Model Exchange exposes the states, derivatives and one event indicator per
-relation. FMU state get/set and directional derivatives are not provided.
+relation. With `--fmi-version 3` the same runtime implements the `fmi3*` API
+(Float64, Int32 and Boolean variables, `fmi3UpdateDiscreteStates`, and exact
+directional derivatives from the forward tangents of the compiled equations, after
+initialization). FMU state get/set is not provided.
+
+### FMU and SSP import
+
+```sh
+# simulate an FMU (FMI 2.0 or 3.0) on its own: Model Exchange if it has it, its
+# outputs and local variables in the result
+./target/release/daedalus simulate StallTest.fmu -o fmu.csv --vars rpm_engine
+./target/release/daedalus simulate StallTest.fmu --fmi-type cs --comm-step 0.004 -o cs.csv
+# wrapper block, usable as a component in any model (connect its inputs and outputs)
+./target/release/daedalus import-fmu Plant.fmu -o Plant.mo [--fmi-type me|cs] [--comm-step H] [--class NAME] [--within PKG]
+# SSP: simulate a system of FMUs as a co-simulation master, import it as a model,
+# or export a model made of FMU components
+./target/release/daedalus simulate System.ssp --comm-step 0.01 -o sys.csv
+./target/release/daedalus import-ssp System.ssp -o System.mo
+./target/release/daedalus export-ssp . -m Loop -o Loop.ssp
+```
+
+The wrapper declares the FMU's parameters, its inputs and outputs as connectors, and
+an annotation `__Daedalus_FMU(fileName = "Plant.fmu", fmiType = "ModelExchange")`
+(the file relative to the `.mo`). The FMU is unpacked and its binary loaded when the
+simulation starts. A Model Exchange FMU's states (`fmu_x`) are integrated together
+with the model's, its event indicators are located like the model's own zero
+crossings, and its time events and discrete state updates take part in the event
+iteration; outputs that depend directly on inputs are iterated to a fixed point.
+Every integrator works with FMU components; the implicit ones (BDF, Radau, ESDIRK,
+auto) then use a dense difference Jacobian, since the tape does not see inside an FMU.
+A Co-Simulation FMU is stepped over the communication grid `t0 + k*communicationStepSize`
+with its inputs held over each step; its outputs change at the grid points (a
+signal through a chain of Co-Simulation FMUs is delayed one step per FMU, so the
+error is first order in the step). `import-ssp` reads `SystemStructure.ssd` (FMU
+components, parameter bindings inline or in `.ssv` files, connections, system
+connectors, default experiment) and writes one model with a wrapper class per FMU;
+nested systems are not supported. `export-ssp` packs the FMU components of a model,
+their parameter values, placements and connections. FMU components need the native
+tool (CLI or Python package): the browser workbench reports an error for them, and
+`linearize`/`steady` refuse them. Tests: `crates/daedalus-cli/tests/fmu_import.rs`
+imports exported FMUs back and compares them with the native simulation.
 
 Other source directories, such as the Modelica Standard Library, are loaded by
 passing them as extra sources or with `-L DIR`.
@@ -175,6 +283,105 @@ again and the new states, eigenvalues and stiffness are shown next to the old
 ones before simulating. The overrides are kept per model for the session, used
 by **Simulate**, and **Copy as modifier** gives the equivalent
 `x(stateSelect = StateSelect.prefer)` modifications.
+
+## Libraries, packages, diff and parameter data
+
+```sh
+# Libraries: the index of open libraries (library/packages.json), install by name,
+# GitHub URL or a downloaded zip, into $DAEDALUS_LIBRARIES (default ~/.daedalus/libraries)
+./target/release/daedalus lib index
+./target/release/daedalus lib install Buildings@12.1.0
+./target/release/daedalus lib install https://github.com/owner/MyLib@v1.2.0
+./target/release/daedalus lib install ~/Downloads/OpenIPSL-3.0.1.zip
+./target/release/daedalus lib list
+./target/release/daedalus lib resolve model.mo     # uses(...) -> installed versions, conflicts
+
+# A model with the files and resources (modelica:// URIs) it needs, as a zip; the
+# MSL is referred to in the manifest, not copied. A .zip source is opened again.
+./target/release/daedalus package library/Daedalus -m Daedalus.Examples.TorqueConverter.Launch -o Launch.zip
+./target/release/daedalus simulate Launch.zip -o launch.mat
+
+# Structural diff of a class (components, parameters, modifiers, placements,
+# connections, equations); --text adds the unified text diff, --format json
+./target/release/daedalus diff old/Plant.mo new/Plant.mo -m Demo.Plant --text
+
+# Parameter data (CSV name,value[,unit] or SSP .ssv) as a modifier; values are checked
+# against the component's type and converted to its units (mm -> m, bar -> Pa, ...)
+./target/release/daedalus params-from library/Daedalus -m Daedalus.Examples.TorqueConverter.StallTest -c engine engine.csv
+#   engine(J = 0.25, tau_drag = 25, w_start = 104.71975511966)
+# --record Name prints a record instead; --apply writes the modifier into the source
+```
+
+Every command resolves the `uses(...)` annotations of what it loads against the
+installed libraries (exact version, else the newest of the same major version) and
+warns about conflicting requirements. `lib install` downloads with `curl` from
+GitHub; where that is blocked, download the release zip and install the file.
+
+In the workbench:
+- **Libraries** lists the libraries loaded with their versions, `uses` conflicts and
+  missing libraries, and installs a library of the index, a GitHub URL or a picked zip.
+  Browsers cannot read GitHub's archives (no CORS headers), so the files come from
+  jsDelivr's GitHub CDN. Installed libraries are kept in IndexedDB for the next visit.
+- **Save .zip** writes the open model as a package; **Open** takes such a zip (or a
+  library zip) back.
+- **Diff** compares the open class with the version as loaded or a picked file: a
+  summary, the text diff, and the diagram with added, changed, moved (dashed old
+  place) and removed components and connections highlighted.
+- **Documentation** renders `info` and `revisions` HTML sanitized (no scripts, event
+  handlers or `javascript:` links), with `modelica://` class links that navigate and
+  images from library resources. Documentation that does not start with a tag is
+  Markdown with `$...$`/`$$...$$` LaTeX (marked and KaTeX, bundled, so offline).
+  The `__Daedalus_metadata(key="value", ...)` annotation is shown and edited there.
+- **Import parameters…** in the component inspector reads a CSV or SSV file, shows the
+  checked values as a modifier and a record, and applies them to the declaration
+  with the diagram editor's modifier edit (undo and redo work as for diagram edits).
+
+## Equation and initialization debugger
+
+```sh
+# How is x computed? Equation, BLT block, tearing role and every symbolic
+# transformation (alias substitution, differentiation for index reduction,
+# dummy derivative, solve-for, tearing), each with component and file:line
+./target/release/daedalus debug model.mo -m MyModel --var body.v --var 'der(x)'
+./target/release/daedalus debug model.mo -m MyModel --equation 12
+
+# Initialization: unknowns, start values used (fixed / guess, set where),
+# blocks, and for a failing block the residuals at the last iterate and the
+# variables with the largest Newton update
+./target/release/daedalus debug model.mo -m MyModel --init [--format json]
+```
+
+Each transformation step names the equation as written, the component
+instance it came from and its source position, so a chain reads like
+"`r.v = r.p.v - r.n.v` (in r, Resistor.mo:12) → substituted alias
+`r.p.v = c.n.v` (connection) → solved for `r.i` in block 7". The start value
+of every iteration variable says whether it is fixed or only a guess, which
+instance set it (`b(x0 = 2)` at the modification site) and whether it was
+inherited from an alias.
+
+When translation fails, `debug` explains the structural problem locally
+instead of only counting equations: a matching-based search finds the
+smallest under- or over-determined subset and lists its equations and
+unknowns with component paths (for example "`leak.w` is not determined by
+any equation; component `leak`"). It also warns about physical connectors
+that are left unconnected: a component placed in the model none of whose
+(two or more) physical connectors is connected, or the open end of a two-pin
+electrical component, through which no current can flow. Connectors whose
+unconnected flow is simply zero by the language rules (an open output
+terminal, a free flange, a lone ground, the disabled thermal ports inside a
+machine) are reported as notes only. Over the 521 example models of the
+Modelica Standard Library 4.1.0 and the Daedalus library that flatten, this
+gives 2 warnings, both real (the `earth` resistor of the transformer examples
+whose `p` pin is left open), and no false positive.
+
+`simulate` prints the same initialization report when the initial solve
+fails, and when a nonlinear block fails during the run it names the block,
+the time, the iteration count and residual norm and the residuals of its
+equations. In the workbench the **Structure** tab has a **Transformation
+chain** card (click any variable or equation in the blocks or states to see
+its chain, positions open the Text view at that line) and an
+**Initialization** card; failed checks and simulations in the messages panel
+have a link that opens it on the failing model.
 
 ## Python
 
@@ -257,6 +464,92 @@ The page is laid out like Dymola:
 - a model with MultiBody shapes also gets an **Animation** view: a 3-D
   replay with STL/OBJ meshes, studio lighting, camera presets, follow and
   chase cameras, part selection with X-ray, and WebM recording.
+
+### Plotting and dashboards
+
+- **Live plotting.** With **Live** ticked (the default) a simulation streams its
+  rows into the plot while it runs, on a fixed time axis from start to stop time;
+  **■ Stop** ends it and keeps the rows so far. The worker advances the run in
+  slices of about 120 ms of wall-clock time (`sim::Incremental`): the solver takes
+  exactly the steps of a run in one go, so the result is identical; only the
+  plotted variables' new rows cross to the page after each slice. A profiled run
+  (and Live unticked) uses the one-shot path.
+- **Plots in the Modeling page.** Once a model has results, a plot strip below the
+  diagram shows the same plot window as the Simulation page (curves added in one
+  appear in the other). It can be resized by its top edge and collapsed; both are
+  remembered per browser. Simulating from the Modeling page with the strip open
+  stays there.
+- **Click to plot.** Clicking a component in the diagram (Modeling page with
+  results, or the **Diagram** pane next to the plot in Simulation mode) opens a
+  menu of its variables, its own first and then its connectors'; clicking a
+  connection lists the across and flow variables of both connectors.
+- **Matrix layout.** **Layout** arranges the subplots in rows × columns (1 × 2 up
+  to 3 × 3). All time subplots share one time axis: drag to zoom, wheel to zoom
+  around the cursor, Shift+drag to pan, double-click to reset; the cursor readout
+  shows the same time in every subplot.
+- **Expressions.** The expression field plots a formula over result variables,
+  re-evaluated after every run: `inertia.w*60/(2*pi)`, `abs(a - b)`, `der(x)`
+  (the solver's derivative when `der(x)` is a result variable, else differences),
+  `integral(x)`, `movavg(x, T)`, `rms(x, T)`, `min`, `max`, `pow`, `atan2`, the
+  usual elementary functions, `pi`, `e` and `time`. `fft(x)` plots the amplitude
+  spectrum of the visible time window (uniform resampling to a power of two, Hann
+  window) in a frequency subplot. **Signal…** applies one of these operators to
+  every variable of the active subplot.
+- **Stats** shows min, max, time-weighted mean, RMS and peak-to-peak of every
+  curve over the visible window, updated as you zoom.
+- **Dashboard.** A panel of widgets bound to the open model: sliders on free Real
+  parameters, gauges, numeric displays and mini plots of variables. **Run live**
+  paces the simulation against wall time (0.1× to 200×) in the worker; **Pause**,
+  **Stop** and the speed apply during the run. Moving a slider during the run
+  changes the parameter at the time reached without restarting: parameters bound to
+  it are evaluated again, an event iteration settles the discrete variables and
+  the integrator restarts from the current states (start values and
+  `fixed = false` parameters keep their initial values). Only free Real
+  parameters can change this way; others need a new run. A slider moved while
+  nothing runs sets the override for the next run. Layouts are saved per model in
+  local storage, and **Share** copies a link (`&dash=…`) that opens the model
+  with the dashboard.
+
+`sim::Incremental` (`advance(t, wall_budget)`, `set_params`, `results`,
+`finish`) is the core of both; `crates/daedalus-core/tests/incremental.rs` checks
+that budget slices reproduce a full run bit for bit, that time slices see every
+event, and that mid-run parameter changes propagate. In the WebAssembly workspace
+it is `liveStart`, `liveAdvance`, `liveValues`, `liveSetParams` and `liveFinish`.
+`web/scripts/e2e-plotting.mjs` exercises all of the above in Chromium.
+
+### Editor intelligence
+
+The Text view is a Modelica editor backed by the compiler's own name lookup
+(`crates/daedalus-core/src/ide.rs`, run in the worker):
+
+| Key | Does |
+| --- | --- |
+| F12, or Ctrl/Cmd-click | Go to the definition: opens the class that declares the name and selects it |
+| Shift+F12 | Find usages across the loaded documents, in a panel; click a row to go there |
+| F2 | Rename a class, component or loop index everywhere it is named |
+| Ctrl+Space (or just type) | Complete: classes and components in scope, members after `a.b.`, modifier names inside `x(...)`, keywords |
+| hover | Declaration, description, declaring class, type and unit |
+| Ctrl+Shift+O | Outline of the document's classes and components |
+
+Syntax errors are underlined as you type, with unknown classes (errors) and
+unknown names, members and modifiers (warnings). Enter and `end`/`else`/
+`equation` indent the Modelica way.
+
+Names are resolved with the Modelica lookup rules: enclosing classes, imports
+(qualified, renamed, unqualified, selective), inherited elements, component
+types for dotted references in equations (`r1.p.v`), modifier and named
+argument names against the type they modify, enumeration literals and `for`
+indices. Definition on an `outer` component also lists the matching `inner`
+declarations. Rename refuses names already taken, keywords, classes stored in
+their own file, and any edit in the read-only library bundle (the MSL).
+
+Only the edited document is re-parsed per keystroke, and while it does not
+parse the last version that did stands in for it, so completion keeps working
+mid-edit. With the whole MSL parsed (2,554 files), a natively compiled
+update plus completion takes about 6 ms and finding the 38 uses of
+`Modelica.Blocks.Sources.Step` about 85 ms; `cargo test -p daedalus-core
+--test ide` checks that every MSL file (with `DAEDALUS_MSL=/path/to/msl`) and
+the Daedalus library resolve without a single diagnostic.
 
 ## Experiments: sweeps, runs and comparison
 
@@ -476,6 +769,73 @@ stay in the CasADi export below. The tests in
 results: exponential decay, a mass-spring-damper, Ishigami Sobol indices,
 Monte Carlo moments, and parameter recovery from synthetic data.
 
+### Adjoint gradients
+
+`--adjoint --objective QOI` computes the gradient of one scalar with respect to
+many parameters at the cost of about one forward and one backward solve,
+independent of the number of parameters:
+
+```sh
+./target/release/daedalus sensitivity model.mo -m M --adjoint \
+    --objective 'integral(x)' --params k1,k2,k3,k4,k5,k6
+```
+
+- Objective: one of `final(x)`, `at(x,T)`, `integral(x)`, `mean(x)`, with an
+  optional window (`integral(x,T0,T1)`). `max`/`min` are differentiated at the
+  argmax on the output grid.
+- The forward run stores the states on a mesh (`--substeps`, default 2 per
+  output interval) and at the Radau stage times, from the solver's dense output.
+- The backward pass solves `-dλ/dt = (df/dx)^T λ + (dg/dx)^T` with a 2-stage
+  Radau IIA step. Each `f_p^T λ` is one reverse pass over the tape
+  (`tape_reverse.rs`), including algebraic loops (implicit-function rule).
+  Point terms add jumps to `λ`, and `λ(t0)` is chained through the initialization.
+- `--grad-method auto|adjoint|forward|fd`: `auto` uses the adjoint and falls back
+  to forward sensitivities (or differences) for models with events, saying why.
+- Accuracy against forward sensitivities and central differences is about
+  1e-7 relative on the test models (`crates/daedalus-core/tests/adjoint.rs`).
+
+The same gradients drive bound-constrained optimization:
+- `optimize --algorithm lbfgsb` (projected L-BFGS with an active set and Armijo
+  backtracking);
+- `calibrate --optimizer lbfgsb`, which minimizes the weighted least-squares
+  cost with an adjoint gradient (one point term per measurement) and then
+  reports standard errors from the Jacobian at the solution.
+
+On a 6-state chain with 9 parameters, L-BFGS-B converges in about 5 runs plus
+5 gradients, where Nelder–Mead needs several hundred runs.
+
+### Design of experiments
+
+```sh
+./target/release/daedalus doe model.mo -m M --factor k=1:10 --factor c=0.1:1 \
+    --design ccd --qoi 'max(x)' --qoi 'integral(v)' --pareto min,min -o doe.csv
+```
+
+- Designs:
+  - `full`: full factorial with `p=lo:hi:levels` levels (default 2);
+  - `frac`: 2^(k-p) fractions with minimum-aberration generators, or your own
+    with `--generators D=ABC,E=AB` or `--resolution R`;
+  - `ccd` (default): central composite, with `--alpha face|rotatable|orthogonal|A`
+    and a resolution-V fraction for 5 or more factors;
+  - `bbd`: Box–Behnken;
+  - `lhs`: Latin hypercube with `-N` samples and `--seed`.
+- Runs go through the sweep machinery: all cores natively. In the browser they
+  are spread over the worker pool, and each worker evaluates the quantities.
+- Per quantity it fits a quadratic response surface in coded units (−1..1) by
+  least squares and prints R², adjusted R², RMSE and a coefficient table with
+  standard errors and t-values. Terms the design cannot estimate (e.g.
+  quadratics in a 2-level design) are dropped and listed.
+- It also reports main effects (mean response per level), two-factor
+  interaction tables and, with `--pareto` for two quantities, the
+  non-dominated runs.
+- Factors must be free parameters, like for the other analyses.
+
+The workbench's Analysis mode has the method **adjoint** in the Sensitivity tab
+(an objective field and a gradient bar chart). A **DOE** tab picks the design
+and quantities and shows main effects, interactions, the fitted coefficients
+and the Pareto front, with "Use" to apply a Pareto point's parameters. The
+Calibrate and Optimize tabs can choose L-BFGS-B.
+
 ## Performance
 
 The benchmark is `tools/gen_chain.py`: a chain of N masses and spring-dampers
@@ -539,7 +899,7 @@ to 453 ms).
 | `crates/daedalus-cli` | `daedalus` command line tool |
 | `crates/daedalus-wasm` | WebAssembly bindings used by the workbench |
 | `crates/daedalus-py` | Python package `daedalus` (PyO3, built with maturin; not a cargo workspace member) |
-| `crates/daedalus-fmi` | FMI 2.0 runtime (`fmi2*` C functions) of exported FMUs |
+| `crates/daedalus-fmi` | FMI 2.0 and 3.0 runtime (`fmi2*`, `fmi3*` C functions) of exported FMUs |
 | `library/Daedalus` | Component library (Blocks, Mechanics, Hydraulics, Vehicle) and the examples |
 | `library/MultiBodyVehicle` | 3-D suspensions (double wishbone with external or pushrod springs, MacPherson, multilink), test rigs (K&C, seven-post) and full-car manoeuvres on MSL `Modelica.Mechanics.MultiBody` (needs MSL 4.1.0) |
 | `web` | Browser workbench (TypeScript, Vite, CodeMirror) |

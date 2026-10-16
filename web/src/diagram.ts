@@ -32,6 +32,10 @@ export class DiagramView {
   rendered: { cls: ClassInfo; mats: Map<string, Mat>; root: SVGGElement } | null = null;
   /** Called after every render of a class. */
   onRendered: (kind: ViewKind) => void = () => {};
+  /** A component was clicked (after `onSelect`), with the click. */
+  onComponentClick: (c: ComponentInfo, ev: MouseEvent) => void = () => {};
+  /** A connection line was clicked. */
+  onConnection: ((from: string, to: string, ev: MouseEvent) => void) | null = null;
 
   constructor(host: HTMLElement, private src: ClassSource, private classes: Map<string, ClassInfo>) {
     this.svg = document.createElementNS(SVG_NS, "svg");
@@ -129,7 +133,7 @@ export class DiagramView {
       const head = (r: string) => r.split(".")[0].replace(/\[.*$/, "");
       for (const c of cls.connections) {
         if (off.has(head(c.from)) || off.has(head(c.to))) continue;
-        if (c.line) this.drawConnection(g, c.line);
+        if (c.line) this.drawConnection(g, c.line, c.from, c.to);
         else await this.drawAutoConnection(g, cls, mats, c.from, c.to);
       }
     }
@@ -158,14 +162,26 @@ export class DiagramView {
     return ext;
   }
 
-  private drawConnection(g: SVGGElement, line: AnnRecord | null) {
+  private drawConnection(g: SVGGElement, line: AnnRecord | null, from = "", to = "") {
     if (!line) return;
     const pts = points(line.points);
     if (pts.length < 2) return;
     const ctx = newCtx(this.svg);
-    const grp = el("g", { class: "connection" });
+    const grp = el("g", { class: "connection", "data-from": from, "data-to": to });
     drawGraphics(grp, [{ ...line, "@": "Line" }], IDENTITY, ctx);
     g.appendChild(grp);
+    this.connectionHit(g, pts.map((p) => [p[0], p[1]] as [number, number]), from, to);
+  }
+
+  /** Wide transparent stroke over a connection that picks it (plotting its variables). */
+  private connectionHit(g: SVGGElement, pts: [number, number][], from: string, to: string) {
+    const hit = el("path", { d: "M" + pts.map((p) => `${p[0]} ${p[1]}`).join("L"), class: "connection-hit", "data-from": from, "data-to": to });
+    hit.addEventListener("click", (e) => {
+      if (!this.onConnection) return;
+      e.stopPropagation();
+      this.onConnection(from, to, e as MouseEvent);
+    });
+    g.appendChild(hit);
   }
 
   private async drawComponent(g: SVGGElement, comp: ComponentInfo, m: Mat, ctx: ReturnType<typeof newCtx>) {
@@ -204,6 +220,7 @@ export class DiagramView {
       this.svg.querySelectorAll(".component.selected").forEach((n) => n.classList.remove("selected"));
       grp.classList.add("selected");
       this.onSelect(comp);
+      this.onComponentClick(comp, e);
     });
     grp.addEventListener("dblclick", (e) => {
       e.stopPropagation();
@@ -343,8 +360,29 @@ export class DiagramView {
         "stroke-width": 1,
         "vector-effect": "non-scaling-stroke",
         class: "connection auto",
+        "data-from": from,
+        "data-to": to,
       }),
     );
+    this.connectionHit(g, pts as [number, number][], from, to);
+  }
+
+  /** A group drawn over the class, in Modelica coordinates (for diff highlights). */
+  addOverlay(): SVGGElement {
+    const g = el("g", { class: "overlay" });
+    this.root.appendChild(g);
+    return g;
+  }
+
+  /** The drawn component `name`, if any. */
+  componentElement(name: string): SVGGElement | null {
+    return this.root.querySelector<SVGGElement>(`.component[data-name="${CSS.escape(name)}"]`);
+  }
+
+  /** The drawn connection between `a` and `b`, in either direction. */
+  connectionElement(a: string, b: string): SVGElement | null {
+    const q = (x: string, y: string) => `.connection[data-from="${CSS.escape(x)}"][data-to="${CSS.escape(y)}"]`;
+    return this.root.querySelector<SVGElement>(`${q(a, b)}, ${q(b, a)}`);
   }
 
   clearSelection() {

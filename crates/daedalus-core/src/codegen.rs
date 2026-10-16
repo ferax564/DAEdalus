@@ -192,6 +192,9 @@ pub struct Model {
     pub jac_pattern: Vec<Vec<u32>>,
     pub aliases: Vec<(VarId, AliasKind)>,
     pub experiment: crate::flat::Experiment,
+    /// FMU components evaluated outside the tape (see [`crate::external_component`]).
+    #[serde(default)]
+    pub externals: Vec<crate::external_component::ExternalComponent>,
     pub stats: crate::backend::Stats,
     pub warnings: Vec<String>,
     pub tape_len: usize,
@@ -1072,6 +1075,7 @@ pub fn compile(mut sys: System) -> Model {
             .map(|a| (a.var, a.kind.clone()))
             .collect(),
         experiment: sys.experiment,
+        externals: sys.externals,
         stats: sys.stats,
         warnings: sys.warnings,
         vars: sys.vars,
@@ -1748,6 +1752,8 @@ pub struct Runtime<'m> {
     step_cap: f64,
     /// `delay()` reads the right value at a delayed jump (set while events are handled).
     pub delay_right: bool,
+    /// External components (imported FMUs): evaluates `m.ode` in [`Runtime::run_ode`].
+    pub ext: Option<Box<dyn crate::external_component::Hook>>,
     /// Block timing of the performance analyzer (None: not profiling).
     pub prof: Option<Box<crate::profile::BlockProf>>,
     /// Set during an event iteration: a `sample()` relation that became true stays true
@@ -1788,6 +1794,7 @@ impl<'m> Runtime<'m> {
             init_mode: false,
             step_cap: 0.0,
             delay_right: true,
+            ext: None,
             prof: None,
             hold_samples: false,
             held_samples: Vec::new(),
@@ -2018,6 +2025,7 @@ impl<'m> Runtime<'m> {
         let (mut neg, mut pos): (Option<(f64, f64)>, Option<(f64, f64)>) = (None, None);
         let mut prev_abs = f64::INFINITY;
         let mut n_forced = 0u32;
+        let mut n_stalled = 0u32;
         // A linear block normally converges in one step; if it does not (an ill-conditioned
         // or switching system), it continues as a damped Newton iteration.
         let max_iter = if self.step_cap > 0.0 { 400 } else { 50 };
@@ -2072,6 +2080,7 @@ impl<'m> Runtime<'m> {
             for (i, &s) in b.residuals.iter().enumerate() {
                 rhs[i] = -self.r[s as usize];
             }
+            let f_entry = -rhs[0];
             // Row weights for the damping test: residuals of very different scale
             // (1/tau next to a fraction) are compared relative to their sensitivity.
             weights.clear();
@@ -2229,6 +2238,55 @@ impl<'m> Runtime<'m> {
                 }
                 lambda *= 0.5;
             }
+            // One tear whose damped Newton step stalled (the residual first grows along
+            // the step: a fold of a piecewise-linear characteristic, as in a Schmitt
+            // trigger whose branch ends) and no sign change known yet: search outwards
+            // along the Newton direction, then against it, for a point of opposite sign,
+            // so that the bracketing above can take over.
+            if lambda < 1e-3 && !forced {
+                n_stalled += 1;
+            } else {
+                n_stalled = 0;
+            }
+            if n == 1 && n_stalled >= 2 && !self.init_mode && (neg.is_none() || pos.is_none()) {
+                let x0 = old[0];
+                let f0 = f_entry;
+                let (lo, hi) = b.bounds[0];
+                let t = b.tears[0] as usize;
+                let keep = self.r[t];
+                let mut found = None;
+                if f0 != 0.0 && f0.is_finite() {
+                    'dirs: for dir in [rhs[0].signum(), -rhs[0].signum()] {
+                        let mut d = rhs[0].abs().max(1e-6 * (1.0 + x0.abs()));
+                        for _ in 0..64 {
+                            let x = x0 + dir * d;
+                            if !x.is_finite() || x < lo || x > hi {
+                                break;
+                            }
+                            self.r[t] = x;
+                            self.run(&b.body);
+                            let f = self.r[b.residuals[0] as usize];
+                            if f.is_finite() && f != 0.0 && (f < 0.0) != (f0 < 0.0) {
+                                found = Some((x, f));
+                                break 'dirs;
+                            }
+                            d *= 2.0;
+                        }
+                    }
+                }
+                match found {
+                    Some((x, f)) => {
+                        if f < 0.0 {
+                            neg = Some((x, f));
+                        } else {
+                            pos = Some((x, f));
+                        }
+                        self.r[t] = x;
+                        continue;
+                    }
+                    None => self.r[t] = keep,
+                }
+            }
             let step = (0..n)
                 .map(|i| (lambda * rhs[i]).abs() / (1.0 + old[i].abs()))
                 .fold(0.0, f64::max);
@@ -2308,11 +2366,24 @@ impl<'m> Runtime<'m> {
         let t0 = self.prof.as_mut().map(|p| p.enter_rhs());
         self.set_time(t);
         self.set_states(x);
-        let m = self.m;
-        self.run(&m.ode);
+        self.run_ode();
         self.get_derivs(dx);
         if let (Some(t0), Some(p)) = (t0, self.prof.as_mut()) {
             p.leave_rhs(t0);
+        }
+    }
+
+    /// Run `m.ode`, through the external components' hook when there is one.
+    pub fn run_ode(&mut self) {
+        match self.ext.take() {
+            Some(mut h) => {
+                h.ode(self);
+                self.ext = Some(h);
+            }
+            None => {
+                let m = self.m;
+                self.run(&m.ode);
+            }
         }
     }
 

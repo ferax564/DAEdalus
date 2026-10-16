@@ -119,6 +119,46 @@ fn tools() -> Vec<Tool> {
             description: "The flat model (all components expanded) as Modelica-like text.",
             schema: || model_schema(json!({"max_lines": {"type": "integer"}})),
         },
+        Tool {
+            name: "physics_check",
+            description: "Physics preflight of a model before trusting its results: parameters with no value, physical parameters with an impossible sign (mass, inertia, inductance, capacitance, resistance, stiffness, damping, absolute temperature...), states starting from a guessed 0, non-finite derivatives and unstable modes at the start, and, with `simulate`, a run that checks for blow-ups and negative absolute temperatures or pressures. Run it after building or editing a model.",
+            schema: || {
+                model_schema(json!({
+                    "simulate": {"type": "boolean", "description": "Also simulate the experiment (default true)"},
+                    "parameters": {"type": "object", "additionalProperties": {"type": "number"}}
+                }))
+            },
+        },
+        Tool {
+            name: "autotune_controller",
+            description: "Tune controller gains (parameters) of a closed-loop model against a step-response spec: minimizes ITAE (or IAE, ISE) over a window around a set-point step, keeping overshoot, control effort and settling time within limits. Simulates the nonlinear loop for each candidate (Nelder-Mead on a log scale between the bounds). Returns before/after gains and response figures and a Modelica modifier.",
+            schema: || {
+                model_schema(json!({
+                    "gains": {"type": "object", "additionalProperties": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 3}, "description": "Gain name to [low, high] or [low, high, start], e.g. {\"pid.kp\": [0.01, 1]}"},
+                    "reference": {"type": "string", "description": "Set-point variable"},
+                    "measurement": {"type": "string", "description": "Controlled variable"},
+                    "control": {"type": "string", "description": "Controller output (optional)"},
+                    "window": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2, "description": "[t0, t1] around the step (default the whole run)"},
+                    "criterion": {"type": "string", "enum": ["itae", "iae", "ise"]},
+                    "max_overshoot": {"type": "number", "description": "Percent of the step (default 5)"},
+                    "max_control": {"type": "number"},
+                    "max_settling": {"type": "number", "description": "2 % settling time limit in seconds"}
+                }))
+            },
+        },
+        Tool {
+            name: "generate_embedded_c",
+            description: "Generate portable, allocation-free C99 for a model with top-level inputs and outputs (typically a controller block) that advances it by a fixed step: for microcontrollers such as Arduino (AVR) or ESP32. Returns the interface (inputs, outputs, RAM per instance), the header and the source. `daedalus codegen-c --hil` also writes firmware for closed-loop tests on emulated boards.",
+            schema: || {
+                model_schema(json!({
+                    "step": {"type": "number", "description": "Fixed step / sample time in seconds"},
+                    "real": {"type": "string", "enum": ["float", "double"], "description": "Arithmetic type (default float)"},
+                    "integrator": {"type": "string", "enum": ["rk4", "euler"], "description": "For continuous states (default rk4)"},
+                    "parameters": {"type": "object", "additionalProperties": {"type": "number"}, "description": "Parameter values baked into the code"},
+                    "max_lines": {"type": "integer", "description": "Lines of the C source to return (default 400)"}
+                }))
+            },
+        },
     ]
 }
 
@@ -363,6 +403,114 @@ impl Server {
                 )
                 .map_err(|e| anyhow::anyhow!(e))?;
                 Ok(lin.report())
+            }
+            "physics_check" => {
+                let model = model()?;
+                let m = self.translate(&model)?;
+                let mut o = SimOptions::from_model(&m);
+                if let Some(Value::Object(p)) = a.get("parameters") {
+                    for (k, v) in p {
+                        let v = v
+                            .as_f64()
+                            .ok_or_else(|| anyhow::anyhow!("parameter {k}: not a number"))?;
+                        o.params.push((k.clone(), v));
+                    }
+                }
+                let sim = a.get("simulate").and_then(Value::as_bool).unwrap_or(true);
+                Ok(daedalus_core::preflight::check(&m, &o, sim, 60.0).text())
+            }
+            "autotune_controller" => {
+                let model = model()?;
+                let m = self.translate(&model)?;
+                let o = SimOptions::from_model(&m);
+                let mut gains = Vec::new();
+                if let Some(Value::Object(g)) = a.get("gains") {
+                    for (k, v) in g {
+                        let b: Vec<f64> = v
+                            .as_array()
+                            .map(|x| x.iter().filter_map(Value::as_f64).collect())
+                            .unwrap_or_default();
+                        anyhow::ensure!(b.len() >= 2, "gain {k}: give [low, high]");
+                        gains.push(daedalus_core::calibrate::Tuner {
+                            name: k.clone(),
+                            lo: Some(b[0]),
+                            hi: Some(b[1]),
+                            start: b.get(2).copied(),
+                        });
+                    }
+                }
+                let window = a
+                    .get("window")
+                    .and_then(Value::as_array)
+                    .and_then(|w| Some((w.first()?.as_f64()?, w.get(1)?.as_f64()?)));
+                let spec = daedalus_core::autotune::Spec {
+                    gains,
+                    reference: s("reference")
+                        .ok_or_else(|| anyhow::anyhow!("missing reference"))?,
+                    measurement: s("measurement")
+                        .ok_or_else(|| anyhow::anyhow!("missing measurement"))?,
+                    control: s("control"),
+                    window,
+                    criterion: s("criterion")
+                        .and_then(|c| daedalus_core::autotune::Criterion::parse(&c))
+                        .unwrap_or(daedalus_core::autotune::Criterion::Itae),
+                    max_overshoot: n("max_overshoot").unwrap_or(5.0),
+                    max_control: n("max_control"),
+                    max_settling: n("max_settling"),
+                    max_iter: 120,
+                };
+                let out =
+                    daedalus_core::autotune::tune(&m, &o, &spec).map_err(|e| anyhow::anyhow!(e))?;
+                Ok(out.report(&spec))
+            }
+            "generate_embedded_c" => {
+                let model = model()?;
+                let m = self.translate(&model)?;
+                let mut o = daedalus_core::embedded::Options {
+                    step: n("step").ok_or_else(|| anyhow::anyhow!("missing step"))?,
+                    ..Default::default()
+                };
+                if let Some(r) = s("real") {
+                    o.real = daedalus_core::embedded::RealType::parse(&r)
+                        .ok_or_else(|| anyhow::anyhow!("unknown real type '{r}'"))?;
+                }
+                if let Some(i) = s("integrator") {
+                    o.integrator = daedalus_core::embedded::Integrator::parse(&i)
+                        .ok_or_else(|| anyhow::anyhow!("unknown integrator '{i}'"))?;
+                }
+                if let Some(Value::Object(p)) = a.get("parameters") {
+                    for (k, v) in p {
+                        let v = v
+                            .as_f64()
+                            .ok_or_else(|| anyhow::anyhow!("parameter {k}: not a number"))?;
+                        o.params.push((k.clone(), v));
+                    }
+                }
+                let g = daedalus_core::embedded::generate(&m, &o)?;
+                let man = &g.manifest;
+                let max = a.get("max_lines").and_then(Value::as_u64).unwrap_or(400) as usize;
+                let mut out = format!(
+                    "{}: {} inputs, {} outputs, {} states, {} algebraic loops, {} bytes of RAM per instance ({}), step {} s\n",
+                    man.prefix,
+                    man.inputs.len(),
+                    man.outputs.len(),
+                    man.n_states,
+                    man.n_newton,
+                    man.instance_bytes,
+                    o.real.c_name(),
+                    man.step
+                );
+                out += &format!("\n--- {} ---\n{}", g.header_name(), g.header);
+                let lines: Vec<&str> = g.source.lines().collect();
+                out += &format!("\n--- {} ({} lines) ---\n", g.source_name(), lines.len());
+                for l in lines.iter().take(max) {
+                    out += l;
+                    out.push('\n');
+                }
+                if lines.len() > max {
+                    out += &format!("... {} more lines\n", lines.len() - max);
+                }
+                Ok(out)
             }
             "model_structure" => {
                 let model = model()?;
@@ -735,6 +883,20 @@ mod tests {
         assert!(!err && t.contains("structure of Decay"), "{t}");
         let (t, err) = tool(&mut s, "profile_simulation", json!({"model": "Decay"}));
         assert!(!err && t.contains("finished"), "{t}");
+        let (t, err) = tool(&mut s, "physics_check", json!({"model": "Decay"}));
+        assert!(!err && t.contains("0 errors, 0 warnings"), "{t}");
+        let (t, err) = tool(
+            &mut s,
+            "physics_check",
+            json!({"model": "Decay", "parameters": {"k": -1.0}, "simulate": false}),
+        );
+        assert!(!err && t.contains("1 unstable mode"), "{t}");
+        let (t, err) = tool(
+            &mut s,
+            "autotune_controller",
+            json!({"model": "Missing", "gains": {"k": [1, 2]}, "reference": "r", "measurement": "y"}),
+        );
+        assert!(err, "{t}");
         let (t, err) = tool(&mut s, "check_model", json!({"model": "Missing"}));
         assert!(err && t.starts_with("error"), "{t}");
         let (t, err) = tool(&mut s, "set_source", json!({"file": "../x.mo", "text": ""}));
