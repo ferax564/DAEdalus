@@ -61,7 +61,8 @@ In the workbench, **Check** lists the unit issues in the Messages panel.
   `hp`, `degF` and more.
 - The terms of a sum, the two sides of an equation, the branches of an `if`, the operands
   of a relation and the arguments of `min` and `max` must agree. In short, you can only
-  add, compare or equate quantities that share a unit. Products combine units,
+  add, compare or equate quantities of the same kind, such as two lengths. Metres and
+  centimetres are compatible, so the checker ignores scale and compares the dimensions. Products combine units,
   `der()` divides by seconds and `sqrt` halves the exponents. The arguments of `sin`,
   `exp` and similar functions must be dimensionless.
 - Functions are checked through their inlined bodies, with the units of the actual

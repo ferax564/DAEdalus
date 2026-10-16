@@ -40,7 +40,8 @@ of both connectors.
 - **FFT.** `fft(x)` plots the amplitude spectrum of the visible time window in a
   frequency subplot. The spectrum shows how strong each frequency in the signal is. The
   window is resampled uniformly to a power of two, with a Hann window (a smooth taper that
-  reduces the blur between neighbouring frequencies).
+  reduces the leakage of strong frequencies into the rest of the spectrum, at the cost of
+  some sharpness).
 - **Signal…** applies one of these operators to every variable of the active subplot.
 - **Stats** shows the min, max, time-weighted mean, RMS and peak-to-peak of every curve
   over the visible window, and updates as you zoom. The time-weighted mean counts each

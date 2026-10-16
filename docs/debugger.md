@@ -91,8 +91,8 @@ simulation in the Messages panel links to it.
 When translation fails, `debug` finds the smallest under- or over-determined subset of
 equations and lists its equations and unknowns with their component paths. A model is
 **underdetermined** when it has fewer equations than unknowns, so some value is never
-pinned down, and **overdetermined** when it has more, so some equations contradict each
-other. It also
+pinned down, and **overdetermined** when it has more, so some equations are extra. An extra
+equation may be redundant, or it may contradict the others. It also
 reports physical connectors that are left unconnected:
 
 ```sh
