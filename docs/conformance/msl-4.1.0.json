@@ -1,26 +1,26 @@
 {
  "meta": {
-  "generated_at": "2026-10-15T19:12:26Z",
-  "commit": "5413d17973a18a04fd8bbc649668cc3316ac0aa6",
+  "generated_at": "2026-10-15T23:54:52Z",
+  "commit": "6ef838b6016ec5def729d9f95824b5a5f7726004",
   "msl_version": "4.1.0",
   "tolerance": 0.002,
   "method": "csv-compare style tube: half-width tolerance*(time span) in time, tolerance*(signal range) in value",
   "reference": "MAP-LIB_ReferenceResults (Dymola-generated)",
   "filter": "Modelica",
-  "timeout": 120.0
+  "timeout": 120
  },
  "summary": {
   "total": 534,
-  "differ": 49,
-  "pass": 424,
-  "error": 56,
-  "timeout": 5
+  "differ": 44,
+  "pass": 445,
+  "error": 41,
+  "timeout": 4
  },
  "results": [
   {
    "model": "Modelica.Blocks.Examples.BooleanNetwork1",
    "signals": 18,
-   "time": 0.248,
+   "time": 2.861,
    "missing": [],
    "failed": [
     {
@@ -34,7 +34,7 @@
   {
    "model": "Modelica.Blocks.Examples.BusUsage",
    "signals": 5,
-   "time": 0.142,
+   "time": 2.655,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -42,7 +42,7 @@
   {
    "model": "Modelica.Blocks.Examples.CompareSincExpSine",
    "signals": 3,
-   "time": 0.196,
+   "time": 2.628,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -50,18 +50,18 @@
   {
    "model": "Modelica.Blocks.Examples.DemoSignalCharacteristic",
    "signals": 5,
-   "time": 0.219,
+   "time": 0.139,
    "missing": [],
    "failed": [
     {
      "signal": "harmonic.mean1.y",
      "outside": 0.9579,
-     "worst": 159.74164011958413
+     "worst": 159.7416401253383
     },
     {
      "signal": "harmonic.mean2.y",
      "outside": 0.9607,
-     "worst": 781.7224358727885
+     "worst": 781.7224358744132
     }
    ],
    "status": "differ"
@@ -69,7 +69,7 @@
   {
    "model": "Modelica.Blocks.Examples.DemonstrateContinuousSignalExtrema",
    "signals": 12,
-   "time": 0.22,
+   "time": 0.165,
    "missing": [],
    "failed": [
     {
@@ -83,18 +83,18 @@
   {
    "model": "Modelica.Blocks.Examples.DemonstrateSignalExtrema",
    "signals": 8,
-   "time": 1.097,
+   "time": 0.491,
    "missing": [],
    "failed": [
     {
      "signal": "signalExtrema1.y_min",
      "outside": 0.1779,
-     "worst": 1.8794811717301272
+     "worst": 1.8794811717805762
     },
     {
      "signal": "signalExtrema1.y_max",
      "outside": 0.573,
-     "worst": 2.1076500328452825
+     "worst": 2.107650032848721
     },
     {
      "signal": "signalExtrema2.t_min",
@@ -112,7 +112,7 @@
   {
    "model": "Modelica.Blocks.Examples.Filter",
    "signals": 12,
-   "time": 0.293,
+   "time": 0.131,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -120,7 +120,7 @@
   {
    "model": "Modelica.Blocks.Examples.FilterWithDifferentiation",
    "signals": 3,
-   "time": 0.201,
+   "time": 0.092,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -128,7 +128,7 @@
   {
    "model": "Modelica.Blocks.Examples.FilterWithRiseTime",
    "signals": 6,
-   "time": 0.242,
+   "time": 0.095,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -136,7 +136,7 @@
   {
    "model": "Modelica.Blocks.Examples.IntegerNetwork1",
    "signals": 2,
-   "time": 0.24,
+   "time": 0.173,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -144,7 +144,7 @@
   {
    "model": "Modelica.Blocks.Examples.Interaction1",
    "signals": 6,
-   "time": 0.235,
+   "time": 0.14,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -152,7 +152,7 @@
   {
    "model": "Modelica.Blocks.Examples.InverseModel",
    "signals": 2,
-   "time": 0.301,
+   "time": 0.14,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -160,7 +160,7 @@
   {
    "model": "Modelica.Blocks.Examples.LogicalNetwork1",
    "signals": 3,
-   "time": 0.296,
+   "time": 0.108,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -168,7 +168,7 @@
   {
    "model": "Modelica.Blocks.Examples.Modulation",
    "signals": 5,
-   "time": 0.13,
+   "time": 0.174,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -176,179 +176,32 @@
   {
    "model": "Modelica.Blocks.Examples.Noise.ActuatorWithNoise",
    "signals": 11,
-   "time": 2.372,
-   "status": "error",
-   "error": "error: in component 'motor.uniformNoise': external function 'Modelica.Math.Random.Generators.Xorshift128plus.random' is not supported"
+   "time": 3.496,
+   "missing": [],
+   "failed": [
+    {
+     "signal": "controller.busdelay.y",
+     "outside": 0.0275,
+     "worst": 5.852142664664915
+    },
+    {
+     "signal": "elastoGap.s_rel",
+     "outside": 0.0001,
+     "worst": 21.675535062972013
+    }
+   ],
+   "status": "differ"
   },
   {
    "model": "Modelica.Blocks.Examples.Noise.AutomaticSeed",
    "signals": 3,
-   "time": 1.577,
-   "status": "error",
-   "error": "error: in component 'globalSeed': in function 'Modelica.Math.Random.Utilities.initializeImpureRandom': in function 'Modelica.Math.Random.Utilities.initialStateWithXorshift64star': in function 'Modelica.Math.Random.Generators.Xorshift64star.initialState': external function 'Modelica.Math.Random.Gener"
+   "time": 0.112,
+   "missing": [],
+   "failed": [],
+   "status": "pass"
   },
   {
    "model": "Modelica.Blocks.Examples.Noise.Densities",
-   "signals": 3,
-   "time": 0.202,
-   "missing": [],
-   "failed": [],
-   "status": "pass"
-  },
-  {
-   "model": "Modelica.Blocks.Examples.Noise.Distributions",
-   "signals": 2,
-   "time": 1.626,
-   "status": "error",
-   "error": "error: in component 'globalSeed': in function 'Modelica.Math.Random.Utilities.initializeImpureRandom': in function 'Modelica.Math.Random.Utilities.initialStateWithXorshift64star': in function 'Modelica.Math.Random.Generators.Xorshift64star.initialState': external function 'Modelica.Math.Random.Gener"
-  },
-  {
-   "model": "Modelica.Blocks.Examples.Noise.DrydenContinuousTurbulence",
-   "signals": 2,
-   "time": 1.632,
-   "status": "error",
-   "error": "error: in component 'whiteNoise': external function 'Modelica.Math.Random.Generators.Xorshift128plus.random' is not supported"
-  },
-  {
-   "model": "Modelica.Blocks.Examples.Noise.ImpureGenerator",
-   "signals": 1,
-   "time": 1.44,
-   "status": "error",
-   "error": "error: in component 'globalSeed': in function 'Modelica.Math.Random.Utilities.initializeImpureRandom': in function 'Modelica.Math.Random.Utilities.initialStateWithXorshift64star': in function 'Modelica.Math.Random.Generators.Xorshift64star.initialState': external function 'Modelica.Math.Random.Gener"
-  },
-  {
-   "model": "Modelica.Blocks.Examples.Noise.NormalNoiseProperties",
-   "signals": 7,
-   "time": 1.958,
-   "status": "error",
-   "error": "error: in component 'globalSeed': in function 'Modelica.Math.Random.Utilities.initializeImpureRandom': in function 'Modelica.Math.Random.Utilities.initialStateWithXorshift64star': in function 'Modelica.Math.Random.Generators.Xorshift64star.initialState': external function 'Modelica.Math.Random.Gener"
-  },
-  {
-   "model": "Modelica.Blocks.Examples.Noise.UniformNoise",
-   "signals": 1,
-   "time": 2.059,
-   "status": "error",
-   "error": "error: in component 'globalSeed': in function 'Modelica.Math.Random.Utilities.initializeImpureRandom': in function 'Modelica.Math.Random.Utilities.initialStateWithXorshift64star': in function 'Modelica.Math.Random.Generators.Xorshift64star.initialState': external function 'Modelica.Math.Random.Gener"
-  },
-  {
-   "model": "Modelica.Blocks.Examples.Noise.UniformNoiseProperties",
-   "signals": 7,
-   "time": 1.827,
-   "status": "error",
-   "error": "error: in component 'globalSeed': in function 'Modelica.Math.Random.Utilities.initializeImpureRandom': in function 'Modelica.Math.Random.Utilities.initialStateWithXorshift64star': in function 'Modelica.Math.Random.Generators.Xorshift64star.initialState': external function 'Modelica.Math.Random.Gener"
-  },
-  {
-   "model": "Modelica.Blocks.Examples.PID_Controller",
-   "signals": 6,
-   "time": 0.219,
-   "missing": [],
-   "failed": [],
-   "status": "pass"
-  },
-  {
-   "model": "Modelica.Blocks.Examples.RealNetwork1",
-   "signals": 2,
-   "time": 0.246,
-   "missing": [],
-   "failed": [],
-   "status": "pass"
-  },
-  {
-   "model": "Modelica.Blocks.Examples.Rectifier12pulseFFT",
-   "signals": 6,
-   "time": 1.695,
-   "status": "error",
-   "error": "error: in component 'realFFT': subscript '1 + pre(realFFT.iTick)' must be a constant or parameter expression"
-  },
-  {
-   "model": "Modelica.Blocks.Examples.Rectifier6pulseFFT",
-   "signals": 6,
-   "time": 1.853,
-   "status": "error",
-   "error": "error: in component 'realFFT': subscript '1 + pre(realFFT.iTick)' must be a constant or parameter expression"
-  },
-  {
-   "model": "Modelica.Blocks.Examples.ShowLogicalSources",
-   "signals": 1,
-   "time": 0.344,
-   "missing": [],
-   "failed": [],
-   "status": "pass"
-  },
-  {
-   "model": "Modelica.Blocks.Examples.SinCosEncoder",
-   "signals": 6,
-   "time": 0.405,
-   "missing": [],
-   "failed": [],
-   "status": "pass"
-  },
-  {
-   "model": "Modelica.Blocks.Examples.SlewRateLimiter",
-   "signals": 3,
-   "time": 0.301,
-   "missing": [],
-   "failed": [],
-   "status": "pass"
-  },
-  {
-   "model": "Modelica.Blocks.Examples.TotalHarmonicDistortion",
-   "signals": 6,
-   "time": 0.264,
-   "missing": [],
-   "failed": [],
-   "status": "pass"
-  },
-  {
-   "model": "Modelica.Clocked.Examples.CascadeControlledDrive.AbsoluteClocks",
-   "signals": 4,
-   "time": 0.733,
-   "missing": [],
-   "failed": [],
-   "status": "pass"
-  },
-  {
-   "model": "Modelica.Clocked.Examples.CascadeControlledDrive.Continuous",
-   "signals": 4,
-   "time": 0.251,
-   "missing": [],
-   "failed": [],
-   "status": "pass"
-  },
-  {
-   "model": "Modelica.Clocked.Examples.CascadeControlledDrive.SubClocked",
-   "signals": 4,
-   "time": 0.58,
-   "missing": [],
-   "failed": [],
-   "status": "pass"
-  },
-  {
-   "model": "Modelica.Clocked.Examples.CascadeControlledDrive.SuperSampled",
-   "signals": 4,
-   "time": 0.329,
-   "missing": [],
-   "failed": [],
-   "status": "pass"
-  },
-  {
-   "model": "Modelica.Clocked.Examples.Elementary.BooleanSignals.AssignClock",
-   "signals": 1,
-   "time": 0.136,
-   "missing": [],
-   "failed": [],
-   "status": "pass"
-  },
-  {
-   "model": "Modelica.Clocked.Examples.Elementary.BooleanSignals.AssignClockVectorized",
-   "signals": 2,
-   "time": 0.129,
-   "missing": [],
-   "failed": [],
-   "status": "pass"
-  },
-  {
-   "model": "Modelica.Clocked.Examples.Elementary.BooleanSignals.BackSample",
    "signals": 3,
    "time": 0.166,
    "missing": [],
@@ -356,39 +209,63 @@
    "status": "pass"
   },
   {
-   "model": "Modelica.Clocked.Examples.Elementary.BooleanSignals.Hold",
-   "signals": 3,
-   "time": 0.146,
-   "missing": [],
-   "failed": [],
-   "status": "pass"
-  },
-  {
-   "model": "Modelica.Clocked.Examples.Elementary.BooleanSignals.Sample1",
+   "model": "Modelica.Blocks.Examples.Noise.Distributions",
    "signals": 2,
-   "time": 0.126,
+   "time": 0.133,
    "missing": [],
    "failed": [],
    "status": "pass"
   },
   {
-   "model": "Modelica.Clocked.Examples.Elementary.BooleanSignals.Sample2",
-   "signals": 3,
-   "time": 0.164,
+   "model": "Modelica.Blocks.Examples.Noise.DrydenContinuousTurbulence",
+   "signals": 2,
+   "time": 0.501,
    "missing": [],
    "failed": [],
    "status": "pass"
   },
   {
-   "model": "Modelica.Clocked.Examples.Elementary.BooleanSignals.SampleClocked",
+   "model": "Modelica.Blocks.Examples.Noise.ImpureGenerator",
    "signals": 1,
-   "time": 0.2,
+   "time": 0.084,
    "missing": [],
    "failed": [],
    "status": "pass"
   },
   {
-   "model": "Modelica.Clocked.Examples.Elementary.BooleanSignals.SampleVectorizedAndClocked",
+   "model": "Modelica.Blocks.Examples.Noise.NormalNoiseProperties",
+   "signals": 7,
+   "time": 0.664,
+   "missing": [],
+   "failed": [],
+   "status": "pass"
+  },
+  {
+   "model": "Modelica.Blocks.Examples.Noise.UniformNoise",
+   "signals": 1,
+   "time": 0.099,
+   "missing": [],
+   "failed": [],
+   "status": "pass"
+  },
+  {
+   "model": "Modelica.Blocks.Examples.Noise.UniformNoiseProperties",
+   "signals": 7,
+   "time": 0.609,
+   "missing": [],
+   "failed": [],
+   "status": "pass"
+  },
+  {
+   "model": "Modelica.Blocks.Examples.PID_Controller",
+   "signals": 6,
+   "time": 0.129,
+   "missing": [],
+   "failed": [],
+   "status": "pass"
+  },
+  {
+   "model": "Modelica.Blocks.Examples.RealNetwork1",
    "signals": 2,
    "time": 0.127,
    "missing": [],
@@ -396,9 +273,153 @@
    "status": "pass"
   },
   {
+   "model": "Modelica.Blocks.Examples.Rectifier12pulseFFT",
+   "signals": 6,
+   "time": 7.452,
+   "missing": [],
+   "failed": [],
+   "status": "pass"
+  },
+  {
+   "model": "Modelica.Blocks.Examples.Rectifier6pulseFFT",
+   "signals": 6,
+   "time": 6.241,
+   "missing": [],
+   "failed": [],
+   "status": "pass"
+  },
+  {
+   "model": "Modelica.Blocks.Examples.ShowLogicalSources",
+   "signals": 1,
+   "time": 0.113,
+   "missing": [],
+   "failed": [],
+   "status": "pass"
+  },
+  {
+   "model": "Modelica.Blocks.Examples.SinCosEncoder",
+   "signals": 6,
+   "time": 0.171,
+   "missing": [],
+   "failed": [],
+   "status": "pass"
+  },
+  {
+   "model": "Modelica.Blocks.Examples.SlewRateLimiter",
+   "signals": 3,
+   "time": 0.115,
+   "missing": [],
+   "failed": [],
+   "status": "pass"
+  },
+  {
+   "model": "Modelica.Blocks.Examples.TotalHarmonicDistortion",
+   "signals": 6,
+   "time": 0.224,
+   "missing": [],
+   "failed": [],
+   "status": "pass"
+  },
+  {
+   "model": "Modelica.Clocked.Examples.CascadeControlledDrive.AbsoluteClocks",
+   "signals": 4,
+   "time": 0.397,
+   "missing": [],
+   "failed": [],
+   "status": "pass"
+  },
+  {
+   "model": "Modelica.Clocked.Examples.CascadeControlledDrive.Continuous",
+   "signals": 4,
+   "time": 0.165,
+   "missing": [],
+   "failed": [],
+   "status": "pass"
+  },
+  {
+   "model": "Modelica.Clocked.Examples.CascadeControlledDrive.SubClocked",
+   "signals": 4,
+   "time": 0.304,
+   "missing": [],
+   "failed": [],
+   "status": "pass"
+  },
+  {
+   "model": "Modelica.Clocked.Examples.CascadeControlledDrive.SuperSampled",
+   "signals": 4,
+   "time": 0.294,
+   "missing": [],
+   "failed": [],
+   "status": "pass"
+  },
+  {
+   "model": "Modelica.Clocked.Examples.Elementary.BooleanSignals.AssignClock",
+   "signals": 1,
+   "time": 0.079,
+   "missing": [],
+   "failed": [],
+   "status": "pass"
+  },
+  {
+   "model": "Modelica.Clocked.Examples.Elementary.BooleanSignals.AssignClockVectorized",
+   "signals": 2,
+   "time": 0.095,
+   "missing": [],
+   "failed": [],
+   "status": "pass"
+  },
+  {
+   "model": "Modelica.Clocked.Examples.Elementary.BooleanSignals.BackSample",
+   "signals": 3,
+   "time": 0.152,
+   "missing": [],
+   "failed": [],
+   "status": "pass"
+  },
+  {
+   "model": "Modelica.Clocked.Examples.Elementary.BooleanSignals.Hold",
+   "signals": 3,
+   "time": 0.131,
+   "missing": [],
+   "failed": [],
+   "status": "pass"
+  },
+  {
+   "model": "Modelica.Clocked.Examples.Elementary.BooleanSignals.Sample1",
+   "signals": 2,
+   "time": 0.103,
+   "missing": [],
+   "failed": [],
+   "status": "pass"
+  },
+  {
+   "model": "Modelica.Clocked.Examples.Elementary.BooleanSignals.Sample2",
+   "signals": 3,
+   "time": 0.076,
+   "missing": [],
+   "failed": [],
+   "status": "pass"
+  },
+  {
+   "model": "Modelica.Clocked.Examples.Elementary.BooleanSignals.SampleClocked",
+   "signals": 1,
+   "time": 0.125,
+   "missing": [],
+   "failed": [],
+   "status": "pass"
+  },
+  {
+   "model": "Modelica.Clocked.Examples.Elementary.BooleanSignals.SampleVectorizedAndClocked",
+   "signals": 2,
+   "time": 0.111,
+   "missing": [],
+   "failed": [],
+   "status": "pass"
+  },
+  {
    "model": "Modelica.Clocked.Examples.Elementary.BooleanSignals.ShiftSample",
    "signals": 2,
-   "time": 0.143,
+   "time": 0.144,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -406,7 +427,7 @@
   {
    "model": "Modelica.Clocked.Examples.Elementary.BooleanSignals.SubSample",
    "signals": 2,
-   "time": 0.162,
+   "time": 0.128,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -414,7 +435,7 @@
   {
    "model": "Modelica.Clocked.Examples.Elementary.BooleanSignals.SuperSample",
    "signals": 2,
-   "time": 0.217,
+   "time": 0.107,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -422,7 +443,7 @@
   {
    "model": "Modelica.Clocked.Examples.Elementary.BooleanSignals.TickBasedPulse",
    "signals": 1,
-   "time": 0.11,
+   "time": 0.1,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -430,7 +451,7 @@
   {
    "model": "Modelica.Clocked.Examples.Elementary.BooleanSignals.TickBasedStep",
    "signals": 1,
-   "time": 0.092,
+   "time": 0.111,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -438,7 +459,7 @@
   {
    "model": "Modelica.Clocked.Examples.Elementary.BooleanSignals.TimeBasedPulse",
    "signals": 1,
-   "time": 0.174,
+   "time": 0.112,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -446,7 +467,7 @@
   {
    "model": "Modelica.Clocked.Examples.Elementary.BooleanSignals.TimeBasedStep",
    "signals": 1,
-   "time": 0.13,
+   "time": 0.169,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -454,7 +475,7 @@
   {
    "model": "Modelica.Clocked.Examples.Elementary.BooleanSignals.UpSample",
    "signals": 3,
-   "time": 0.222,
+   "time": 0.117,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -462,14 +483,14 @@
   {
    "model": "Modelica.Clocked.Examples.Elementary.ClockSignals.LogicalSample",
    "signals": 8,
-   "time": 1.088,
+   "time": 1.815,
    "status": "error",
    "error": "error: in component 'conjunctiveClock': connect(input_memory.Q, combinator.u): incompatible connectors (2 vs 0 variables)"
   },
   {
    "model": "Modelica.Clocked.Examples.Elementary.ClockSignals.RotationalSample",
    "signals": 4,
-   "time": 0.171,
+   "time": 0.103,
    "missing": [],
    "failed": [
     {
@@ -483,7 +504,7 @@
   {
    "model": "Modelica.Clocked.Examples.Elementary.ClockSignals.ShiftSample",
    "signals": 1,
-   "time": 0.159,
+   "time": 0.131,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -491,7 +512,7 @@
   {
    "model": "Modelica.Clocked.Examples.Elementary.ClockSignals.SubSample",
    "signals": 1,
-   "time": 0.153,
+   "time": 0.118,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -499,7 +520,7 @@
   {
    "model": "Modelica.Clocked.Examples.Elementary.ClockSignals.SuperSample",
    "signals": 1,
-   "time": 0.101,
+   "time": 0.085,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -507,7 +528,7 @@
   {
    "model": "Modelica.Clocked.Examples.Elementary.IntegerSignals.AssignClock",
    "signals": 1,
-   "time": 0.104,
+   "time": 0.082,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -515,7 +536,7 @@
   {
    "model": "Modelica.Clocked.Examples.Elementary.IntegerSignals.AssignClockVectorized",
    "signals": 2,
-   "time": 0.096,
+   "time": 0.073,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -523,7 +544,7 @@
   {
    "model": "Modelica.Clocked.Examples.Elementary.IntegerSignals.BackSample",
    "signals": 3,
-   "time": 0.152,
+   "time": 0.113,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -531,7 +552,7 @@
   {
    "model": "Modelica.Clocked.Examples.Elementary.IntegerSignals.Hold",
    "signals": 3,
-   "time": 0.187,
+   "time": 0.131,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -539,7 +560,7 @@
   {
    "model": "Modelica.Clocked.Examples.Elementary.IntegerSignals.Sample1",
    "signals": 2,
-   "time": 0.082,
+   "time": 0.122,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -547,7 +568,7 @@
   {
    "model": "Modelica.Clocked.Examples.Elementary.IntegerSignals.Sample2",
    "signals": 3,
-   "time": 0.099,
+   "time": 0.08,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -555,7 +576,7 @@
   {
    "model": "Modelica.Clocked.Examples.Elementary.IntegerSignals.SampleClocked",
    "signals": 1,
-   "time": 0.084,
+   "time": 0.085,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -563,7 +584,7 @@
   {
    "model": "Modelica.Clocked.Examples.Elementary.IntegerSignals.SampleVectorizedAndClocked",
    "signals": 2,
-   "time": 0.087,
+   "time": 0.1,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -571,7 +592,7 @@
   {
    "model": "Modelica.Clocked.Examples.Elementary.IntegerSignals.ShiftSample",
    "signals": 2,
-   "time": 0.153,
+   "time": 0.14,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -579,7 +600,7 @@
   {
    "model": "Modelica.Clocked.Examples.Elementary.IntegerSignals.SubSample",
    "signals": 2,
-   "time": 0.142,
+   "time": 0.136,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -587,7 +608,7 @@
   {
    "model": "Modelica.Clocked.Examples.Elementary.IntegerSignals.SuperSample",
    "signals": 2,
-   "time": 0.168,
+   "time": 0.117,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -595,7 +616,7 @@
   {
    "model": "Modelica.Clocked.Examples.Elementary.IntegerSignals.TickBasedStep",
    "signals": 1,
-   "time": 0.07,
+   "time": 0.08,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -603,7 +624,7 @@
   {
    "model": "Modelica.Clocked.Examples.Elementary.IntegerSignals.TimeBasedStep",
    "signals": 1,
-   "time": 0.081,
+   "time": 0.071,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -611,7 +632,7 @@
   {
    "model": "Modelica.Clocked.Examples.Elementary.IntegerSignals.UpSample",
    "signals": 3,
-   "time": 0.194,
+   "time": 0.16,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -619,7 +640,7 @@
   {
    "model": "Modelica.Clocked.Examples.Elementary.RealSignals.AssignClock",
    "signals": 1,
-   "time": 0.095,
+   "time": 0.122,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -627,7 +648,7 @@
   {
    "model": "Modelica.Clocked.Examples.Elementary.RealSignals.AssignClockToSquareWaveHold",
    "signals": 2,
-   "time": 0.131,
+   "time": 0.16,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -635,7 +656,7 @@
   {
    "model": "Modelica.Clocked.Examples.Elementary.RealSignals.AssignClockToTriggerHold",
    "signals": 2,
-   "time": 0.157,
+   "time": 0.159,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -643,7 +664,7 @@
   {
    "model": "Modelica.Clocked.Examples.Elementary.RealSignals.AssignClockVectorized",
    "signals": 2,
-   "time": 0.099,
+   "time": 0.113,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -651,7 +672,7 @@
   {
    "model": "Modelica.Clocked.Examples.Elementary.RealSignals.BackSample",
    "signals": 3,
-   "time": 0.149,
+   "time": 0.109,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -659,7 +680,7 @@
   {
    "model": "Modelica.Clocked.Examples.Elementary.RealSignals.FractionalDelay",
    "signals": 2,
-   "time": 0.167,
+   "time": 0.101,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -667,7 +688,7 @@
   {
    "model": "Modelica.Clocked.Examples.Elementary.RealSignals.Hold",
    "signals": 3,
-   "time": 0.112,
+   "time": 0.095,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -675,7 +696,7 @@
   {
    "model": "Modelica.Clocked.Examples.Elementary.RealSignals.HoldWithDAeffects1",
    "signals": 3,
-   "time": 0.169,
+   "time": 0.115,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -683,7 +704,7 @@
   {
    "model": "Modelica.Clocked.Examples.Elementary.RealSignals.HoldWithDAeffects2",
    "signals": 3,
-   "time": 0.128,
+   "time": 0.12,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -691,7 +712,7 @@
   {
    "model": "Modelica.Clocked.Examples.Elementary.RealSignals.Sample1",
    "signals": 2,
-   "time": 0.147,
+   "time": 0.101,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -699,7 +720,7 @@
   {
    "model": "Modelica.Clocked.Examples.Elementary.RealSignals.Sample2",
    "signals": 2,
-   "time": 0.104,
+   "time": 0.089,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -707,7 +728,7 @@
   {
    "model": "Modelica.Clocked.Examples.Elementary.RealSignals.Sample3",
    "signals": 3,
-   "time": 0.095,
+   "time": 0.112,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -715,7 +736,7 @@
   {
    "model": "Modelica.Clocked.Examples.Elementary.RealSignals.SampleClocked",
    "signals": 1,
-   "time": 0.123,
+   "time": 0.13,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -723,7 +744,7 @@
   {
    "model": "Modelica.Clocked.Examples.Elementary.RealSignals.SampleVectorizedAndClocked",
    "signals": 2,
-   "time": 0.118,
+   "time": 0.148,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -731,7 +752,7 @@
   {
    "model": "Modelica.Clocked.Examples.Elementary.RealSignals.SampleWithADeffects",
    "signals": 2,
-   "time": 0.102,
+   "time": 0.164,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -739,7 +760,7 @@
   {
    "model": "Modelica.Clocked.Examples.Elementary.RealSignals.ShiftSample",
    "signals": 2,
-   "time": 0.129,
+   "time": 0.113,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -747,7 +768,7 @@
   {
    "model": "Modelica.Clocked.Examples.Elementary.RealSignals.SubSample",
    "signals": 2,
-   "time": 0.112,
+   "time": 0.146,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -755,7 +776,7 @@
   {
    "model": "Modelica.Clocked.Examples.Elementary.RealSignals.SuperSample",
    "signals": 2,
-   "time": 0.138,
+   "time": 0.093,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -763,7 +784,7 @@
   {
    "model": "Modelica.Clocked.Examples.Elementary.RealSignals.SuperSampleInterpolated",
    "signals": 2,
-   "time": 0.118,
+   "time": 0.091,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -771,7 +792,7 @@
   {
    "model": "Modelica.Clocked.Examples.Elementary.RealSignals.TickBasedRamp",
    "signals": 1,
-   "time": 0.119,
+   "time": 0.105,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -779,7 +800,7 @@
   {
    "model": "Modelica.Clocked.Examples.Elementary.RealSignals.TickBasedSine",
    "signals": 1,
-   "time": 0.151,
+   "time": 0.082,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -787,7 +808,7 @@
   {
    "model": "Modelica.Clocked.Examples.Elementary.RealSignals.TickBasedStep",
    "signals": 1,
-   "time": 0.081,
+   "time": 0.073,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -795,7 +816,7 @@
   {
    "model": "Modelica.Clocked.Examples.Elementary.RealSignals.TimeBasedRamp",
    "signals": 1,
-   "time": 0.131,
+   "time": 0.115,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -803,7 +824,7 @@
   {
    "model": "Modelica.Clocked.Examples.Elementary.RealSignals.TimeBasedSine",
    "signals": 1,
-   "time": 0.135,
+   "time": 0.086,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -811,7 +832,7 @@
   {
    "model": "Modelica.Clocked.Examples.Elementary.RealSignals.TimeBasedStep",
    "signals": 1,
-   "time": 0.097,
+   "time": 0.09,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -819,7 +840,7 @@
   {
    "model": "Modelica.Clocked.Examples.Elementary.RealSignals.UniformNoise",
    "signals": 2,
-   "time": 0.13,
+   "time": 0.087,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -827,14 +848,15 @@
   {
    "model": "Modelica.Clocked.Examples.Elementary.RealSignals.UniformNoiseXorshift64star",
    "signals": 2,
-   "time": 0.919,
-   "status": "error",
-   "error": "error: in declaration of 'uniformNoiseXorshift64star.state64[1]': in function 'Modelica.Math.Random.Generators.Xorshift64star.initialState': external function 'Modelica.Math.Random.Generators.Xorshift64star.random' is not supported"
+   "time": 0.096,
+   "missing": [],
+   "failed": [],
+   "status": "pass"
   },
   {
    "model": "Modelica.Clocked.Examples.Elementary.RealSignals.UpSample1",
    "signals": 3,
-   "time": 0.125,
+   "time": 0.108,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -842,7 +864,7 @@
   {
    "model": "Modelica.Clocked.Examples.Elementary.RealSignals.UpSample2",
    "signals": 5,
-   "time": 0.125,
+   "time": 0.119,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -850,7 +872,7 @@
   {
    "model": "Modelica.Clocked.Examples.SimpleControlledDrive.ClockedWithDiscreteController",
    "signals": 4,
-   "time": 0.155,
+   "time": 0.116,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -858,7 +880,7 @@
   {
    "model": "Modelica.Clocked.Examples.SimpleControlledDrive.ClockedWithDiscreteTextbookController",
    "signals": 4,
-   "time": 0.129,
+   "time": 0.147,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -866,7 +888,7 @@
   {
    "model": "Modelica.Clocked.Examples.SimpleControlledDrive.ClockedWithDiscretizedContinuousController",
    "signals": 4,
-   "time": 0.233,
+   "time": 0.137,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -874,7 +896,7 @@
   {
    "model": "Modelica.Clocked.Examples.SimpleControlledDrive.ClockedWith_AD_DA_Effects",
    "signals": 4,
-   "time": 0.228,
+   "time": 0.138,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -882,7 +904,7 @@
   {
    "model": "Modelica.Clocked.Examples.SimpleControlledDrive.Continuous",
    "signals": 4,
-   "time": 0.178,
+   "time": 0.114,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -890,7 +912,7 @@
   {
    "model": "Modelica.Clocked.Examples.SimpleControlledDrive.ExactlyClockedWithDiscreteController",
    "signals": 4,
-   "time": 0.12,
+   "time": 0.248,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -898,20 +920,20 @@
   {
    "model": "Modelica.Clocked.Examples.Systems.ControlledMixingUnit",
    "signals": 7,
-   "time": 0.963,
+   "time": 0.686,
    "status": "error",
    "error": "error: clocked partition is singular at 'filter.x[3] = pre(filter.x[3]) + periodicClock1.period*pre(der(filter.x[3]))'"
   },
   {
    "model": "Modelica.Clocked.Examples.Systems.EngineThrottleControl",
    "signals": 8,
-   "time": 0.172,
+   "time": 0.108,
    "missing": [],
    "failed": [
     {
      "signal": "engine.torque.tau",
      "outside": 0.1048,
-     "worst": 1.954655197422954
+     "worst": 1.954655455967441
     }
    ],
    "status": "differ"
@@ -919,7 +941,7 @@
   {
    "model": "Modelica.Clocked.Examples.Systems.Utilities.ComponentsMixingUnit.MixingUnitWithContinuousControl",
    "signals": 7,
-   "time": 0.163,
+   "time": 0.101,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -927,7 +949,7 @@
   {
    "model": "Modelica.ComplexBlocks.Examples.ShowTransferFunction",
    "signals": 5,
-   "time": 0.118,
+   "time": 0.101,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -935,7 +957,7 @@
   {
    "model": "Modelica.ComplexBlocks.Examples.TestConversionBlock",
    "signals": 2,
-   "time": 0.137,
+   "time": 0.102,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -943,7 +965,7 @@
   {
    "model": "Modelica.Electrical.Analog.Examples.AD_DA_conversion",
    "signals": 3,
-   "time": 0.155,
+   "time": 0.127,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -951,7 +973,7 @@
   {
    "model": "Modelica.Electrical.Analog.Examples.AmplifierWithOpAmpDetailed",
    "signals": 7,
-   "time": 0.129,
+   "time": 0.09,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -959,7 +981,7 @@
   {
    "model": "Modelica.Electrical.Analog.Examples.CauerLowPassAnalog",
    "signals": 5,
-   "time": 0.135,
+   "time": 0.11,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -967,7 +989,7 @@
   {
    "model": "Modelica.Electrical.Analog.Examples.CauerLowPassOPV",
    "signals": 5,
-   "time": 0.149,
+   "time": 0.142,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -975,14 +997,14 @@
   {
    "model": "Modelica.Electrical.Analog.Examples.CauerLowPassSC",
    "signals": 5,
-   "time": 0.255,
+   "time": 0.114,
    "status": "error",
    "error": "error: step size too small at t = 1.05"
   },
   {
    "model": "Modelica.Electrical.Analog.Examples.CharacteristicIdealDiodes",
    "signals": 3,
-   "time": 0.142,
+   "time": 0.133,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -990,7 +1012,7 @@
   {
    "model": "Modelica.Electrical.Analog.Examples.CharacteristicThyristors",
    "signals": 3,
-   "time": 0.135,
+   "time": 0.103,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -998,7 +1020,7 @@
   {
    "model": "Modelica.Electrical.Analog.Examples.ChuaCircuit",
    "signals": 3,
-   "time": 0.176,
+   "time": 0.06,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1006,7 +1028,7 @@
   {
    "model": "Modelica.Electrical.Analog.Examples.CompareTransformers",
    "signals": 3,
-   "time": 0.517,
+   "time": 0.449,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1014,7 +1036,7 @@
   {
    "model": "Modelica.Electrical.Analog.Examples.ControlledSwitchWithArc",
    "signals": 2,
-   "time": 0.18,
+   "time": 0.148,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1022,7 +1044,7 @@
   {
    "model": "Modelica.Electrical.Analog.Examples.DemoPowerSupply",
    "signals": 3,
-   "time": 0.167,
+   "time": 0.085,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1030,7 +1052,7 @@
   {
    "model": "Modelica.Electrical.Analog.Examples.DemoPowerSupplyWithBuffer",
    "signals": 4,
-   "time": 0.551,
+   "time": 0.478,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1038,7 +1060,7 @@
   {
    "model": "Modelica.Electrical.Analog.Examples.DemonstrateLightning",
    "signals": 6,
-   "time": 0.354,
+   "time": 0.236,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1046,7 +1068,7 @@
   {
    "model": "Modelica.Electrical.Analog.Examples.DifferenceAmplifier",
    "signals": 9,
-   "time": 0.304,
+   "time": 0.168,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1054,7 +1076,7 @@
   {
    "model": "Modelica.Electrical.Analog.Examples.GenerationOfFMUs",
    "signals": 6,
-   "time": 0.205,
+   "time": 0.151,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1062,7 +1084,7 @@
   {
    "model": "Modelica.Electrical.Analog.Examples.HeatingMOSInverter",
    "signals": 2,
-   "time": 0.224,
+   "time": 0.135,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1070,21 +1092,21 @@
   {
    "model": "Modelica.Electrical.Analog.Examples.HeatingNPN_NORGate",
    "signals": 1,
-   "time": 0.352,
+   "time": 0.158,
    "status": "error",
-   "error": "error: step size too small at t = 0.000033346511984555977"
+   "error": "error: step size too small at t = 0.000033347108903768556"
   },
   {
    "model": "Modelica.Electrical.Analog.Examples.HeatingPNP_NORGate",
    "signals": 1,
-   "time": 0.268,
+   "time": 0.219,
    "status": "error",
-   "error": "error: step size too small at t = 0.00003332020816427363"
+   "error": "error: step size too small at t = 0.000033319620548594685"
   },
   {
    "model": "Modelica.Electrical.Analog.Examples.HeatingRectifier",
    "signals": 2,
-   "time": 0.247,
+   "time": 0.192,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1092,7 +1114,7 @@
   {
    "model": "Modelica.Electrical.Analog.Examples.IdealTriacCircuit",
    "signals": 3,
-   "time": 0.192,
+   "time": 0.113,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1100,7 +1122,7 @@
   {
    "model": "Modelica.Electrical.Analog.Examples.InvertingAmp",
    "signals": 1,
-   "time": 0.206,
+   "time": 0.119,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1108,7 +1130,7 @@
   {
    "model": "Modelica.Electrical.Analog.Examples.Lines.CompareLineTrunks",
    "signals": 9,
-   "time": 0.474,
+   "time": 0.216,
    "missing": [],
    "failed": [
     {
@@ -1122,7 +1144,7 @@
   {
    "model": "Modelica.Electrical.Analog.Examples.Lines.CompareLosslessLines",
    "signals": 12,
-   "time": 0.152,
+   "time": 0.102,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1130,7 +1152,7 @@
   {
    "model": "Modelica.Electrical.Analog.Examples.Lines.LightningLosslessTransmissionLine",
    "signals": 3,
-   "time": 0.428,
+   "time": 0.282,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1138,7 +1160,7 @@
   {
    "model": "Modelica.Electrical.Analog.Examples.Lines.LightningSegmentedTransmissionLine",
    "signals": 3,
-   "time": 11.678,
+   "time": 15.827,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1146,7 +1168,7 @@
   {
    "model": "Modelica.Electrical.Analog.Examples.Lines.SmoothStep",
    "signals": 4,
-   "time": 0.855,
+   "time": 0.417,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1154,7 +1176,7 @@
   {
    "model": "Modelica.Electrical.Analog.Examples.NandGate",
    "signals": 2,
-   "time": 0.257,
+   "time": 0.307,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1162,7 +1184,7 @@
   {
    "model": "Modelica.Electrical.Analog.Examples.OpAmps.Adder",
    "signals": 1,
-   "time": 0.227,
+   "time": 0.599,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1170,7 +1192,7 @@
   {
    "model": "Modelica.Electrical.Analog.Examples.OpAmps.Comparator",
    "signals": 2,
-   "time": 0.206,
+   "time": 0.347,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1178,7 +1200,7 @@
   {
    "model": "Modelica.Electrical.Analog.Examples.OpAmps.ControlCircuit",
    "signals": 8,
-   "time": 0.222,
+   "time": 0.39,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1186,14 +1208,14 @@
   {
    "model": "Modelica.Electrical.Analog.Examples.OpAmps.DifferentialAmplifier",
    "signals": 2,
-   "time": 0.254,
+   "time": 0.308,
    "status": "error",
    "error": "error: nonlinear system for [resistorGround.v, opAmp.v_out, resistor1.i, opAmp.vps, opAmp.vns, resistorGround.i, resistanceInstrument.v, resistanceInstrument.i, opAmp.out.i, opAmp.p_out, opAmp.i_s, resistor2.i, resistor4.v, opAmp.in_p.v, resistor2.v, resistor1.v, opAmp.in_n.v, resistor3.v, opAmp.v_i"
   },
   {
    "model": "Modelica.Electrical.Analog.Examples.OpAmps.Differentiator",
    "signals": 3,
-   "time": 0.251,
+   "time": 0.329,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1201,7 +1223,7 @@
   {
    "model": "Modelica.Electrical.Analog.Examples.OpAmps.HighPass",
    "signals": 3,
-   "time": 0.173,
+   "time": 0.297,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1209,7 +1231,7 @@
   {
    "model": "Modelica.Electrical.Analog.Examples.OpAmps.Integrator",
    "signals": 3,
-   "time": 0.239,
+   "time": 0.276,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1217,7 +1239,7 @@
   {
    "model": "Modelica.Electrical.Analog.Examples.OpAmps.InvertingAmplifier",
    "signals": 2,
-   "time": 0.188,
+   "time": 0.242,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1225,7 +1247,7 @@
   {
    "model": "Modelica.Electrical.Analog.Examples.OpAmps.InvertingSchmittTrigger",
    "signals": 2,
-   "time": 0.162,
+   "time": 0.447,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1233,7 +1255,7 @@
   {
    "model": "Modelica.Electrical.Analog.Examples.OpAmps.LCOscillator",
    "signals": 4,
-   "time": 0.184,
+   "time": 0.252,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1241,7 +1263,7 @@
   {
    "model": "Modelica.Electrical.Analog.Examples.OpAmps.LowPass",
    "signals": 3,
-   "time": 0.184,
+   "time": 0.317,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1249,13 +1271,13 @@
   {
    "model": "Modelica.Electrical.Analog.Examples.OpAmps.Multivibrator",
    "signals": 3,
-   "time": 0.14,
+   "time": 0.419,
    "missing": [],
    "failed": [
     {
      "signal": "c.v",
      "outside": 0.942,
-     "worst": 299.095148994461
+     "worst": 299.09514898325574
     },
     {
      "signal": "opAmp.out.v",
@@ -1265,7 +1287,7 @@
     {
      "signal": "opAmp.out.i",
      "outside": 0.8881,
-     "worst": 414.89256130287595
+     "worst": 414.8925613076684
     }
    ],
    "status": "differ"
@@ -1273,7 +1295,7 @@
   {
    "model": "Modelica.Electrical.Analog.Examples.OpAmps.NonInvertingAmplifier",
    "signals": 2,
-   "time": 0.138,
+   "time": 0.484,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1281,14 +1303,14 @@
   {
    "model": "Modelica.Electrical.Analog.Examples.OpAmps.SchmittTrigger",
    "signals": 2,
-   "time": 0.122,
+   "time": 0.316,
    "status": "error",
    "error": "error: nonlinear system for [opAmp.v_in, opAmp.v_out, r2.v, r1.v, opAmp.out.i] did not converge at t = 0.027266928361138407 (residual 1.345e-1)"
   },
   {
    "model": "Modelica.Electrical.Analog.Examples.OpAmps.SignalGenerator",
    "signals": 5,
-   "time": 0.133,
+   "time": 0.391,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1296,7 +1318,7 @@
   {
    "model": "Modelica.Electrical.Analog.Examples.OpAmps.Subtracter",
    "signals": 1,
-   "time": 0.117,
+   "time": 0.582,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1304,7 +1326,7 @@
   {
    "model": "Modelica.Electrical.Analog.Examples.OpAmps.VoltageFollower",
    "signals": 2,
-   "time": 0.124,
+   "time": 0.355,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1312,7 +1334,7 @@
   {
    "model": "Modelica.Electrical.Analog.Examples.OvervoltageProtection",
    "signals": 1,
-   "time": 0.248,
+   "time": 0.329,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1320,7 +1342,7 @@
   {
    "model": "Modelica.Electrical.Analog.Examples.ParallelResonance",
    "signals": 6,
-   "time": 0.2,
+   "time": 0.615,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1328,7 +1350,7 @@
   {
    "model": "Modelica.Electrical.Analog.Examples.Rectifier",
    "signals": 4,
-   "time": 0.295,
+   "time": 0.814,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1336,7 +1358,7 @@
   {
    "model": "Modelica.Electrical.Analog.Examples.Resistor",
    "signals": 2,
-   "time": 0.114,
+   "time": 0.3,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1344,7 +1366,7 @@
   {
    "model": "Modelica.Electrical.Analog.Examples.ResonanceCircuits",
    "signals": 3,
-   "time": 0.192,
+   "time": 0.328,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1352,7 +1374,7 @@
   {
    "model": "Modelica.Electrical.Analog.Examples.SeriesResonance",
    "signals": 6,
-   "time": 0.161,
+   "time": 0.282,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1360,7 +1382,7 @@
   {
    "model": "Modelica.Electrical.Analog.Examples.ShowSaturatingInductor",
    "signals": 2,
-   "time": 0.139,
+   "time": 0.176,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1368,7 +1390,7 @@
   {
    "model": "Modelica.Electrical.Analog.Examples.ShowVariableResistor",
    "signals": 2,
-   "time": 0.16,
+   "time": 0.225,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1377,12 +1399,12 @@
    "model": "Modelica.Electrical.Analog.Examples.SimpleTriacCircuit",
    "signals": 3,
    "status": "timeout",
-   "time": 120.0
+   "time": 120
   },
   {
    "model": "Modelica.Electrical.Analog.Examples.SwitchWithArc",
    "signals": 2,
-   "time": 0.123,
+   "time": 0.254,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1390,7 +1412,7 @@
   {
    "model": "Modelica.Electrical.Analog.Examples.ThyristorBehaviourTest",
    "signals": 2,
-   "time": 0.102,
+   "time": 0.123,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1398,7 +1420,7 @@
   {
    "model": "Modelica.Electrical.Batteries.Examples.BatteryDischargeCharge",
    "signals": 6,
-   "time": 0.591,
+   "time": 0.528,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1406,7 +1428,7 @@
   {
    "model": "Modelica.Electrical.Batteries.Examples.CCCV_Cell",
    "signals": 3,
-   "time": 0.209,
+   "time": 0.131,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1414,7 +1436,7 @@
   {
    "model": "Modelica.Electrical.Batteries.Examples.CCCV_CellRC",
    "signals": 5,
-   "time": 0.202,
+   "time": 0.293,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1422,7 +1444,7 @@
   {
    "model": "Modelica.Electrical.Batteries.Examples.CCCV_Stack",
    "signals": 13,
-   "time": 0.406,
+   "time": 0.429,
    "missing": [
     "stack.cell[1, 1].cell.limIntegrator.y",
     "stack.cell[1, 1].limIntegrator.y",
@@ -1443,14 +1465,14 @@
   {
    "model": "Modelica.Electrical.Batteries.Examples.CCCV_StackRC",
    "signals": 25,
-   "time": 0.853,
+   "time": 0.783,
    "status": "error",
    "error": "error: in declaration of 'stackData.cellData[1,1]': expected a scalar expression, found array"
   },
   {
    "model": "Modelica.Electrical.Batteries.Examples.CCCVcharging",
    "signals": 4,
-   "time": 0.17,
+   "time": 0.151,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1458,7 +1480,7 @@
   {
    "model": "Modelica.Electrical.Batteries.Examples.ShowImpedance",
    "signals": 2,
-   "time": 0.14,
+   "time": 0.086,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1466,7 +1488,7 @@
   {
    "model": "Modelica.Electrical.Batteries.Examples.SuperCapDischargeCharge",
    "signals": 2,
-   "time": 0.338,
+   "time": 0.552,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1474,7 +1496,7 @@
   {
    "model": "Modelica.Electrical.Digital.Examples.Adder4",
    "signals": 32,
-   "time": 0.246,
+   "time": 0.479,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1482,7 +1504,7 @@
   {
    "model": "Modelica.Electrical.Digital.Examples.BUF3S",
    "signals": 1,
-   "time": 0.114,
+   "time": 0.156,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1490,7 +1512,7 @@
   {
    "model": "Modelica.Electrical.Digital.Examples.Counter",
    "signals": 8,
-   "time": 4.269,
+   "time": 7.742,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1498,7 +1520,7 @@
   {
    "model": "Modelica.Electrical.Digital.Examples.Counter3",
    "signals": 6,
-   "time": 0.517,
+   "time": 0.487,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1506,7 +1528,7 @@
   {
    "model": "Modelica.Electrical.Digital.Examples.DFFREG",
    "signals": 6,
-   "time": 0.158,
+   "time": 0.114,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1514,7 +1536,7 @@
   {
    "model": "Modelica.Electrical.Digital.Examples.DFFREGL",
    "signals": 6,
-   "time": 0.125,
+   "time": 0.175,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1522,7 +1544,7 @@
   {
    "model": "Modelica.Electrical.Digital.Examples.DFFREGSRH",
    "signals": 2,
-   "time": 0.142,
+   "time": 0.144,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1530,7 +1552,7 @@
   {
    "model": "Modelica.Electrical.Digital.Examples.DFFREGSRL",
    "signals": 2,
-   "time": 0.164,
+   "time": 0.115,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1538,7 +1560,7 @@
   {
    "model": "Modelica.Electrical.Digital.Examples.DLATREG",
    "signals": 4,
-   "time": 0.115,
+   "time": 0.095,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1546,7 +1568,7 @@
   {
    "model": "Modelica.Electrical.Digital.Examples.DLATREGL",
    "signals": 4,
-   "time": 0.104,
+   "time": 0.143,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1554,7 +1576,7 @@
   {
    "model": "Modelica.Electrical.Digital.Examples.DLATREGSRH",
    "signals": 4,
-   "time": 0.135,
+   "time": 0.119,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1562,7 +1584,7 @@
   {
    "model": "Modelica.Electrical.Digital.Examples.DLATREGSRL",
    "signals": 4,
-   "time": 0.145,
+   "time": 0.141,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1570,7 +1592,7 @@
   {
    "model": "Modelica.Electrical.Digital.Examples.FlipFlop",
    "signals": 2,
-   "time": 4.05,
+   "time": 2.739,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1578,7 +1600,7 @@
   {
    "model": "Modelica.Electrical.Digital.Examples.FullAdder",
    "signals": 14,
-   "time": 0.598,
+   "time": 0.656,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1586,7 +1608,7 @@
   {
    "model": "Modelica.Electrical.Digital.Examples.HalfAdder",
    "signals": 4,
-   "time": 0.222,
+   "time": 0.106,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1594,7 +1616,7 @@
   {
    "model": "Modelica.Electrical.Digital.Examples.INV3S",
    "signals": 1,
-   "time": 0.182,
+   "time": 0.1,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1602,7 +1624,7 @@
   {
    "model": "Modelica.Electrical.Digital.Examples.MUX2x1",
    "signals": 1,
-   "time": 0.266,
+   "time": 0.11,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1610,7 +1632,7 @@
   {
    "model": "Modelica.Electrical.Digital.Examples.Multiplexer",
    "signals": 2,
-   "time": 9.582,
+   "time": 5.069,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1618,7 +1640,7 @@
   {
    "model": "Modelica.Electrical.Digital.Examples.NRXFER",
    "signals": 1,
-   "time": 0.156,
+   "time": 0.278,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1626,7 +1648,7 @@
   {
    "model": "Modelica.Electrical.Digital.Examples.NXFER",
    "signals": 1,
-   "time": 0.16,
+   "time": 0.15,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1634,14 +1656,14 @@
   {
    "model": "Modelica.Electrical.Digital.Examples.RAM",
    "signals": 2,
-   "time": 1.383,
+   "time": 1.303,
    "status": "error",
-   "error": "error: in component 'dLATRAM': reference to a conditional component that is not present"
+   "error": "error: in component 'dLATRAM': in function 'Modelica.Electrical.Digital.Interfaces.MemoryBase.getMemory': in function 'Modelica.Utilities.Strings.scanInteger': in function 'Modelica.Utilities.Strings.Advanced.scanInteger': expected a string, found tuple"
   },
   {
    "model": "Modelica.Electrical.Digital.Examples.VectorDelay",
    "signals": 6,
-   "time": 0.252,
+   "time": 0.104,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1649,7 +1671,7 @@
   {
    "model": "Modelica.Electrical.Digital.Examples.WiredX",
    "signals": 1,
-   "time": 0.218,
+   "time": 0.089,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1657,7 +1679,7 @@
   {
    "model": "Modelica.Electrical.Machines.Examples.ControlledDCDrives.CurrentControlledDCPM",
    "signals": 10,
-   "time": 0.846,
+   "time": 0.736,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1665,7 +1687,7 @@
   {
    "model": "Modelica.Electrical.Machines.Examples.ControlledDCDrives.PositionControlledDCPM",
    "signals": 11,
-   "time": 1.073,
+   "time": 1.207,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1673,7 +1695,7 @@
   {
    "model": "Modelica.Electrical.Machines.Examples.ControlledDCDrives.SpeedControlledDCPM",
    "signals": 13,
-   "time": 0.508,
+   "time": 0.704,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1681,7 +1703,7 @@
   {
    "model": "Modelica.Electrical.Machines.Examples.DCMachines.DCEE_Start",
    "signals": 4,
-   "time": 0.52,
+   "time": 0.504,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1689,7 +1711,7 @@
   {
    "model": "Modelica.Electrical.Machines.Examples.DCMachines.DCPM_Cooling",
    "signals": 5,
-   "time": 2.844,
+   "time": 3.45,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1697,7 +1719,7 @@
   {
    "model": "Modelica.Electrical.Machines.Examples.DCMachines.DCPM_CurrentControlled",
    "signals": 5,
-   "time": 0.853,
+   "time": 0.334,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1705,7 +1727,7 @@
   {
    "model": "Modelica.Electrical.Machines.Examples.DCMachines.DCPM_Drive",
    "signals": 4,
-   "time": 0.367,
+   "time": 0.429,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1713,7 +1735,7 @@
   {
    "model": "Modelica.Electrical.Machines.Examples.DCMachines.DCPM_QuasiStatic",
    "signals": 8,
-   "time": 0.421,
+   "time": 0.524,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1721,7 +1743,7 @@
   {
    "model": "Modelica.Electrical.Machines.Examples.DCMachines.DCPM_Start",
    "signals": 3,
-   "time": 0.239,
+   "time": 0.446,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1729,7 +1751,7 @@
   {
    "model": "Modelica.Electrical.Machines.Examples.DCMachines.DCPM_Temperature",
    "signals": 3,
-   "time": 0.329,
+   "time": 0.482,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1737,7 +1759,7 @@
   {
    "model": "Modelica.Electrical.Machines.Examples.DCMachines.DCPM_withLosses",
    "signals": 6,
-   "time": 0.512,
+   "time": 1.569,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1745,7 +1767,7 @@
   {
    "model": "Modelica.Electrical.Machines.Examples.DCMachines.DCSE_SinglePhase",
    "signals": 3,
-   "time": 0.522,
+   "time": 1.981,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1753,7 +1775,7 @@
   {
    "model": "Modelica.Electrical.Machines.Examples.DCMachines.DCSE_Start",
    "signals": 3,
-   "time": 0.312,
+   "time": 1.314,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1761,7 +1783,7 @@
   {
    "model": "Modelica.Electrical.Machines.Examples.DCMachines.DC_CompareCharacteristics",
    "signals": 12,
-   "time": 0.266,
+   "time": 0.566,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1769,7 +1791,7 @@
   {
    "model": "Modelica.Electrical.Machines.Examples.InductionMachines.IMC_Conveyor",
    "signals": 9,
-   "time": 5.217,
+   "time": 5.571,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1777,13 +1799,13 @@
   {
    "model": "Modelica.Electrical.Machines.Examples.InductionMachines.IMC_DCBraking",
    "signals": 11,
-   "time": 3.448,
+   "time": 2.881,
    "missing": [],
    "failed": [
     {
      "signal": "imc.idq_sr[1]",
-     "outside": 0.3387,
-     "worst": 1.0561403586959675
+     "outside": 0.3478,
+     "worst": 1.8932061169228263
     }
    ],
    "status": "differ"
@@ -1791,7 +1813,7 @@
   {
    "model": "Modelica.Electrical.Machines.Examples.InductionMachines.IMC_DOL",
    "signals": 8,
-   "time": 2.247,
+   "time": 0.745,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1799,7 +1821,7 @@
   {
    "model": "Modelica.Electrical.Machines.Examples.InductionMachines.IMC_Initialize",
    "signals": 8,
-   "time": 0.901,
+   "time": 0.586,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1807,7 +1829,7 @@
   {
    "model": "Modelica.Electrical.Machines.Examples.InductionMachines.IMC_Inverter",
    "signals": 9,
-   "time": 1.181,
+   "time": 0.945,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1815,20 +1837,20 @@
   {
    "model": "Modelica.Electrical.Machines.Examples.InductionMachines.IMC_InverterDrive",
    "signals": 13,
-   "time": 1.974,
+   "time": 1.095,
    "status": "error",
    "error": "error: step size too small at t = 0.0000000010014466983361025"
   },
   {
    "model": "Modelica.Electrical.Machines.Examples.InductionMachines.IMC_Steinmetz",
    "signals": 10,
-   "time": 0.852,
+   "time": 0.818,
    "missing": [],
    "failed": [
     {
      "signal": "cStart.v",
      "outside": 0.393,
-     "worst": 1.1725597167150583
+     "worst": 1.2159239322767827
     }
    ],
    "status": "differ"
@@ -1836,28 +1858,28 @@
   {
    "model": "Modelica.Electrical.Machines.Examples.InductionMachines.IMC_Transformer",
    "signals": 10,
-   "time": 2.1,
+   "time": 1.745,
    "missing": [],
    "failed": [
     {
      "signal": "aimc.idq_rr[1]",
-     "outside": 0.0044,
-     "worst": 5.331652707685233
+     "outside": 0.0043,
+     "worst": 5.281159714980446
     },
     {
      "signal": "aimc.idq_rr[2]",
      "outside": 0.0039,
-     "worst": 4.965427957312329
+     "worst": 4.922314815819258
     },
     {
      "signal": "aimc.idq_sr[1]",
-     "outside": 0.0048,
-     "worst": 5.20252671249915
+     "outside": 0.0047,
+     "worst": 5.153193011793085
     },
     {
      "signal": "aimc.idq_sr[2]",
      "outside": 0.0034,
-     "worst": 4.589033415737871
+     "worst": 4.549027943741903
     }
    ],
    "status": "differ"
@@ -1865,28 +1887,28 @@
   {
    "model": "Modelica.Electrical.Machines.Examples.InductionMachines.IMC_YD",
    "signals": 8,
-   "time": 1.479,
+   "time": 1.784,
    "missing": [],
    "failed": [
     {
      "signal": "aimc.idq_rr[1]",
-     "outside": 0.0053,
-     "worst": 5.163163001579579
+     "outside": 0.0054,
+     "worst": 5.182575261814958
     },
     {
      "signal": "aimc.idq_rr[2]",
      "outside": 0.0029,
-     "worst": 12.667367383448955
+     "worst": 12.73067469479099
     },
     {
      "signal": "aimc.idq_sr[1]",
      "outside": 0.0063,
-     "worst": 5.475642389244496
+     "worst": 5.496470660595223
     },
     {
      "signal": "aimc.idq_sr[2]",
      "outside": 0.0021,
-     "worst": 12.560067285843132
+     "worst": 12.622689691144586
     }
    ],
    "status": "differ"
@@ -1895,12 +1917,12 @@
    "model": "Modelica.Electrical.Machines.Examples.InductionMachines.IMC_YDarc",
    "signals": 11,
    "status": "timeout",
-   "time": 120.0
+   "time": 120
   },
   {
    "model": "Modelica.Electrical.Machines.Examples.InductionMachines.IMC_withLosses",
    "signals": 9,
-   "time": 2.676,
+   "time": 1.683,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1908,7 +1930,7 @@
   {
    "model": "Modelica.Electrical.Machines.Examples.InductionMachines.IMS_Start",
    "signals": 11,
-   "time": 1.516,
+   "time": 1.036,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1916,7 +1938,7 @@
   {
    "model": "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMEE_DOL",
    "signals": 9,
-   "time": 2.434,
+   "time": 1.18,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1924,7 +1946,7 @@
   {
    "model": "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMEE_Generator",
    "signals": 7,
-   "time": 2.144,
+   "time": 1.21,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1932,7 +1954,7 @@
   {
    "model": "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMEE_LoadDump",
    "signals": 10,
-   "time": 12.424,
+   "time": 20.996,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1940,7 +1962,7 @@
   {
    "model": "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMEE_Rectifier",
    "signals": 14,
-   "time": 3.78,
+   "time": 5.289,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1948,7 +1970,7 @@
   {
    "model": "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMPM_Braking",
    "signals": 6,
-   "time": 0.772,
+   "time": 1.049,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1956,7 +1978,7 @@
   {
    "model": "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMPM_CurrentSource",
    "signals": 4,
-   "time": 1.102,
+   "time": 1.995,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1964,7 +1986,7 @@
   {
    "model": "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMPM_Inverter",
    "signals": 9,
-   "time": 0.847,
+   "time": 1.013,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1972,7 +1994,7 @@
   {
    "model": "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMPM_NoLoad",
    "signals": 3,
-   "time": 0.384,
+   "time": 0.36,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1980,7 +2002,7 @@
   {
    "model": "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMPM_ResistiveBraking",
    "signals": 9,
-   "time": 0.431,
+   "time": 0.419,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1988,7 +2010,7 @@
   {
    "model": "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMPM_VoltageSource",
    "signals": 8,
-   "time": 1.24,
+   "time": 0.913,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -1996,7 +2018,7 @@
   {
    "model": "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMR_DOL",
    "signals": 8,
-   "time": 0.334,
+   "time": 0.507,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2004,7 +2026,7 @@
   {
    "model": "Modelica.Electrical.Machines.Examples.SynchronousMachines.SMR_Inverter",
    "signals": 9,
-   "time": 0.921,
+   "time": 0.572,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2012,7 +2034,7 @@
   {
    "model": "Modelica.Electrical.Machines.Examples.Transformers.AsymmetricalLoad",
    "signals": 1,
-   "time": 0.205,
+   "time": 0.151,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2020,28 +2042,28 @@
   {
    "model": "Modelica.Electrical.Machines.Examples.Transformers.IMC_Transformer",
    "signals": 11,
-   "time": 1.791,
+   "time": 1.186,
    "missing": [],
    "failed": [
     {
      "signal": "aimc.idq_rr[1]",
-     "outside": 0.0044,
-     "worst": 5.331652707685233
+     "outside": 0.0043,
+     "worst": 5.281159714980446
     },
     {
      "signal": "aimc.idq_rr[2]",
      "outside": 0.0039,
-     "worst": 4.965427957312329
+     "worst": 4.922314815819258
     },
     {
      "signal": "aimc.idq_sr[1]",
-     "outside": 0.0048,
-     "worst": 5.20252671249915
+     "outside": 0.0047,
+     "worst": 5.153193011793085
     },
     {
      "signal": "aimc.idq_sr[2]",
      "outside": 0.0034,
-     "worst": 4.589033415737871
+     "worst": 4.549027943741903
     }
    ],
    "status": "differ"
@@ -2049,7 +2071,7 @@
   {
    "model": "Modelica.Electrical.Machines.Examples.Transformers.Rectifier12pulse",
    "signals": 7,
-   "time": 0.756,
+   "time": 0.265,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2057,7 +2079,7 @@
   {
    "model": "Modelica.Electrical.Machines.Examples.Transformers.Rectifier6pulse",
    "signals": 4,
-   "time": 0.374,
+   "time": 0.367,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2065,7 +2087,7 @@
   {
    "model": "Modelica.Electrical.Machines.Examples.Transformers.TransformerTestbench",
    "signals": 2,
-   "time": 0.312,
+   "time": 0.412,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2073,7 +2095,7 @@
   {
    "model": "Modelica.Electrical.Polyphase.Examples.PolyphaseRectifier",
    "signals": 50,
-   "time": 2.616,
+   "time": 1.289,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2081,7 +2103,7 @@
   {
    "model": "Modelica.Electrical.Polyphase.Examples.Rectifier",
    "signals": 4,
-   "time": 0.646,
+   "time": 0.617,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2089,7 +2111,7 @@
   {
    "model": "Modelica.Electrical.Polyphase.Examples.TestSensors",
    "signals": 2,
-   "time": 0.26,
+   "time": 0.183,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2097,7 +2119,7 @@
   {
    "model": "Modelica.Electrical.Polyphase.Examples.TransformerYD",
    "signals": 3,
-   "time": 0.246,
+   "time": 0.163,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2105,7 +2127,7 @@
   {
    "model": "Modelica.Electrical.Polyphase.Examples.TransformerYY",
    "signals": 2,
-   "time": 0.142,
+   "time": 0.199,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2113,18 +2135,18 @@
   {
    "model": "Modelica.Electrical.PowerConverters.Examples.ACAC.Dimmer_R",
    "signals": 11,
-   "time": 3.022,
+   "time": 1.822,
    "missing": [],
    "failed": [
     {
      "signal": "vH01.y_arg",
      "outside": 0.0209,
-     "worst": 370.975588140359
+     "worst": 370.9755881398931
     },
     {
      "signal": "iH01.y_arg",
      "outside": 0.0209,
-     "worst": 370.97558814035904
+     "worst": 370.9755881398931
     }
    ],
    "status": "differ"
@@ -2132,19 +2154,20 @@
   {
    "model": "Modelica.Electrical.PowerConverters.Examples.ACAC.Dimmer_RL",
    "signals": 11,
-   "status": "timeout",
-   "time": 120.0
+   "time": 50.3,
+   "status": "error",
+   "error": "error: events chatter at t = 0.3099999717206073: relations keep switching back and forth"
   },
   {
    "model": "Modelica.Electrical.PowerConverters.Examples.ACAC.SoftStarter",
    "signals": 28,
    "status": "timeout",
-   "time": 120.0
+   "time": 120
   },
   {
    "model": "Modelica.Electrical.PowerConverters.Examples.ACDC.Rectifier1Pulse.Thyristor1Pulse_R",
    "signals": 9,
-   "time": 0.373,
+   "time": 0.115,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2152,7 +2175,7 @@
   {
    "model": "Modelica.Electrical.PowerConverters.Examples.ACDC.Rectifier1Pulse.Thyristor1Pulse_R_Characteristic",
    "signals": 9,
-   "time": 2.272,
+   "time": 0.948,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2160,7 +2183,7 @@
   {
    "model": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2Pulse.DiodeBridge2Pulse",
    "signals": 6,
-   "time": 0.243,
+   "time": 0.23,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2168,7 +2191,7 @@
   {
    "model": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2Pulse.HalfControlledBridge2Pulse",
    "signals": 10,
-   "time": 0.222,
+   "time": 0.127,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2176,14 +2199,14 @@
   {
    "model": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2Pulse.ThyristorBridge2Pulse_DC_Drive",
    "signals": 19,
-   "time": 10.115,
+   "time": 3.311,
    "status": "error",
-   "error": "error: events chatter at t = 14.572200587835708: `rectifier.thyristor_p2.s Lt 0`, `rectifier.thyristor_n1.s Lt 0` keep switching back and forth"
+   "error": "error: events chatter at t = 14.422187565450615: `rectifier.thyristor_p1.s Lt 0`, `rectifier.thyristor_n2.s Lt 0` keep switching back and forth"
   },
   {
    "model": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2Pulse.ThyristorBridge2Pulse_R",
    "signals": 12,
-   "time": 0.331,
+   "time": 0.121,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2191,7 +2214,7 @@
   {
    "model": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2Pulse.ThyristorBridge2Pulse_RL",
    "signals": 13,
-   "time": 0.408,
+   "time": 0.156,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2199,7 +2222,7 @@
   {
    "model": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2Pulse.ThyristorBridge2Pulse_RLV",
    "signals": 13,
-   "time": 0.365,
+   "time": 0.135,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2207,7 +2230,7 @@
   {
    "model": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2Pulse.ThyristorBridge2Pulse_RLV_Characteristic",
    "signals": 13,
-   "time": 3.143,
+   "time": 1.134,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2215,7 +2238,7 @@
   {
    "model": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2mPulse.DiodeBridge2mPulse",
    "signals": 6,
-   "time": 0.354,
+   "time": 0.298,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2223,7 +2246,7 @@
   {
    "model": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2mPulse.HalfControlledBridge2mPulse",
    "signals": 18,
-   "time": 0.619,
+   "time": 0.318,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2231,7 +2254,7 @@
   {
    "model": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2mPulse.ThyristorBridge2mPulse_DC_Drive",
    "signals": 38,
-   "time": 38.036,
+   "time": 21.453,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2239,7 +2262,7 @@
   {
    "model": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2mPulse.ThyristorBridge2mPulse_R",
    "signals": 24,
-   "time": 0.578,
+   "time": 0.229,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2247,7 +2270,7 @@
   {
    "model": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2mPulse.ThyristorBridge2mPulse_RL",
    "signals": 25,
-   "time": 0.482,
+   "time": 0.161,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2255,7 +2278,7 @@
   {
    "model": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2mPulse.ThyristorBridge2mPulse_RLV",
    "signals": 25,
-   "time": 0.847,
+   "time": 0.167,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2263,7 +2286,7 @@
   {
    "model": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierBridge2mPulse.ThyristorBridge2mPulse_RLV_Characteristic",
    "signals": 25,
-   "time": 13.94,
+   "time": 6.626,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2271,7 +2294,7 @@
   {
    "model": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2Pulse.DiodeCenterTap2Pulse",
    "signals": 6,
-   "time": 0.401,
+   "time": 0.193,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2279,7 +2302,7 @@
   {
    "model": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2Pulse.ThyristorCenterTap2Pulse_R",
    "signals": 10,
-   "time": 0.318,
+   "time": 0.278,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2287,7 +2310,7 @@
   {
    "model": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2Pulse.ThyristorCenterTap2Pulse_RL",
    "signals": 11,
-   "time": 0.207,
+   "time": 0.304,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2295,7 +2318,7 @@
   {
    "model": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2Pulse.ThyristorCenterTap2Pulse_RLV",
    "signals": 11,
-   "time": 0.207,
+   "time": 0.206,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2303,7 +2326,7 @@
   {
    "model": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2Pulse.ThyristorCenterTap2Pulse_RLV_Characteristic",
    "signals": 11,
-   "time": 1.649,
+   "time": 1.268,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2311,7 +2334,7 @@
   {
    "model": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2mPulse.DiodeCenterTap2mPulse",
    "signals": 6,
-   "time": 0.252,
+   "time": 0.243,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2319,7 +2342,7 @@
   {
    "model": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2mPulse.ThyristorCenterTap2mPulse_R",
    "signals": 18,
-   "time": 0.267,
+   "time": 0.311,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2327,7 +2350,7 @@
   {
    "model": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2mPulse.ThyristorCenterTap2mPulse_RL",
    "signals": 19,
-   "time": 0.266,
+   "time": 0.296,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2335,7 +2358,7 @@
   {
    "model": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2mPulse.ThyristorCenterTap2mPulse_RLV",
    "signals": 19,
-   "time": 0.326,
+   "time": 0.379,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2343,7 +2366,7 @@
   {
    "model": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTap2mPulse.ThyristorCenterTap2mPulse_RLV_Characteristic",
    "signals": 19,
-   "time": 5.176,
+   "time": 4.607,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2351,7 +2374,7 @@
   {
    "model": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTapmPulse.DiodeCenterTapmPulse",
    "signals": 6,
-   "time": 0.137,
+   "time": 0.25,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2359,7 +2382,7 @@
   {
    "model": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTapmPulse.ThyristorCenterTapmPulse_R",
    "signals": 15,
-   "time": 0.241,
+   "time": 0.236,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2367,7 +2390,7 @@
   {
    "model": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTapmPulse.ThyristorCenterTapmPulse_RL",
    "signals": 16,
-   "time": 0.243,
+   "time": 0.197,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2375,7 +2398,7 @@
   {
    "model": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTapmPulse.ThyristorCenterTapmPulse_RLV",
    "signals": 16,
-   "time": 0.19,
+   "time": 0.201,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2383,7 +2406,7 @@
   {
    "model": "Modelica.Electrical.PowerConverters.Examples.ACDC.RectifierCenterTapmPulse.ThyristorCenterTapmPulse_RLV_Characteristic",
    "signals": 16,
-   "time": 2.347,
+   "time": 2.534,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2391,7 +2414,7 @@
   {
    "model": "Modelica.Electrical.PowerConverters.Examples.DCAC.PolyphaseTwoLevel.PolyphaseTwoLevel_R",
    "signals": 24,
-   "time": 0.612,
+   "time": 0.373,
    "missing": [],
    "failed": [
     {
@@ -2430,23 +2453,23 @@
   {
    "model": "Modelica.Electrical.PowerConverters.Examples.DCAC.PolyphaseTwoLevel.PolyphaseTwoLevel_RL",
    "signals": 47,
-   "time": 1.561,
+   "time": 1.418,
    "missing": [],
    "failed": [
     {
      "signal": "fundamentalWaveCurrent[5].mean1.y",
-     "outside": 0.794,
-     "worst": 1.6942496318310591
+     "outside": 0.7944,
+     "worst": 1.694159826150007
     },
     {
      "signal": "voltageSensor.v[1]",
      "outside": 0.0001,
-     "worst": 50.000000152066626
+     "worst": 50.00000015206665
     },
     {
      "signal": "voltageSensor.v[2]",
      "outside": 0.0002,
-     "worst": 50.00000003580409
+     "worst": 50.00000003580405
     },
     {
      "signal": "voltageSensor.v[3]",
@@ -2459,33 +2482,33 @@
   {
    "model": "Modelica.Electrical.PowerConverters.Examples.DCAC.PolyphaseTwoLevel.ThreePhaseTwoLevel_PWM",
    "signals": 14,
-   "time": 0.737,
+   "time": 0.438,
    "missing": [],
    "failed": [
     {
      "signal": "harmonic.mean2.x",
      "outside": 0.006,
-     "worst": 1.1066796157150396
+     "worst": 1.1066796157156589
     },
     {
      "signal": "harmonic.y_arg",
      "outside": 0.7498,
-     "worst": 5.870394584265398
+     "worst": 5.870394584269385
     },
     {
      "signal": "filter[2].x[1]",
      "outside": 0.0766,
-     "worst": 4.388929166644854
+     "worst": 4.38892916629196
     },
     {
      "signal": "filter[2].x[2]",
      "outside": 0.8489,
-     "worst": 5.9648485727730485
+     "worst": 5.964848572436293
     },
     {
      "signal": "toPolar.y[2]",
      "outside": 0.8855,
-     "worst": 6.0232094626949015
+     "worst": 6.023209462358104
     }
    ],
    "status": "differ"
@@ -2493,7 +2516,7 @@
   {
    "model": "Modelica.Electrical.PowerConverters.Examples.DCAC.SinglePhaseTwoLevel.SinglePhaseTwoLevel_R",
    "signals": 6,
-   "time": 0.315,
+   "time": 0.184,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2501,13 +2524,13 @@
   {
    "model": "Modelica.Electrical.PowerConverters.Examples.DCAC.SinglePhaseTwoLevel.SinglePhaseTwoLevel_RL",
    "signals": 7,
-   "time": 0.276,
+   "time": 0.294,
    "missing": [],
    "failed": [
     {
      "signal": "fundamentalWaveCurrent.mean1.y",
-     "outside": 0.0228,
-     "worst": 1.4653840183262354
+     "outside": 0.0227,
+     "worst": 1.4653840183156688
     }
    ],
    "status": "differ"
@@ -2515,7 +2538,7 @@
   {
    "model": "Modelica.Electrical.PowerConverters.Examples.DCDC.ChopperBuckBoost.ChopperBuckBoost_DutyCycle",
    "signals": 4,
-   "time": 3.999,
+   "time": 3.166,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2523,7 +2546,7 @@
   {
    "model": "Modelica.Electrical.PowerConverters.Examples.DCDC.ChopperStepDown.ChopperStepDown_R",
    "signals": 8,
-   "time": 0.436,
+   "time": 0.473,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2531,7 +2554,7 @@
   {
    "model": "Modelica.Electrical.PowerConverters.Examples.DCDC.ChopperStepDown.ChopperStepDown_RL",
    "signals": 9,
-   "time": 0.394,
+   "time": 0.241,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2539,7 +2562,7 @@
   {
    "model": "Modelica.Electrical.PowerConverters.Examples.DCDC.ChopperStepUp.ChopperStepUp_R",
    "signals": 10,
-   "time": 0.259,
+   "time": 0.247,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2547,7 +2570,7 @@
   {
    "model": "Modelica.Electrical.PowerConverters.Examples.DCDC.HBridge.HBridge_DC_Drive",
    "signals": 9,
-   "time": 56.354,
+   "time": 35.598,
    "missing": [],
    "failed": [
     {
@@ -2561,7 +2584,7 @@
   {
    "model": "Modelica.Electrical.PowerConverters.Examples.DCDC.HBridge.HBridge_R",
    "signals": 6,
-   "time": 0.26,
+   "time": 0.173,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2569,7 +2592,7 @@
   {
    "model": "Modelica.Electrical.PowerConverters.Examples.DCDC.HBridge.HBridge_RL",
    "signals": 7,
-   "time": 0.271,
+   "time": 0.214,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2577,7 +2600,7 @@
   {
    "model": "Modelica.Electrical.PowerConverters.Examples.DCDC.HBridge.HBridge_TrianglePWM_RL",
    "signals": 7,
-   "time": 0.387,
+   "time": 0.229,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2585,7 +2608,7 @@
   {
    "model": "Modelica.Electrical.QuasiStatic.Machines.Examples.TransformerTestbench",
    "signals": 1,
-   "time": 0.701,
+   "time": 0.311,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2593,7 +2616,7 @@
   {
    "model": "Modelica.Electrical.QuasiStatic.Polyphase.Examples.BalancingDelta",
    "signals": 1,
-   "time": 0.334,
+   "time": 0.19,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2601,7 +2624,7 @@
   {
    "model": "Modelica.Electrical.QuasiStatic.Polyphase.Examples.BalancingStar",
    "signals": 1,
-   "time": 0.322,
+   "time": 0.15,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2609,7 +2632,7 @@
   {
    "model": "Modelica.Electrical.QuasiStatic.Polyphase.Examples.TestSensors",
    "signals": 1,
-   "time": 0.405,
+   "time": 0.231,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2617,7 +2640,7 @@
   {
    "model": "Modelica.Electrical.QuasiStatic.Polyphase.Examples.UnsymmetricalLoad",
    "signals": 2,
-   "time": 0.35,
+   "time": 0.245,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2625,7 +2648,7 @@
   {
    "model": "Modelica.Electrical.QuasiStatic.SinglePhase.Examples.MultipleResonance",
    "signals": 4,
-   "time": 0.252,
+   "time": 0.187,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2633,7 +2656,7 @@
   {
    "model": "Modelica.Electrical.QuasiStatic.SinglePhase.Examples.ParallelResonance",
    "signals": 1,
-   "time": 0.187,
+   "time": 0.141,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2641,7 +2664,7 @@
   {
    "model": "Modelica.Electrical.QuasiStatic.SinglePhase.Examples.Rectifier",
    "signals": 4,
-   "time": 0.561,
+   "time": 0.384,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2649,7 +2672,7 @@
   {
    "model": "Modelica.Electrical.QuasiStatic.SinglePhase.Examples.SeriesBode",
    "signals": 4,
-   "time": 0.218,
+   "time": 0.128,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2657,7 +2680,7 @@
   {
    "model": "Modelica.Electrical.QuasiStatic.SinglePhase.Examples.SeriesResonance",
    "signals": 1,
-   "time": 0.163,
+   "time": 0.106,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2665,7 +2688,7 @@
   {
    "model": "Modelica.Electrical.QuasiStatic.SinglePhase.Examples.Transformer",
    "signals": 10,
-   "time": 0.275,
+   "time": 0.159,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2673,14 +2696,14 @@
   {
    "model": "Modelica.Electrical.Spice3.Examples.CascodeCircuit",
    "signals": 3,
-   "time": 0.163,
+   "time": 0.171,
    "status": "error",
    "error": "error: step size too small at t = 0"
   },
   {
    "model": "Modelica.Electrical.Spice3.Examples.CoupledInductors",
    "signals": 3,
-   "time": 0.22,
+   "time": 0.16,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2688,7 +2711,7 @@
   {
    "model": "Modelica.Electrical.Spice3.Examples.FourInverters",
    "signals": 5,
-   "time": 10.953,
+   "time": 6.188,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2696,7 +2719,7 @@
   {
    "model": "Modelica.Electrical.Spice3.Examples.Graetz",
    "signals": 2,
-   "time": 0.252,
+   "time": 0.17,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2704,14 +2727,14 @@
   {
    "model": "Modelica.Electrical.Spice3.Examples.Inverter",
    "signals": 1,
-   "time": 0.477,
+   "time": 0.222,
    "status": "error",
    "error": "error: step size too small at t = 0.0000000000000063245539337092735"
   },
   {
    "model": "Modelica.Electrical.Spice3.Examples.InvertersApartRecord",
    "signals": 3,
-   "time": 5.581,
+   "time": 3.306,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2719,7 +2742,7 @@
   {
    "model": "Modelica.Electrical.Spice3.Examples.InvertersExtendedModel",
    "signals": 3,
-   "time": 4.612,
+   "time": 3.076,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2727,14 +2750,14 @@
   {
    "model": "Modelica.Electrical.Spice3.Examples.Nand",
    "signals": 1,
-   "time": 0.257,
+   "time": 0.173,
    "status": "error",
    "error": "error: initialization: nonlinear system for [der(mp1.Sinternal), mn1.icGD, mn1.icBD, mn1.ird, mp1.icGS, mp2.icGS, mp2.icBS, mp2.irs, mp1.irs, mp1.icBS] did not converge at t = 0 (residual 3.750e-4)"
   },
   {
    "model": "Modelica.Electrical.Spice3.Examples.Nor",
    "signals": 8,
-   "time": 5.665,
+   "time": 3.363,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2742,7 +2765,7 @@
   {
    "model": "Modelica.Electrical.Spice3.Examples.Oscillator",
    "signals": 2,
-   "time": 0.42,
+   "time": 0.295,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2750,21 +2773,21 @@
   {
    "model": "Modelica.Electrical.Spice3.Examples.Spice3BenchmarkDifferentialPair",
    "signals": 10,
-   "time": 0.216,
+   "time": 0.15,
    "status": "error",
    "error": "error: step size too small at t = 0"
   },
   {
    "model": "Modelica.Electrical.Spice3.Examples.Spice3BenchmarkFourBitBinaryAdder",
    "signals": 324,
-   "time": 29.564,
+   "time": 16.366,
    "status": "error",
    "error": "error: initialization: nonlinear system for [der(X1.X1.X1.X1.Q1.vcs), der(X1.X1.X1.X2.Q1.vcs), der(X1.X1.X1.X3.Q1.vcs), der(X1.X1.X1.X4.Q1.vcs), der(X1.X1.X1.X5.Q1.vcs), der(X1.X1.X1.X6.Q1.vcs), der(X1.X1.X1.X7.Q1.vcs), der(X1.X1.X1.X8.Q1.vcs), der(X1.X1.X1.X9.Q1.vcs), der(X1.X1.X2.X1.Q1.vcs), der(X"
   },
   {
    "model": "Modelica.Electrical.Spice3.Examples.Spice3BenchmarkMosfetCharacterization",
    "signals": 2,
-   "time": 0.325,
+   "time": 0.188,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2772,21 +2795,21 @@
   {
    "model": "Modelica.Electrical.Spice3.Examples.Spice3BenchmarkRtlInverter",
    "signals": 2,
-   "time": 0.207,
+   "time": 0.141,
    "status": "error",
    "error": "error: step size too small at t = 0"
   },
   {
    "model": "Modelica.Fluid.Examples.AST_BatchPlant.BatchPlant_StandardWater",
    "signals": 53,
-   "time": 1.773,
+   "time": 1.032,
    "status": "error",
    "error": "error: model is underdetermined: 774 equations for 780 unknowns (821 variables, 41 of them appear differentiated); no equation for: V2.port_b.h_outflow, V4.port_b.h_outflow, V3.port_b.h_outflow, volume2.port_1.h_outflow, V6.port_b.h_outflow, volume8.port_1.h_outflow, der(B5.U), der(B1.V) and 5 more;"
   },
   {
    "model": "Modelica.Fluid.Examples.AST_BatchPlant.Test.OneTank",
    "signals": 8,
-   "time": 0.464,
+   "time": 0.264,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2794,13 +2817,13 @@
   {
    "model": "Modelica.Fluid.Examples.AST_BatchPlant.Test.TankWithEmptyingPipe1",
    "signals": 4,
-   "time": 0.437,
+   "time": 0.226,
    "missing": [],
    "failed": [
     {
      "signal": "tank1.medium.T",
      "outside": 0.8805,
-     "worst": 25.447765685915638
+     "worst": 25.447765672644085
     }
    ],
    "status": "differ"
@@ -2808,7 +2831,7 @@
   {
    "model": "Modelica.Fluid.Examples.AST_BatchPlant.Test.TankWithEmptyingPipe2",
    "signals": 4,
-   "time": 0.527,
+   "time": 0.274,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2816,13 +2839,13 @@
   {
    "model": "Modelica.Fluid.Examples.AST_BatchPlant.Test.TanksWithEmptyingPipe1",
    "signals": 8,
-   "time": 0.52,
+   "time": 0.303,
    "missing": [],
    "failed": [
     {
      "signal": "tank2.medium.T",
      "outside": 0.4575,
-     "worst": 3.672381612375716
+     "worst": 3.672381641366494
     }
    ],
    "status": "differ"
@@ -2830,7 +2853,7 @@
   {
    "model": "Modelica.Fluid.Examples.AST_BatchPlant.Test.TanksWithEmptyingPipe2",
    "signals": 12,
-   "time": 0.596,
+   "time": 0.383,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2838,13 +2861,13 @@
   {
    "model": "Modelica.Fluid.Examples.AST_BatchPlant.Test.TwoTanks",
    "signals": 6,
-   "time": 0.412,
+   "time": 0.231,
    "missing": [],
    "failed": [
     {
      "signal": "tank1.medium.T",
-     "outside": 0.5501,
-     "worst": 499.64393574880836
+     "outside": 0.5483,
+     "worst": 457.20001392494106
     }
    ],
    "status": "differ"
@@ -2852,13 +2875,13 @@
   {
    "model": "Modelica.Fluid.Examples.BranchingDynamicPipes",
    "signals": 82,
-   "time": 3.995,
+   "time": 3.638,
    "missing": [],
    "failed": [
     {
      "signal": "pipe3.flowModel.m_flows[6]",
-     "outside": 0.1935,
-     "worst": 1.6970355820847967
+     "outside": 0.2106,
+     "worst": 1.674944989411951
     }
    ],
    "status": "differ"
@@ -2866,18 +2889,18 @@
   {
    "model": "Modelica.Fluid.Examples.ControlledTankSystem.ControlledTanks",
    "signals": 23,
-   "time": 0.301,
+   "time": 0.233,
    "missing": [],
    "failed": [
     {
      "signal": "tank1.medium.T",
      "outside": 0.0049,
-     "worst": 1.4321030164878212
+     "worst": 1.4321030162543642
     },
     {
      "signal": "tank2.medium.T",
      "outside": 0.037,
-     "worst": 1.7998056164918834
+     "worst": 1.7998056170993646
     }
    ],
    "status": "differ"
@@ -2885,7 +2908,7 @@
   {
    "model": "Modelica.Fluid.Examples.DrumBoiler.DrumBoiler",
    "signals": 3,
-   "time": 1.414,
+   "time": 1.526,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -2893,14 +2916,14 @@
   {
    "model": "Modelica.Fluid.Examples.Explanatory.MeasuringTemperature",
    "signals": 3,
-   "time": 0.985,
+   "time": 1.304,
    "status": "error",
    "error": "error: model is underdetermined: 178 equations for 181 unknowns (199 variables, 18 of them appear differentiated); no equation for: junctionIdeal.port_1.h_outflow, junctionIdeal.port_2.h_outflow, junctionIdeal.port_3.h_outflow, der(openTankCold2.V), der(openTankCold1.V), der(openTankHot1.V), der(ope"
   },
   {
    "model": "Modelica.Fluid.Examples.Explanatory.MomentumBalanceFittings",
    "signals": 6,
-   "time": 2.749,
+   "time": 2.385,
    "missing": [],
    "failed": [
     {
@@ -2919,13 +2942,13 @@
   {
    "model": "Modelica.Fluid.Examples.HeatExchanger.HeatExchangerSimulation",
    "signals": 100,
-   "time": 5.724,
+   "time": 5.214,
    "missing": [],
    "failed": [
     {
      "signal": "HEX.pipe_1.mediums[10].T",
      "outside": 0.9954,
-     "worst": 399.2212445556137
+     "worst": 399.2212445556146
     },
     {
      "signal": "HEX.pipe_1.mediums[10].p",
@@ -2940,22 +2963,22 @@
     {
      "signal": "HEX.pipe_1.mediums[11].p",
      "outside": 0.9954,
-     "worst": 306.75088853331675
+     "worst": 306.7508885332785
     },
     {
      "signal": "HEX.pipe_1.mediums[12].T",
      "outside": 0.9954,
-     "worst": 389.12924660646064
+     "worst": 389.129246606459
     },
     {
      "signal": "HEX.pipe_1.mediums[12].p",
      "outside": 0.9954,
-     "worst": 303.58897593728597
+     "worst": 303.5889759372441
     },
     {
      "signal": "HEX.pipe_1.mediums[13].T",
      "outside": 0.9954,
-     "worst": 384.0990441487686
+     "worst": 384.0990441487662
     },
     {
      "signal": "HEX.pipe_1.mediums[13].p",
@@ -2965,27 +2988,27 @@
     {
      "signal": "HEX.pipe_1.mediums[14].T",
      "outside": 0.9954,
-     "worst": 379.0992379903948
+     "worst": 379.0992379903909
     },
     {
      "signal": "HEX.pipe_1.mediums[14].p",
      "outside": 0.9954,
-     "worst": 297.2644510913583
+     "worst": 297.26445109130606
     },
     {
      "signal": "HEX.pipe_1.mediums[15].T",
      "outside": 0.9954,
-     "worst": 374.1426356588292
+     "worst": 374.1426356588262
     },
     {
      "signal": "HEX.pipe_1.mediums[15].p",
      "outside": 0.9956,
-     "worst": 294.0984324593862
+     "worst": 294.09843245932615
     },
     {
      "signal": "HEX.pipe_1.mediums[16].T",
      "outside": 0.9954,
-     "worst": 369.24046228635683
+     "worst": 369.24046228635535
     },
     {
      "signal": "HEX.pipe_1.mediums[16].p",
@@ -2995,7 +3018,7 @@
     {
      "signal": "HEX.pipe_1.mediums[17].T",
      "outside": 0.9954,
-     "worst": 364.40230597130125
+     "worst": 364.4023059712962
     },
     {
      "signal": "HEX.pipe_1.mediums[17].p",
@@ -3005,17 +3028,17 @@
     {
      "signal": "HEX.pipe_1.mediums[18].T",
      "outside": 0.9952,
-     "worst": 359.63639426169357
+     "worst": 359.6363942616872
     },
     {
      "signal": "HEX.pipe_1.mediums[18].p",
      "outside": 0.9954,
-     "worst": 284.6365206621728
+     "worst": 284.63652066205753
     },
     {
      "signal": "HEX.pipe_1.mediums[19].T",
      "outside": 0.9952,
-     "worst": 354.95038664479296
+     "worst": 354.9503866447895
     },
     {
      "signal": "HEX.pipe_1.mediums[19].p",
@@ -3025,27 +3048,27 @@
     {
      "signal": "HEX.pipe_1.mediums[1].T",
      "outside": 0.9958,
-     "worst": 441.2573685919544
+     "worst": 441.2573685919493
     },
     {
      "signal": "HEX.pipe_1.mediums[1].p",
      "outside": 0.9952,
-     "worst": 340.0425429778383
+     "worst": 340.04254297781307
     },
     {
      "signal": "HEX.pipe_1.mediums[20].T",
      "outside": 0.9952,
-     "worst": 350.35249816244965
+     "worst": 350.35249816244556
     },
     {
      "signal": "HEX.pipe_1.mediums[20].p",
      "outside": 0.9954,
-     "worst": 278.4036981760496
+     "worst": 278.4036981763867
     },
     {
      "signal": "HEX.pipe_1.mediums[2].T",
      "outside": 0.9958,
-     "worst": 437.16195001007793
+     "worst": 437.1619500100724
     },
     {
      "signal": "HEX.pipe_1.mediums[2].p",
@@ -3055,7 +3078,7 @@
     {
      "signal": "HEX.pipe_1.mediums[3].T",
      "outside": 0.9958,
-     "worst": 432.8670898221615
+     "worst": 432.8670898221576
     },
     {
      "signal": "HEX.pipe_1.mediums[3].p",
@@ -3070,12 +3093,12 @@
     {
      "signal": "HEX.pipe_1.mediums[4].p",
      "outside": 0.9954,
-     "worst": 330.46370235188454
+     "worst": 330.4637023518582
     },
     {
      "signal": "HEX.pipe_1.mediums[5].T",
      "outside": 0.9956,
-     "worst": 423.773730485722
+     "worst": 423.7737304857207
     },
     {
      "signal": "HEX.pipe_1.mediums[5].p",
@@ -3085,17 +3108,17 @@
     {
      "signal": "HEX.pipe_1.mediums[6].T",
      "outside": 0.9958,
-     "worst": 419.0244030414833
+     "worst": 419.0244030414821
     },
     {
      "signal": "HEX.pipe_1.mediums[6].p",
      "outside": 0.9954,
-     "worst": 323.26923858482473
+     "worst": 323.2692385847966
     },
     {
      "signal": "HEX.pipe_1.mediums[7].T",
      "outside": 0.9956,
-     "worst": 414.1720153856511
+     "worst": 414.1720153856522
     },
     {
      "signal": "HEX.pipe_1.mediums[7].p",
@@ -3110,317 +3133,317 @@
     {
      "signal": "HEX.pipe_1.mediums[8].p",
      "outside": 0.9954,
-     "worst": 316.428856014452
+     "worst": 316.4288560144831
     },
     {
      "signal": "HEX.pipe_1.mediums[9].T",
      "outside": 0.9956,
-     "worst": 404.2490941782337
+     "worst": 404.24909417823557
     },
     {
      "signal": "HEX.pipe_1.mediums[9].p",
      "outside": 0.9954,
-     "worst": 313.14621272955344
+     "worst": 313.1462127295204
     },
     {
      "signal": "HEX.pipe_2.mediums[10].T",
      "outside": 0.9958,
-     "worst": 271.62144647270145
+     "worst": 271.6215323279088
     },
     {
      "signal": "HEX.pipe_2.mediums[10].p",
      "outside": 0.9628,
-     "worst": 20.315564058778165
+     "worst": 20.315561825029054
     },
     {
      "signal": "HEX.pipe_2.mediums[11].T",
      "outside": 0.9956,
-     "worst": 262.03402643954183
+     "worst": 262.03402965601896
     },
     {
      "signal": "HEX.pipe_2.mediums[11].p",
      "outside": 0.9624,
-     "worst": 19.81151982990229
+     "worst": 19.811565596644478
     },
     {
      "signal": "HEX.pipe_2.mediums[12].T",
      "outside": 0.9954,
-     "worst": 249.94572118670803
+     "worst": 249.94572386477012
     },
     {
      "signal": "HEX.pipe_2.mediums[12].p",
      "outside": 0.9622,
-     "worst": 19.24178864918989
+     "worst": 19.241925305545635
     },
     {
      "signal": "HEX.pipe_2.mediums[13].T",
      "outside": 0.995,
-     "worst": 235.03528349995705
+     "worst": 235.03531102351963
     },
     {
      "signal": "HEX.pipe_2.mediums[13].p",
      "outside": 0.962,
-     "worst": 18.604306060578754
+     "worst": 18.604467238702913
     },
     {
      "signal": "HEX.pipe_2.mediums[14].T",
      "outside": 0.9946,
-     "worst": 217.01061746099123
+     "worst": 217.010631830842
     },
     {
      "signal": "HEX.pipe_2.mediums[14].p",
      "outside": 0.9616,
-     "worst": 17.898361684685117
+     "worst": 17.898490963841315
     },
     {
      "signal": "HEX.pipe_2.mediums[15].T",
      "outside": 0.9942,
-     "worst": 195.63940186556465
+     "worst": 195.6394000110652
     },
     {
      "signal": "HEX.pipe_2.mediums[15].p",
      "outside": 0.961,
-     "worst": 17.124861571217863
+     "worst": 17.12491856930208
     },
     {
      "signal": "HEX.pipe_2.mediums[16].T",
      "outside": 0.9934,
-     "worst": 170.7847239026636
+     "worst": 170.78471272502773
     },
     {
      "signal": "HEX.pipe_2.mediums[16].p",
      "outside": 0.9606,
-     "worst": 16.292495378770525
+     "worst": 16.292516355837193
     },
     {
      "signal": "HEX.pipe_2.mediums[17].T",
      "outside": 0.9928,
-     "worst": 142.44060891055022
+     "worst": 142.4405998439044
     },
     {
      "signal": "HEX.pipe_2.mediums[17].p",
      "outside": 0.9602,
-     "worst": 15.421856943036895
+     "worst": 15.421845799070798
     },
     {
      "signal": "HEX.pipe_2.mediums[18].T",
      "outside": 0.9918,
-     "worst": 110.77048755625673
+     "worst": 110.77048610914102
     },
     {
      "signal": "HEX.pipe_2.mediums[18].p",
      "outside": 0.9596,
-     "worst": 14.55772713775924
+     "worst": 14.557855997582847
     },
     {
      "signal": "HEX.pipe_2.mediums[19].T",
      "outside": 0.9898,
-     "worst": 103.15157380720345
+     "worst": 103.15255077082533
     },
     {
      "signal": "HEX.pipe_2.mediums[19].p",
      "outside": 0.9592,
-     "worst": 13.756454941058873
+     "worst": 13.756572009678266
     },
     {
      "signal": "HEX.pipe_2.mediums[1].T",
      "outside": 0.9964,
-     "worst": 291.66115320087255
+     "worst": 291.6616089775722
     },
     {
      "signal": "HEX.pipe_2.mediums[1].p",
      "outside": 0.7142,
-     "worst": 22.23434019573901
+     "worst": 22.232273011762448
     },
     {
      "signal": "HEX.pipe_2.mediums[20].T",
      "outside": 0.9846,
-     "worst": 101.6519483932068
+     "worst": 101.65254890706146
     },
     {
      "signal": "HEX.pipe_2.mediums[20].p",
      "outside": 0.9586,
-     "worst": 13.076447743060498
+     "worst": 13.076557586522966
     },
     {
      "signal": "HEX.pipe_2.mediums[2].T",
      "outside": 0.9962,
-     "worst": 292.7588424111869
+     "worst": 292.7589234778211
     },
     {
      "signal": "HEX.pipe_2.mediums[2].p",
      "outside": 0.7142,
-     "worst": 22.237994194754588
+     "worst": 22.237179856908178
     },
     {
      "signal": "HEX.pipe_2.mediums[3].T",
      "outside": 0.9962,
-     "worst": 293.39532472684215
+     "worst": 293.3961004384838
     },
     {
      "signal": "HEX.pipe_2.mediums[3].p",
      "outside": 0.9642,
-     "worst": 22.190465009597904
+     "worst": 22.190474168511194
     },
     {
      "signal": "HEX.pipe_2.mediums[4].T",
      "outside": 0.9962,
-     "worst": 293.4423841153875
+     "worst": 293.44324746999365
     },
     {
      "signal": "HEX.pipe_2.mediums[4].p",
      "outside": 0.9642,
-     "worst": 22.091160264818253
+     "worst": 22.09112382157898
     },
     {
      "signal": "HEX.pipe_2.mediums[5].T",
      "outside": 0.9962,
-     "worst": 292.7670942041099
+     "worst": 292.7678584999633
     },
     {
      "signal": "HEX.pipe_2.mediums[5].p",
      "outside": 0.964,
-     "worst": 21.9384391379927
+     "worst": 21.93860800541166
     },
     {
      "signal": "HEX.pipe_2.mediums[6].T",
      "outside": 0.9962,
-     "worst": 291.20230268428503
+     "worst": 291.2026323362918
     },
     {
      "signal": "HEX.pipe_2.mediums[6].p",
      "outside": 0.9638,
-     "worst": 21.729101947866667
+     "worst": 21.729252185826343
     },
     {
      "signal": "HEX.pipe_2.mediums[7].T",
      "outside": 0.996,
-     "worst": 288.5491191079022
+     "worst": 288.5490327996643
     },
     {
      "signal": "HEX.pipe_2.mediums[7].p",
      "outside": 0.9636,
-     "worst": 21.462967983025365
+     "worst": 21.463081478770803
     },
     {
      "signal": "HEX.pipe_2.mediums[8].T",
      "outside": 0.996,
-     "worst": 284.57894064058337
+     "worst": 284.57882757937983
     },
     {
      "signal": "HEX.pipe_2.mediums[8].p",
      "outside": 0.9634,
-     "worst": 21.139882230071173
+     "worst": 21.139972194971925
     },
     {
      "signal": "HEX.pipe_2.mediums[9].T",
      "outside": 0.996,
-     "worst": 279.03225224216726
+     "worst": 279.03232754168897
     },
     {
      "signal": "HEX.pipe_2.mediums[9].p",
      "outside": 0.9632,
-     "worst": 20.758378606846904
+     "worst": 20.758454858481638
     },
     {
      "signal": "HEX.wall.T[10]",
      "outside": 0.9954,
-     "worst": 376.0883315626378
+     "worst": 376.0883315626312
     },
     {
      "signal": "HEX.wall.T[11]",
      "outside": 0.9954,
-     "worst": 370.5004975375239
+     "worst": 370.5004975375275
     },
     {
      "signal": "HEX.wall.T[12]",
      "outside": 0.9954,
-     "worst": 365.0735423940887
+     "worst": 365.07354239408727
     },
     {
      "signal": "HEX.wall.T[13]",
      "outside": 0.9956,
-     "worst": 359.79826059505314
+     "worst": 359.79826059504825
     },
     {
      "signal": "HEX.wall.T[14]",
      "outside": 0.9954,
-     "worst": 354.6676683223006
+     "worst": 354.6676683222958
     },
     {
      "signal": "HEX.wall.T[15]",
      "outside": 0.9954,
-     "worst": 349.67625247116445
+     "worst": 349.67625247116376
     },
     {
      "signal": "HEX.wall.T[16]",
      "outside": 0.9952,
-     "worst": 344.8194952415778
+     "worst": 344.8194952415719
     },
     {
      "signal": "HEX.wall.T[17]",
      "outside": 0.9954,
-     "worst": 340.0933956424787
+     "worst": 340.0933956424703
     },
     {
      "signal": "HEX.wall.T[18]",
      "outside": 0.9954,
-     "worst": 335.49383863883355
+     "worst": 335.4938386388265
     },
     {
      "signal": "HEX.wall.T[19]",
      "outside": 0.9954,
-     "worst": 331.01331938435277
+     "worst": 331.0133193843515
     },
     {
      "signal": "HEX.wall.T[1]",
      "outside": 0.996,
-     "worst": 438.87315002967483
+     "worst": 438.873150029672
     },
     {
      "signal": "HEX.wall.T[20]",
      "outside": 0.9952,
-     "worst": 326.640120975501
+     "worst": 326.6401209754985
     },
     {
      "signal": "HEX.wall.T[2]",
      "outside": 0.9958,
-     "worst": 429.92655310904354
+     "worst": 429.9265531090417
     },
     {
      "signal": "HEX.wall.T[3]",
      "outside": 0.9958,
-     "worst": 421.763767200062
+     "worst": 421.7637672000567
     },
     {
      "signal": "HEX.wall.T[4]",
      "outside": 0.9958,
-     "worst": 414.20208570134946
+     "worst": 414.20208570135543
     },
     {
      "signal": "HEX.wall.T[5]",
      "outside": 0.9956,
-     "worst": 407.1097681611904
+     "worst": 407.10976816119125
     },
     {
      "signal": "HEX.wall.T[6]",
      "outside": 0.9956,
-     "worst": 400.3892455816367
+     "worst": 400.38924558163916
     },
     {
      "signal": "HEX.wall.T[7]",
      "outside": 0.9956,
-     "worst": 393.96999344758365
+     "worst": 393.969993447575
     },
     {
      "signal": "HEX.wall.T[8]",
      "outside": 0.9954,
-     "worst": 387.80188872471984
+     "worst": 387.80188872471444
     },
     {
      "signal": "HEX.wall.T[9]",
      "outside": 0.9954,
-     "worst": 381.8496144449654
+     "worst": 381.8496144449722
     }
    ],
    "status": "differ"
@@ -3428,43 +3451,43 @@
   {
    "model": "Modelica.Fluid.Examples.HeatingSystem",
    "signals": 10,
-   "time": 0.646,
+   "time": 2.317,
    "missing": [],
    "failed": [
     {
      "signal": "heater.mediums[1].h",
      "outside": 0.9976,
-     "worst": 14.274688366871954
+     "worst": 14.277281474495783
     },
     {
      "signal": "pipe.mediums[1].h",
      "outside": 0.9862,
-     "worst": 15.0493177127663
+     "worst": 15.051174598241333
     },
     {
      "signal": "pipe.mediums[2].h",
      "outside": 0.9794,
-     "worst": 15.248927560879103
+     "worst": 15.251194292246035
     },
     {
      "signal": "radiator.mediums[1].h",
-     "outside": 0.0735,
-     "worst": 1.0162659899298134
+     "outside": 0.0737,
+     "worst": 1.0175079498362403
     },
     {
      "signal": "radiator.mediums[1].p",
      "outside": 0.998,
-     "worst": 7.481407553622098
+     "worst": 7.481409344759339
     },
     {
      "signal": "tank.level",
      "outside": 0.6297,
-     "worst": 9.59968745434878
+     "worst": 9.634058548639306
     },
     {
      "signal": "tank.medium.h",
      "outside": 1.0,
-     "worst": 39.47849634013206
+     "worst": 39.47849651562574
     }
    ],
    "status": "differ"
@@ -3472,21 +3495,21 @@
   {
    "model": "Modelica.Fluid.Examples.IncompressibleFluidNetwork",
    "signals": 22,
-   "time": 0.884,
+   "time": 0.815,
    "status": "error",
    "error": "error: in declaration of 'pipe1.h_start': in function 'Modelica.Media.Interfaces.PartialMedium.specificEnthalpy_pTX': in function 'Modelica.Media.Incompressible.TableBased.specificEnthalpy': record has no field 'p' (fields: )"
   },
   {
    "model": "Modelica.Fluid.Examples.InverseParameterization",
    "signals": 6,
-   "time": 0.463,
+   "time": 0.432,
    "status": "error",
    "error": "error: initialization: nonlinear system for [pump.medium.h, pump.port_a.m_flow, orifice.state_a.d, pipe2.flowModel.m_flows[1], pump.medium.phase, pump.rho, pump.V_flow, pump.V_flow_single, pump.W_single, pump.Hb_flow, orifice.d, orifice.zeta_nominal, orifice.m_flow, pipe1.flowModel.m_flows[1], $inSt"
   },
   {
    "model": "Modelica.Fluid.Examples.NonCircularPipes",
    "signals": 6,
-   "time": 1.534,
+   "time": 1.239,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -3494,23 +3517,23 @@
   {
    "model": "Modelica.Fluid.Examples.PumpingSystem",
    "signals": 7,
-   "time": 5.366,
+   "time": 4.591,
    "missing": [],
    "failed": [
     {
      "signal": "PT1.y",
      "outside": 0.0001,
-     "worst": 1.6550587482884311
+     "worst": 1.6543275550242296
     },
     {
      "signal": "pumps.medium.p",
      "outside": 0.0001,
-     "worst": 5.869362487642387
+     "worst": 5.866775540165186
     },
     {
      "signal": "PumpRPMGenerator.y",
      "outside": 0.0001,
-     "worst": 7.407315287612931
+     "worst": 7.404159794608262
     }
    ],
    "status": "differ"
@@ -3518,7 +3541,7 @@
   {
    "model": "Modelica.Fluid.Examples.Tanks.EmptyTanks",
    "signals": 3,
-   "time": 0.264,
+   "time": 0.232,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -3526,14 +3549,14 @@
   {
    "model": "Modelica.Fluid.Examples.Tanks.TanksWithOverflow",
    "signals": 5,
-   "time": 1.77,
+   "time": 2.31,
    "status": "error",
-   "error": "error: events chatter at t = 19023.1815908361: `upperTank.s[3] Gt 0` keep switching back and forth"
+   "error": "error: events chatter at t = 19023.180085953136: `upperTank.s[3] Gt 0`, `lowerTank.s[2] Gt 0` keep switching back and forth"
   },
   {
    "model": "Modelica.Fluid.Examples.Tanks.ThreeTanks",
    "signals": 6,
-   "time": 0.406,
+   "time": 0.3,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -3541,18 +3564,18 @@
   {
    "model": "Modelica.Fluid.Examples.TraceSubstances.RoomCO2",
    "signals": 3,
-   "time": 0.665,
+   "time": 0.537,
    "missing": [],
    "failed": [
     {
      "signal": "volume.medium.T",
      "outside": 0.001,
-     "worst": 1.6934098861948628
+     "worst": 1.701486438167749
     },
     {
      "signal": "volume.medium.p",
      "outside": 0.0004,
-     "worst": 1.4763591987894082
+     "worst": 1.4661674500104338
     }
    ],
    "status": "differ"
@@ -3560,38 +3583,38 @@
   {
    "model": "Modelica.Fluid.Examples.TraceSubstances.RoomCO2WithControls",
    "signals": 16,
-   "time": 34.101,
+   "time": 1.738,
    "missing": [],
    "failed": [
     {
      "signal": "PID.I.y",
      "outside": 0.0004,
-     "worst": 2.171351241472293
+     "worst": 2.1712607276554614
     },
     {
      "signal": "ductIn.mediums[1].T",
-     "outside": 0.0036,
-     "worst": 4.213276445509836
+     "outside": 0.0038,
+     "worst": 13.792825883611526
     },
     {
      "signal": "ductIn.mediums[2].T",
      "outside": 0.2504,
-     "worst": 35.22435924488367
+     "worst": 134.64883349259358
     },
     {
      "signal": "ductOut.mediums[1].T",
-     "outside": 0.3086,
-     "worst": 3.774544365403456
+     "outside": 0.3096,
+     "worst": 4.078107149346421
     },
     {
      "signal": "ductOut.mediums[2].T",
      "outside": 0.3098,
-     "worst": 3.7946210522954353
+     "worst": 4.0997928719456755
     },
     {
      "signal": "volume.medium.T",
-     "outside": 0.308,
-     "worst": 3.7653654243474453
+     "outside": 0.3096,
+     "worst": 4.068208719585446
     }
    ],
    "status": "differ"
@@ -3599,7 +3622,7 @@
   {
    "model": "Modelica.Magnetic.FluxTubes.Examples.BasicExamples.QuadraticCoreAirgap",
    "signals": 2,
-   "time": 0.201,
+   "time": 0.154,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -3607,7 +3630,7 @@
   {
    "model": "Modelica.Magnetic.FluxTubes.Examples.BasicExamples.SaturatedInductor",
    "signals": 6,
-   "time": 0.347,
+   "time": 0.187,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -3615,7 +3638,7 @@
   {
    "model": "Modelica.Magnetic.FluxTubes.Examples.BasicExamples.ToroidalCoreAirgap",
    "signals": 2,
-   "time": 0.22,
+   "time": 0.14,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -3623,7 +3646,7 @@
   {
    "model": "Modelica.Magnetic.FluxTubes.Examples.BasicExamples.ToroidalCoreQuadraticCrossSection",
    "signals": 2,
-   "time": 0.267,
+   "time": 0.119,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -3631,23 +3654,23 @@
   {
    "model": "Modelica.Magnetic.FluxTubes.Examples.Hysteresis.HysteresisModelComparison",
    "signals": 12,
-   "time": 0.513,
+   "time": 0.29,
    "missing": [],
    "failed": [
     {
      "signal": "preisachEverett.beta",
-     "outside": 0.7769,
-     "worst": 434.7817171094485
+     "outside": 0.7758,
+     "worst": 434.78170096451873
     },
     {
      "signal": "preisachEverett.J",
-     "outside": 0.7708,
-     "worst": 384.847199653283
+     "outside": 0.7698,
+     "worst": 384.8694291037245
     },
     {
      "signal": "tellinenTable.B",
-     "outside": 0.9201,
-     "worst": 327.3823005708449
+     "outside": 0.8975,
+     "worst": 327.2621038411639
     }
    ],
    "status": "differ"
@@ -3655,7 +3678,7 @@
   {
    "model": "Modelica.Magnetic.FluxTubes.Examples.Hysteresis.InductorWithHysteresis",
    "signals": 4,
-   "time": 0.241,
+   "time": 0.175,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -3663,28 +3686,28 @@
   {
    "model": "Modelica.Magnetic.FluxTubes.Examples.Hysteresis.SinglePhaseTransformerWithHysteresis1",
    "signals": 5,
-   "time": 0.237,
+   "time": 0.151,
    "missing": [],
    "failed": [
     {
      "signal": "core.B",
      "outside": 0.9342,
-     "worst": 203.94051086936236
+     "worst": 203.93912928782618
     },
     {
      "signal": "core.Hstat",
      "outside": 0.9762,
-     "worst": 380.58683242558845
+     "worst": 380.58701261968855
     },
     {
      "signal": "winding1.i",
      "outside": 0.9723,
-     "worst": 336.2780524489596
+     "worst": 336.27821158168814
     },
     {
      "signal": "winding2.i",
      "outside": 0.2914,
-     "worst": 44.54407650098906
+     "worst": 44.54410885322178
     }
    ],
    "status": "differ"
@@ -3692,7 +3715,7 @@
   {
    "model": "Modelica.Magnetic.FluxTubes.Examples.Hysteresis.SinglePhaseTransformerWithHysteresis2",
    "signals": 5,
-   "time": 0.442,
+   "time": 0.258,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -3700,18 +3723,18 @@
   {
    "model": "Modelica.Magnetic.FluxTubes.Examples.Hysteresis.ThreePhaseTransformerWithRectifier",
    "signals": 2,
-   "time": 2.059,
+   "time": 1.38,
    "missing": [],
    "failed": [
     {
      "signal": "capacitor1.v",
      "outside": 0.0152,
-     "worst": 21.022924441826163
+     "worst": 21.022992196790163
     },
     {
      "signal": "capacitor2.v",
      "outside": 0.0164,
-     "worst": 16.72030630874582
+     "worst": 16.753884931189006
     }
    ],
    "status": "differ"
@@ -3719,7 +3742,7 @@
   {
    "model": "Modelica.Magnetic.FluxTubes.Examples.MovingCoilActuator.ArmatureStroke",
    "signals": 9,
-   "time": 0.248,
+   "time": 0.173,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -3727,7 +3750,7 @@
   {
    "model": "Modelica.Magnetic.FluxTubes.Examples.MovingCoilActuator.ForceCurrentBehaviour",
    "signals": 4,
-   "time": 0.22,
+   "time": 0.171,
    "missing": [],
    "failed": [
     {
@@ -3741,7 +3764,7 @@
   {
    "model": "Modelica.Magnetic.FluxTubes.Examples.MovingCoilActuator.ForceStrokeBehaviour",
    "signals": 4,
-   "time": 0.15,
+   "time": 0.137,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -3749,7 +3772,7 @@
   {
    "model": "Modelica.Magnetic.FluxTubes.Examples.SolenoidActuator.ComparisonPullInStroke",
    "signals": 9,
-   "time": 1.704,
+   "time": 1.724,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -3757,7 +3780,7 @@
   {
    "model": "Modelica.Magnetic.FluxTubes.Examples.SolenoidActuator.ComparisonQuasiStatic",
    "signals": 28,
-   "time": 0.288,
+   "time": 0.244,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -3765,28 +3788,28 @@
   {
    "model": "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.InductionMachines.ComparisonPolyphase.IMC_DOL_CommonLeakage",
    "signals": 30,
-   "time": 0.423,
+   "time": 0.498,
    "status": "error",
-   "error": "error: step size too small at t = 0.000002357501581970594"
+   "error": "error: step size too small at t = 0.000002357358568184971"
   },
   {
    "model": "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.InductionMachines.ComparisonPolyphase.IMC_DOL_Polyphase",
    "signals": 18,
-   "time": 0.312,
+   "time": 0.26,
    "status": "error",
-   "error": "error: step size too small at t = 0.0000023613858119183254"
+   "error": "error: step size too small at t = 0.0000023573279983314368"
   },
   {
    "model": "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.InductionMachines.ComparisonPolyphase.IMS_Start_Polyphase",
    "signals": 26,
-   "time": 0.344,
+   "time": 0.856,
    "status": "error",
-   "error": "error: step size too small at t = 0.000002357220800083764"
+   "error": "error: step size too small at t = 0.0000023714508481972685"
   },
   {
    "model": "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.InductionMachines.IMC_Conveyor",
    "signals": 9,
-   "time": 5.978,
+   "time": 16.31,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -3794,7 +3817,7 @@
   {
    "model": "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.InductionMachines.IMC_DOL",
    "signals": 18,
-   "time": 1.322,
+   "time": 1.161,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -3802,7 +3825,7 @@
   {
    "model": "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.InductionMachines.IMC_Initialize",
    "signals": 15,
-   "time": 0.677,
+   "time": 1.822,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -3810,7 +3833,7 @@
   {
    "model": "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.InductionMachines.IMC_Inverter",
    "signals": 9,
-   "time": 0.769,
+   "time": 1.712,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -3818,7 +3841,7 @@
   {
    "model": "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.InductionMachines.IMC_Steinmetz",
    "signals": 11,
-   "time": 0.499,
+   "time": 1.195,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -3826,7 +3849,7 @@
   {
    "model": "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.InductionMachines.IMC_Transformer",
    "signals": 11,
-   "time": 1.791,
+   "time": 1.133,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -3834,7 +3857,7 @@
   {
    "model": "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.InductionMachines.IMC_YD",
    "signals": 9,
-   "time": 1.164,
+   "time": 0.892,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -3842,18 +3865,13 @@
   {
    "model": "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.InductionMachines.IMC_withLosses",
    "signals": 16,
-   "time": 2.909,
+   "time": 1.815,
    "missing": [],
    "failed": [
     {
-     "signal": "aimc.airGap.V_mrr.im",
-     "outside": 0.0037,
-     "worst": 1.1518783235832828
-    },
-    {
      "signal": "aimc.rotorCage.electroMagneticConverter.singlePhaseElectroMagneticConverter[1].Phi.re",
-     "outside": 0.0001,
-     "worst": 1.3345666788501371
+     "outside": 0.0,
+     "worst": 1.1914403148852888
     }
    ],
    "status": "differ"
@@ -3861,7 +3879,7 @@
   {
    "model": "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.InductionMachines.IMS_Start",
    "signals": 24,
-   "time": 1.435,
+   "time": 1.866,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -3869,26 +3887,15 @@
   {
    "model": "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.SynchronousMachines.ComparisonPolyphase.SMEE_Generator_Polyphase",
    "signals": 16,
-   "time": 36.295,
+   "time": 6.092,
    "missing": [],
-   "failed": [
-    {
-     "signal": "smee3.stator.electroMagneticConverter.singlePhaseElectroMagneticConverter[2].Phi.im",
-     "outside": 0.0,
-     "worst": 160.7527755254873
-    },
-    {
-     "signal": "smee3.stator.stray.port_p.Phi.im",
-     "outside": 0.0,
-     "worst": 1.9417813197535745
-    }
-   ],
-   "status": "differ"
+   "failed": [],
+   "status": "pass"
   },
   {
    "model": "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.SynchronousMachines.ComparisonPolyphase.SMPM_Inverter_Polyphase",
    "signals": 20,
-   "time": 2.373,
+   "time": 1.493,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -3896,7 +3903,7 @@
   {
    "model": "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.SynchronousMachines.ComparisonPolyphase.SMR_Inverter_Polyphase",
    "signals": 20,
-   "time": 2.354,
+   "time": 2.315,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -3904,85 +3911,37 @@
   {
    "model": "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.SynchronousMachines.SMEE_DOL",
    "signals": 9,
-   "time": 2.092,
+   "time": 3.322,
    "missing": [],
-   "failed": [
-    {
-     "signal": "smee.excitation.electroMagneticConverter.Phi.re",
-     "outside": 0.1064,
-     "worst": 3.770261146776747
-    },
-    {
-     "signal": "smee.is[1]",
-     "outside": 0.0003,
-     "worst": 1.203983769489027
-    },
-    {
-     "signal": "smee.is[2]",
-     "outside": 0.0002,
-     "worst": 1.1593783836663725
-    },
-    {
-     "signal": "smee.rotorCage.electroMagneticConverter.singlePhaseElectroMagneticConverter[1].Phi.re",
-     "outside": 0.1046,
-     "worst": 3.804197312971617
-    },
-    {
-     "signal": "smee.rotorCage.electroMagneticConverter.singlePhaseElectroMagneticConverter[2].Phi.im",
-     "outside": 0.0955,
-     "worst": 1.7943201667157687
-    }
-   ],
-   "status": "differ"
+   "failed": [],
+   "status": "pass"
   },
   {
    "model": "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.SynchronousMachines.SMEE_Generator",
    "signals": 14,
-   "time": 31.007,
+   "time": 5.392,
    "missing": [],
-   "failed": [
-    {
-     "signal": "smeeM.is[2]",
-     "outside": 0.0,
-     "worst": 256.00526806453706
-    },
-    {
-     "signal": "smeeM.stator.electroMagneticConverter.singlePhaseElectroMagneticConverter[2].Phi.im",
-     "outside": 0.0,
-     "worst": 1532.316459030913
-    },
-    {
-     "signal": "smeeM.stator.stray.port_p.Phi.im",
-     "outside": 0.0,
-     "worst": 276.53239352110467
-    }
-   ],
-   "status": "differ"
+   "failed": [],
+   "status": "pass"
   },
   {
    "model": "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.SynchronousMachines.SMEE_LoadDump",
    "signals": 12,
    "status": "timeout",
-   "time": 120.0
+   "time": 120
   },
   {
    "model": "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.SynchronousMachines.SMEE_Rectifier",
    "signals": 14,
-   "time": 3.476,
+   "time": 3.97,
    "missing": [],
-   "failed": [
-    {
-     "signal": "smee.stator.electroMagneticConverter.singlePhaseElectroMagneticConverter[2].Phi.im",
-     "outside": 0.0,
-     "worst": 728.0708483278535
-    }
-   ],
-   "status": "differ"
+   "failed": [],
+   "status": "pass"
   },
   {
    "model": "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.SynchronousMachines.SMPM_Braking",
    "signals": 7,
-   "time": 0.892,
+   "time": 1.016,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -3990,7 +3949,7 @@
   {
    "model": "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.SynchronousMachines.SMPM_CurrentSource",
    "signals": 4,
-   "time": 1.371,
+   "time": 1.575,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -3998,7 +3957,7 @@
   {
    "model": "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.SynchronousMachines.SMPM_Inverter",
    "signals": 17,
-   "time": 3.24,
+   "time": 2.943,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4006,7 +3965,7 @@
   {
    "model": "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.SynchronousMachines.SMPM_VoltageSource",
    "signals": 8,
-   "time": 1.818,
+   "time": 2.223,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4014,7 +3973,7 @@
   {
    "model": "Modelica.Magnetic.FundamentalWave.Examples.BasicMachines.SynchronousMachines.SMR_Inverter",
    "signals": 17,
-   "time": 3.401,
+   "time": 2.747,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4022,7 +3981,7 @@
   {
    "model": "Modelica.Magnetic.FundamentalWave.Examples.Components.EddyCurrentLosses",
    "signals": 4,
-   "time": 0.379,
+   "time": 0.444,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4030,7 +3989,7 @@
   {
    "model": "Modelica.Magnetic.FundamentalWave.Examples.Components.PolyphaseInductance",
    "signals": 6,
-   "time": 0.713,
+   "time": 0.856,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4038,7 +3997,7 @@
   {
    "model": "Modelica.Magnetic.FundamentalWave.Examples.Components.SinglePhaseInductance",
    "signals": 2,
-   "time": 0.362,
+   "time": 0.373,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4046,7 +4005,7 @@
   {
    "model": "Modelica.Magnetic.QuasiStatic.FluxTubes.Examples.BasicExamples.QuadraticCoreAirgap",
    "signals": 4,
-   "time": 0.214,
+   "time": 0.289,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4054,7 +4013,7 @@
   {
    "model": "Modelica.Magnetic.QuasiStatic.FluxTubes.Examples.BasicExamples.ToroidalCoreAirgap",
    "signals": 4,
-   "time": 0.152,
+   "time": 0.241,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4062,7 +4021,7 @@
   {
    "model": "Modelica.Magnetic.QuasiStatic.FluxTubes.Examples.BasicExamples.ToroidalCoreQuadraticCrossSection",
    "signals": 4,
-   "time": 0.321,
+   "time": 0.282,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4070,7 +4029,7 @@
   {
    "model": "Modelica.Magnetic.QuasiStatic.FluxTubes.Examples.FixedShapes.CuboidSections",
    "signals": 1,
-   "time": 0.136,
+   "time": 0.096,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4078,7 +4037,7 @@
   {
    "model": "Modelica.Magnetic.QuasiStatic.FluxTubes.Examples.FixedShapes.CylinderSections",
    "signals": 1,
-   "time": 0.093,
+   "time": 0.313,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4086,7 +4045,7 @@
   {
    "model": "Modelica.Magnetic.QuasiStatic.FluxTubes.Examples.Leakage.CylinderLeakage",
    "signals": 1,
-   "time": 0.128,
+   "time": 0.284,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4094,7 +4053,7 @@
   {
    "model": "Modelica.Magnetic.QuasiStatic.FluxTubes.Examples.Leakage.GeneralLeakage",
    "signals": 1,
-   "time": 0.359,
+   "time": 0.208,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4102,7 +4061,7 @@
   {
    "model": "Modelica.Magnetic.QuasiStatic.FluxTubes.Examples.LinearInductor",
    "signals": 5,
-   "time": 0.442,
+   "time": 0.379,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4110,7 +4069,7 @@
   {
    "model": "Modelica.Magnetic.QuasiStatic.FluxTubes.Examples.NonLinearInductor",
    "signals": 10,
-   "time": 0.532,
+   "time": 0.617,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4118,7 +4077,7 @@
   {
    "model": "Modelica.Magnetic.QuasiStatic.FundamentalWave.Examples.BasicMachines.InductionMachines.IMC_Characteristics",
    "signals": 2,
-   "time": 0.384,
+   "time": 0.848,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4126,7 +4085,7 @@
   {
    "model": "Modelica.Magnetic.QuasiStatic.FundamentalWave.Examples.BasicMachines.InductionMachines.IMC_Conveyor",
    "signals": 11,
-   "time": 54.663,
+   "time": 36.774,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4134,7 +4093,7 @@
   {
    "model": "Modelica.Magnetic.QuasiStatic.FundamentalWave.Examples.BasicMachines.InductionMachines.IMC_DOL",
    "signals": 2,
-   "time": 3.538,
+   "time": 3.126,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4142,7 +4101,7 @@
   {
    "model": "Modelica.Magnetic.QuasiStatic.FundamentalWave.Examples.BasicMachines.InductionMachines.IMC_Initialize",
    "signals": 16,
-   "time": 47.881,
+   "time": 29.363,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4150,7 +4109,7 @@
   {
    "model": "Modelica.Magnetic.QuasiStatic.FundamentalWave.Examples.BasicMachines.InductionMachines.IMC_Inverter",
    "signals": 2,
-   "time": 2.242,
+   "time": 1.704,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4158,13 +4117,13 @@
   {
    "model": "Modelica.Magnetic.QuasiStatic.FundamentalWave.Examples.BasicMachines.InductionMachines.IMC_Transformer",
    "signals": 12,
-   "time": 20.52,
+   "time": 6.511,
    "missing": [],
    "failed": [
     {
      "signal": "imc.stator.zeroInductor.i0",
-     "outside": 0.0171,
-     "worst": 39.04170025639291
+     "outside": 0.0159,
+     "worst": 39.042370892838306
     }
    ],
    "status": "differ"
@@ -4172,13 +4131,13 @@
   {
    "model": "Modelica.Magnetic.QuasiStatic.FundamentalWave.Examples.BasicMachines.InductionMachines.IMC_YD",
    "signals": 10,
-   "time": 11.422,
+   "time": 10.573,
    "missing": [],
    "failed": [
     {
      "signal": "imc.stator.zeroInductor.i0",
-     "outside": 0.1404,
-     "worst": 24.523033886027875
+     "outside": 0.0712,
+     "worst": 15.782872115408713
     }
    ],
    "status": "differ"
@@ -4186,7 +4145,7 @@
   {
    "model": "Modelica.Magnetic.QuasiStatic.FundamentalWave.Examples.BasicMachines.InductionMachines.IMC_withLosses",
    "signals": 4,
-   "time": 18.976,
+   "time": 22.344,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4194,7 +4153,7 @@
   {
    "model": "Modelica.Magnetic.QuasiStatic.FundamentalWave.Examples.BasicMachines.InductionMachines.IMS_Characteristics",
    "signals": 2,
-   "time": 0.726,
+   "time": 0.744,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4202,7 +4161,7 @@
   {
    "model": "Modelica.Magnetic.QuasiStatic.FundamentalWave.Examples.BasicMachines.InductionMachines.IMS_Start",
    "signals": 9,
-   "time": 5.443,
+   "time": 7.425,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4210,7 +4169,7 @@
   {
    "model": "Modelica.Magnetic.QuasiStatic.FundamentalWave.Examples.BasicMachines.SynchronousMachines.SMEE_Generator",
    "signals": 9,
-   "time": 14.947,
+   "time": 6.662,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4218,7 +4177,7 @@
   {
    "model": "Modelica.Magnetic.QuasiStatic.FundamentalWave.Examples.BasicMachines.SynchronousMachines.SMPM_CurrentSource",
    "signals": 16,
-   "time": 4.453,
+   "time": 2.221,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4226,14 +4185,14 @@
   {
    "model": "Modelica.Magnetic.QuasiStatic.FundamentalWave.Examples.BasicMachines.SynchronousMachines.SMPM_FieldWeakening",
    "signals": 4,
-   "time": 10.117,
+   "time": 5.22,
    "status": "error",
    "error": "error: nonlinear system for [smpm.is[2].re, smpm.is[2].im, smpm.is[3].re, smpm.is[3].im, dqToThreePhase.id_rms, smpm.stator.Phi.re, smpm.stator.resistor.resistor[2].v.re, terminalBox.plug_sp.pin[2].i.re, terminalBox.plug_sp.pin[2].i.im, smpm.stator.resistor.resistor[2].v.im, smpm.stator.resistor.res"
   },
   {
    "model": "Modelica.Magnetic.QuasiStatic.FundamentalWave.Examples.BasicMachines.SynchronousMachines.SMPM_MTPA",
    "signals": 1,
-   "time": 0.717,
+   "time": 0.344,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4241,7 +4200,7 @@
   {
    "model": "Modelica.Magnetic.QuasiStatic.FundamentalWave.Examples.BasicMachines.SynchronousMachines.SMPM_Mains",
    "signals": 10,
-   "time": 3.728,
+   "time": 1.733,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4249,7 +4208,7 @@
   {
    "model": "Modelica.Magnetic.QuasiStatic.FundamentalWave.Examples.BasicMachines.SynchronousMachines.SMPM_OpenCircuit",
    "signals": 2,
-   "time": 0.804,
+   "time": 0.279,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4257,7 +4216,7 @@
   {
    "model": "Modelica.Magnetic.QuasiStatic.FundamentalWave.Examples.BasicMachines.SynchronousMachines.SMR_CurrentSource",
    "signals": 7,
-   "time": 4.086,
+   "time": 2.148,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4265,7 +4224,7 @@
   {
    "model": "Modelica.Magnetic.QuasiStatic.FundamentalWave.Examples.Components.EddyCurrentLosses",
    "signals": 2,
-   "time": 0.884,
+   "time": 0.437,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4273,7 +4232,7 @@
   {
    "model": "Modelica.Magnetic.QuasiStatic.FundamentalWave.Examples.Components.PolyphaseInductance",
    "signals": 4,
-   "time": 1.865,
+   "time": 0.983,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4281,21 +4240,23 @@
   {
    "model": "Modelica.Math.FastFourierTransform.Examples.RealFFT1",
    "signals": 44,
-   "time": 1.903,
-   "status": "error",
-   "error": "error: in component 'Modelica.Math.FastFourierTransform.Examples.RealFFT1': subscript '1 + pre(iTick)' must be a constant or parameter expression"
+   "time": 0.51,
+   "missing": [],
+   "failed": [],
+   "status": "pass"
   },
   {
    "model": "Modelica.Math.FastFourierTransform.Examples.RealFFT2",
    "signals": 23,
-   "time": 1.18,
-   "status": "error",
-   "error": "error: in component 'Modelica.Math.FastFourierTransform.Examples.RealFFT2': subscript '1 + pre(iTick)' must be a constant or parameter expression"
+   "time": 0.342,
+   "missing": [],
+   "failed": [],
+   "status": "pass"
   },
   {
    "model": "Modelica.Math.Nonlinear.Examples.QuadratureLobatto3",
    "signals": 2,
-   "time": 0.156,
+   "time": 0.129,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4303,14 +4264,15 @@
   {
    "model": "Modelica.Math.Random.Examples.GenerateRandomNumbers",
    "signals": 3,
-   "time": 1.555,
-   "status": "error",
-   "error": "error: in declaration of 'id': in function 'Modelica.Math.Random.Utilities.initializeImpureRandom': in function 'Modelica.Math.Random.Utilities.initialStateWithXorshift64star': in function 'Modelica.Math.Random.Generators.Xorshift64star.initialState': external function 'Modelica.Math.Random.Generato"
+   "time": 0.11,
+   "missing": [],
+   "failed": [],
+   "status": "pass"
   },
   {
    "model": "Modelica.Mechanics.MultiBody.Examples.Constraints.PrismaticConstraint",
    "signals": 10,
-   "time": 0.728,
+   "time": 0.513,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4318,21 +4280,14 @@
   {
    "model": "Modelica.Mechanics.MultiBody.Examples.Constraints.RevoluteConstraint",
    "signals": 5,
-   "time": 1.044,
-   "missing": [],
-   "failed": [
-    {
-     "signal": "bodyOfConstraint.body.w_a[2]",
-     "outside": 0.8818,
-     "worst": 249.77913720543341
-    }
-   ],
-   "status": "differ"
+   "time": 0.321,
+   "status": "error",
+   "error": "error: step size too small at t = 0.9607181472986964"
   },
   {
    "model": "Modelica.Mechanics.MultiBody.Examples.Constraints.SphericalConstraint",
    "signals": 3,
-   "time": 0.767,
+   "time": 0.407,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4340,14 +4295,14 @@
   {
    "model": "Modelica.Mechanics.MultiBody.Examples.Constraints.UniversalConstraint",
    "signals": 7,
-   "time": 1.504,
+   "time": 1.424,
    "status": "error",
-   "error": "error: step size too small at t = 1.2881196557690922"
+   "error": "error: step size too small at t = 1.3084972732449371"
   },
   {
    "model": "Modelica.Mechanics.MultiBody.Examples.Elementary.DoublePendulum",
    "signals": 4,
-   "time": 0.516,
+   "time": 0.392,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4355,7 +4310,7 @@
   {
    "model": "Modelica.Mechanics.MultiBody.Examples.Elementary.DoublePendulumInitTip",
    "signals": 4,
-   "time": 0.677,
+   "time": 0.491,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4363,7 +4318,7 @@
   {
    "model": "Modelica.Mechanics.MultiBody.Examples.Elementary.ForceAndTorque",
    "signals": 4,
-   "time": 0.592,
+   "time": 0.33,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4371,7 +4326,7 @@
   {
    "model": "Modelica.Mechanics.MultiBody.Examples.Elementary.FreeBody",
    "signals": 9,
-   "time": 0.45,
+   "time": 0.307,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4379,7 +4334,7 @@
   {
    "model": "Modelica.Mechanics.MultiBody.Examples.Elementary.HeatLosses",
    "signals": 28,
-   "time": 0.693,
+   "time": 0.437,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4387,7 +4342,7 @@
   {
    "model": "Modelica.Mechanics.MultiBody.Examples.Elementary.InitSpringConstant",
    "signals": 2,
-   "time": 0.349,
+   "time": 0.311,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4395,7 +4350,7 @@
   {
    "model": "Modelica.Mechanics.MultiBody.Examples.Elementary.LineForceWithTwoMasses",
    "signals": 4,
-   "time": 0.558,
+   "time": 0.477,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4403,7 +4358,7 @@
   {
    "model": "Modelica.Mechanics.MultiBody.Examples.Elementary.Pendulum",
    "signals": 2,
-   "time": 0.368,
+   "time": 0.255,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4411,7 +4366,7 @@
   {
    "model": "Modelica.Mechanics.MultiBody.Examples.Elementary.PendulumWithSpringDamper",
    "signals": 4,
-   "time": 0.507,
+   "time": 0.272,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4419,7 +4374,7 @@
   {
    "model": "Modelica.Mechanics.MultiBody.Examples.Elementary.PointGravity",
    "signals": 18,
-   "time": 0.307,
+   "time": 0.375,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4427,7 +4382,7 @@
   {
    "model": "Modelica.Mechanics.MultiBody.Examples.Elementary.PointGravityWithPointMasses",
    "signals": 24,
-   "time": 0.46,
+   "time": 0.468,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4435,21 +4390,21 @@
   {
    "model": "Modelica.Mechanics.MultiBody.Examples.Elementary.PointGravityWithPointMasses2",
    "signals": 15,
-   "time": 0.976,
+   "time": 0.84,
    "status": "error",
-   "error": "error: step size too small at t = 1.6192709879562108"
+   "error": "error: step size too small at t = 1.6191374074978937"
   },
   {
    "model": "Modelica.Mechanics.MultiBody.Examples.Elementary.RollingWheel",
    "signals": 8,
-   "time": 0.296,
+   "time": 0.402,
    "status": "error",
-   "error": "error: nonlinear system for [wheel1.rollingWheel.angles[2], wheel1.rollingWheel.angles[3], wheel1.rollingWheel.angles[1]] did not converge at t = 0.20095669030429275 (residual 1.002e-6)"
+   "error": "error: nonlinear system for [wheel1.rollingWheel.angles[2], wheel1.rollingWheel.angles[3], wheel1.rollingWheel.angles[1]] did not converge at t = 0.1445645121374604 (residual 1.002e-6)"
   },
   {
    "model": "Modelica.Mechanics.MultiBody.Examples.Elementary.RollingWheelSetDriving",
    "signals": 7,
-   "time": 0.89,
+   "time": 0.564,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4457,26 +4412,15 @@
   {
    "model": "Modelica.Mechanics.MultiBody.Examples.Elementary.RollingWheelSetPulling",
    "signals": 7,
-   "time": 0.64,
+   "time": 0.799,
    "missing": [],
-   "failed": [
-    {
-     "signal": "wheelSet.der_theta1",
-     "outside": 0.0002,
-     "worst": 6.667109390660815
-    },
-    {
-     "signal": "wheelSet.der_theta2",
-     "outside": 0.0002,
-     "worst": 2.652666224886083
-    }
-   ],
-   "status": "differ"
+   "failed": [],
+   "status": "pass"
   },
   {
    "model": "Modelica.Mechanics.MultiBody.Examples.Elementary.SpringDamperSystem",
    "signals": 11,
-   "time": 0.548,
+   "time": 0.468,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4484,7 +4428,7 @@
   {
    "model": "Modelica.Mechanics.MultiBody.Examples.Elementary.SpringMassSystem",
    "signals": 4,
-   "time": 0.478,
+   "time": 0.575,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4492,7 +4436,7 @@
   {
    "model": "Modelica.Mechanics.MultiBody.Examples.Elementary.SpringWithMass",
    "signals": 9,
-   "time": 0.291,
+   "time": 0.405,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4500,7 +4444,7 @@
   {
    "model": "Modelica.Mechanics.MultiBody.Examples.Elementary.Surfaces",
    "signals": 2,
-   "time": 0.496,
+   "time": 0.58,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4516,7 +4460,7 @@
   {
    "model": "Modelica.Mechanics.MultiBody.Examples.Elementary.UserDefinedGravityField",
    "signals": 2,
-   "time": 0.292,
+   "time": 0.406,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4524,7 +4468,7 @@
   {
    "model": "Modelica.Mechanics.MultiBody.Examples.Loops.Engine1a",
    "signals": 2,
-   "time": 0.644,
+   "time": 0.788,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4532,7 +4476,7 @@
   {
    "model": "Modelica.Mechanics.MultiBody.Examples.Loops.Engine1b",
    "signals": 2,
-   "time": 0.808,
+   "time": 0.944,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4540,7 +4484,7 @@
   {
    "model": "Modelica.Mechanics.MultiBody.Examples.Loops.Engine1b_analytic",
    "signals": 2,
-   "time": 1.015,
+   "time": 1.207,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4548,7 +4492,7 @@
   {
    "model": "Modelica.Mechanics.MultiBody.Examples.Loops.EngineV6",
    "signals": 4,
-   "time": 13.539,
+   "time": 16.144,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4556,7 +4500,7 @@
   {
    "model": "Modelica.Mechanics.MultiBody.Examples.Loops.EngineV6_analytic",
    "signals": 4,
-   "time": 3.748,
+   "time": 3.688,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4564,7 +4508,7 @@
   {
    "model": "Modelica.Mechanics.MultiBody.Examples.Loops.Fourbar1",
    "signals": 2,
-   "time": 0.843,
+   "time": 0.667,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4572,7 +4516,7 @@
   {
    "model": "Modelica.Mechanics.MultiBody.Examples.Loops.Fourbar2",
    "signals": 2,
-   "time": 0.445,
+   "time": 0.449,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4580,7 +4524,7 @@
   {
    "model": "Modelica.Mechanics.MultiBody.Examples.Loops.Fourbar_analytic",
    "signals": 2,
-   "time": 0.396,
+   "time": 0.415,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4588,7 +4532,7 @@
   {
    "model": "Modelica.Mechanics.MultiBody.Examples.Loops.PlanarFourbar",
    "signals": 2,
-   "time": 0.659,
+   "time": 0.711,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4596,7 +4540,7 @@
   {
    "model": "Modelica.Mechanics.MultiBody.Examples.Loops.PlanarLoops_analytic",
    "signals": 2,
-   "time": 0.72,
+   "time": 0.829,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4604,7 +4548,7 @@
   {
    "model": "Modelica.Mechanics.MultiBody.Examples.Rotational3DEffects.ActuatedDrive",
    "signals": 4,
-   "time": 0.381,
+   "time": 0.355,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4612,7 +4556,7 @@
   {
    "model": "Modelica.Mechanics.MultiBody.Examples.Rotational3DEffects.BevelGear1D",
    "signals": 8,
-   "time": 0.375,
+   "time": 0.712,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4620,7 +4564,7 @@
   {
    "model": "Modelica.Mechanics.MultiBody.Examples.Rotational3DEffects.GearConstraint",
    "signals": 4,
-   "time": 0.436,
+   "time": 0.763,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4628,14 +4572,14 @@
   {
    "model": "Modelica.Mechanics.MultiBody.Examples.Rotational3DEffects.GyroscopicEffects",
    "signals": 10,
-   "time": 1.345,
+   "time": 2.932,
    "status": "error",
-   "error": "error: step size too small at t = 0.3169246630281495"
+   "error": "error: step size too small at t = 0.31712498818301366"
   },
   {
    "model": "Modelica.Mechanics.MultiBody.Examples.Rotational3DEffects.MovingActuatedDrive",
    "signals": 8,
-   "time": 0.416,
+   "time": 0.605,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4643,21 +4587,21 @@
   {
    "model": "Modelica.Mechanics.MultiBody.Examples.Systems.RobotR3.FullRobot",
    "signals": 42,
-   "time": 4.148,
+   "time": 7.766,
    "status": "error",
-   "error": "error: events chatter at t = 1.3497200642195442: relations keep switching back and forth"
+   "error": "error: events chatter at t = 1.3497200642194183: relations keep switching back and forth"
   },
   {
    "model": "Modelica.Mechanics.MultiBody.Examples.Systems.RobotR3.OneAxis",
    "signals": 10,
-   "time": 0.307,
+   "time": 0.546,
    "status": "error",
-   "error": "error: events chatter at t = 1.093459582847847: `axis.gear.bearingFriction.w Gt 0`, `axis.gear.bearingFriction.w Lt 0`, `axis.gear.bearingFriction.w Gt 0`, `axis.gear.bearingFriction.w Lt 0` keep switching back and forth"
+   "error": "error: events chatter at t = 1.093459538249312: `axis.gear.bearingFriction.w Gt 0`, `axis.gear.bearingFriction.w Lt 0`, `axis.gear.bearingFriction.w Gt 0`, `axis.gear.bearingFriction.w Lt 0` keep switching back and forth"
   },
   {
    "model": "Modelica.Mechanics.Rotational.Examples.Backlash",
    "signals": 4,
-   "time": 0.161,
+   "time": 0.224,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4665,7 +4609,7 @@
   {
    "model": "Modelica.Mechanics.Rotational.Examples.CompareBrakingTorque",
    "signals": 4,
-   "time": 0.185,
+   "time": 0.306,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4673,7 +4617,7 @@
   {
    "model": "Modelica.Mechanics.Rotational.Examples.CoupledClutches",
    "signals": 17,
-   "time": 0.181,
+   "time": 0.19,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4681,7 +4625,7 @@
   {
    "model": "Modelica.Mechanics.Rotational.Examples.EddyCurrentBrake",
    "signals": 3,
-   "time": 0.18,
+   "time": 0.186,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4689,18 +4633,18 @@
   {
    "model": "Modelica.Mechanics.Rotational.Examples.ElasticBearing",
    "signals": 6,
-   "time": 0.132,
+   "time": 0.175,
    "missing": [],
    "failed": [
     {
      "signal": "springDamper.phi_rel",
-     "outside": 0.004,
-     "worst": 1.0762695966037403
+     "outside": 0.003,
+     "worst": 1.0762682842942437
     },
     {
      "signal": "springDamper.w_rel",
-     "outside": 0.9011,
-     "worst": 319.0298890977702
+     "outside": 0.9001,
+     "worst": 307.71277012160493
     }
    ],
    "status": "differ"
@@ -4708,7 +4652,7 @@
   {
    "model": "Modelica.Mechanics.Rotational.Examples.First",
    "signals": 4,
-   "time": 0.143,
+   "time": 0.352,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4716,7 +4660,7 @@
   {
    "model": "Modelica.Mechanics.Rotational.Examples.FirstGrounded",
    "signals": 4,
-   "time": 0.139,
+   "time": 0.177,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4724,14 +4668,14 @@
   {
    "model": "Modelica.Mechanics.Rotational.Examples.Friction",
    "signals": 12,
-   "time": 0.207,
+   "time": 0.284,
    "status": "error",
-   "error": "error: events chatter at t = 0.006779687726445823: `clutch.w_rel Gt 0`, `clutch.w_rel Lt 0`, `clutch.w_rel Gt 0`, `clutch.w_rel Lt 0` keep switching back and forth"
+   "error": "error: events chatter at t = 0.00677968772753431: `clutch.w_rel Gt 0`, `clutch.w_rel Lt 0`, `clutch.w_rel Gt 0`, `clutch.w_rel Lt 0` keep switching back and forth"
   },
   {
    "model": "Modelica.Mechanics.Rotational.Examples.GenerationOfFMUs",
    "signals": 10,
-   "time": 0.162,
+   "time": 0.18,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4739,7 +4683,7 @@
   {
    "model": "Modelica.Mechanics.Rotational.Examples.HeatLosses",
    "signals": 24,
-   "time": 0.553,
+   "time": 1.095,
    "missing": [],
    "failed": [
     {
@@ -4768,13 +4712,23 @@
   {
    "model": "Modelica.Mechanics.Rotational.Examples.LossyGearDemo1",
    "signals": 3,
-   "time": 0.144,
+   "time": 0.183,
    "missing": [],
    "failed": [
     {
      "signal": "Inertia2.phi",
-     "outside": 0.273,
-     "worst": 1.3078927974504542
+     "outside": 0.8124,
+     "worst": 499.10590214418863
+    },
+    {
+     "signal": "Inertia2.w",
+     "outside": 0.3261,
+     "worst": 198.28327220263265
+    },
+    {
+     "signal": "gear.mode",
+     "outside": 0.335,
+     "worst": 250.0
     }
    ],
    "status": "differ"
@@ -4782,18 +4736,18 @@
   {
    "model": "Modelica.Mechanics.Rotational.Examples.LossyGearDemo2",
    "signals": 6,
-   "time": 0.159,
+   "time": 0.248,
    "missing": [],
    "failed": [
     {
      "signal": "Inertia2.phi",
      "outside": 0.8567,
-     "worst": 46.53678265878763
+     "worst": 46.53678265877043
     },
     {
      "signal": "Inertia2.w",
      "outside": 0.1394,
-     "worst": 44.94455096780237
+     "worst": 44.94455096780252
     },
     {
      "signal": "bearingFriction.mode",
@@ -4816,14 +4770,14 @@
   {
    "model": "Modelica.Mechanics.Rotational.Examples.LossyGearDemo3",
    "signals": 3,
-   "time": 0.193,
+   "time": 0.267,
    "status": "error",
-   "error": "error: events chatter at t = 0.020000000039703807: `gear.w_a Gt 0`, `gear.w_a Lt 0` keep switching back and forth"
+   "error": "error: events chatter at t = 0.0200000000397038: `gear.w_a Gt 0`, `gear.w_a Lt 0` keep switching back and forth"
   },
   {
    "model": "Modelica.Mechanics.Rotational.Examples.OneWayClutch",
    "signals": 4,
-   "time": 0.157,
+   "time": 0.342,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4831,7 +4785,7 @@
   {
    "model": "Modelica.Mechanics.Rotational.Examples.OneWayClutchDisengaged",
    "signals": 4,
-   "time": 0.124,
+   "time": 0.244,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4839,7 +4793,7 @@
   {
    "model": "Modelica.Mechanics.Rotational.Examples.RollingWheel",
    "signals": 2,
-   "time": 0.145,
+   "time": 0.116,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4847,14 +4801,14 @@
   {
    "model": "Modelica.Mechanics.Rotational.Examples.SimpleGearShift",
    "signals": 12,
-   "time": 0.163,
+   "time": 0.28,
    "status": "error",
-   "error": "error: events chatter at t = 2.11079009493582: `clutch.w_rel Gt 0`, `clutch.w_rel Lt 0`, `clutch.w_rel Gt 0`, `clutch.w_rel Lt 0` keep switching back and forth"
+   "error": "error: events chatter at t = 2.1107900949368936: `clutch.w_rel Gt 0`, `clutch.w_rel Lt 0`, `clutch.w_rel Gt 0`, `clutch.w_rel Lt 0` keep switching back and forth"
   },
   {
    "model": "Modelica.Mechanics.Translational.Examples.Accelerate",
    "signals": 2,
-   "time": 0.107,
+   "time": 0.127,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4862,7 +4816,7 @@
   {
    "model": "Modelica.Mechanics.Translational.Examples.Brake",
    "signals": 10,
-   "time": 0.169,
+   "time": 0.191,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4870,7 +4824,7 @@
   {
    "model": "Modelica.Mechanics.Translational.Examples.CompareBrakingForce",
    "signals": 4,
-   "time": 0.195,
+   "time": 0.368,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4878,7 +4832,7 @@
   {
    "model": "Modelica.Mechanics.Translational.Examples.Damper",
    "signals": 6,
-   "time": 0.113,
+   "time": 0.1,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4886,7 +4840,7 @@
   {
    "model": "Modelica.Mechanics.Translational.Examples.EddyCurrentBrake",
    "signals": 3,
-   "time": 0.15,
+   "time": 0.216,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4894,7 +4848,7 @@
   {
    "model": "Modelica.Mechanics.Translational.Examples.ElastoGap",
    "signals": 4,
-   "time": 0.086,
+   "time": 0.204,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4902,7 +4856,7 @@
   {
    "model": "Modelica.Mechanics.Translational.Examples.Friction",
    "signals": 15,
-   "time": 0.379,
+   "time": 0.388,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4910,7 +4864,7 @@
   {
    "model": "Modelica.Mechanics.Translational.Examples.GenerationOfFMUs",
    "signals": 10,
-   "time": 0.169,
+   "time": 0.22,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4918,28 +4872,28 @@
   {
    "model": "Modelica.Mechanics.Translational.Examples.HeatLosses",
    "signals": 17,
-   "time": 0.198,
+   "time": 0.324,
    "missing": [],
    "failed": [
     {
      "signal": "springDamper.s_rel",
      "outside": 0.0072,
-     "worst": 1.3950673422886628
+     "worst": 1.3950673421581397
     },
     {
      "signal": "springDamper.v_rel",
      "outside": 0.014,
-     "worst": 1.4794704465736979
+     "worst": 1.479470446292555
     },
     {
      "signal": "springDamper1.s_rel",
-     "outside": 0.6258,
-     "worst": 348.78950955431634
+     "outside": 0.6263,
+     "worst": 348.78950951810623
     },
     {
      "signal": "springDamper1.v_rel",
-     "outside": 0.3586,
-     "worst": 19012.12415979252
+     "outside": 0.3585,
+     "worst": 19012.12415978703
     },
     {
      "signal": "brake.mode",
@@ -4953,7 +4907,7 @@
     },
     {
      "signal": "massWithStopAndFriction.mode",
-     "outside": 0.0831,
+     "outside": 0.0832,
      "worst": 250.0
     }
    ],
@@ -4962,7 +4916,7 @@
   {
    "model": "Modelica.Mechanics.Translational.Examples.InitialConditions",
    "signals": 8,
-   "time": 0.116,
+   "time": 0.131,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4970,7 +4924,7 @@
   {
    "model": "Modelica.Mechanics.Translational.Examples.Oscillator",
    "signals": 4,
-   "time": 0.133,
+   "time": 0.261,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4978,7 +4932,7 @@
   {
    "model": "Modelica.Mechanics.Translational.Examples.PreLoad",
    "signals": 6,
-   "time": 0.186,
+   "time": 0.148,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4986,7 +4940,7 @@
   {
    "model": "Modelica.Mechanics.Translational.Examples.Sensors",
    "signals": 2,
-   "time": 0.148,
+   "time": 0.139,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -4994,7 +4948,7 @@
   {
    "model": "Modelica.Mechanics.Translational.Examples.SignConvention",
    "signals": 6,
-   "time": 0.15,
+   "time": 0.135,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -5002,7 +4956,7 @@
   {
    "model": "Modelica.Mechanics.Translational.Examples.Vehicle",
    "signals": 6,
-   "time": 0.21,
+   "time": 0.354,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -5010,7 +4964,7 @@
   {
    "model": "Modelica.Mechanics.Translational.Examples.WhyArrows",
    "signals": 4,
-   "time": 0.104,
+   "time": 0.128,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -5018,7 +4972,7 @@
   {
    "model": "Modelica.Media.Examples.IdealGasH2O",
    "signals": 3,
-   "time": 0.278,
+   "time": 0.407,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -5026,7 +4980,7 @@
   {
    "model": "Modelica.Media.Examples.MixtureGases",
    "signals": 4,
-   "time": 0.392,
+   "time": 0.648,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -5034,7 +4988,7 @@
   {
    "model": "Modelica.Media.Examples.MoistAir",
    "signals": 2,
-   "time": 0.318,
+   "time": 0.44,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -5042,7 +4996,7 @@
   {
    "model": "Modelica.Media.Examples.PsychrometricData",
    "signals": 17,
-   "time": 0.57,
+   "time": 0.773,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -5050,7 +5004,7 @@
   {
    "model": "Modelica.Media.Examples.R134a.R134a1",
    "signals": 2,
-   "time": 5.638,
+   "time": 12.202,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -5058,14 +5012,14 @@
   {
    "model": "Modelica.Media.Examples.R134a.R134a2",
    "signals": 4,
-   "time": 1.238,
+   "time": 1.628,
    "status": "error",
    "error": "error: initialization: nonlinear system for [volume1.medium.h] did not converge at t = 0 (residual 1.301e2)"
   },
   {
    "model": "Modelica.Media.Examples.ReferenceAir.DryAir1",
    "signals": 2,
-   "time": 0.58,
+   "time": 0.719,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -5073,7 +5027,7 @@
   {
    "model": "Modelica.Media.Examples.ReferenceAir.DryAir2",
    "signals": 4,
-   "time": 0.589,
+   "time": 0.989,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -5081,7 +5035,7 @@
   {
    "model": "Modelica.Media.Examples.ReferenceAir.Inverse_sh_T",
    "signals": 4,
-   "time": 0.641,
+   "time": 1.145,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -5089,7 +5043,7 @@
   {
    "model": "Modelica.Media.Examples.ReferenceAir.Inverse_sh_TX",
    "signals": 4,
-   "time": 2.897,
+   "time": 4.632,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -5097,7 +5051,7 @@
   {
    "model": "Modelica.Media.Examples.ReferenceAir.MoistAir",
    "signals": 2,
-   "time": 0.36,
+   "time": 0.673,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -5105,7 +5059,7 @@
   {
    "model": "Modelica.Media.Examples.ReferenceAir.MoistAir1",
    "signals": 3,
-   "time": 1.639,
+   "time": 3.196,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -5113,7 +5067,7 @@
   {
    "model": "Modelica.Media.Examples.ReferenceAir.MoistAir2",
    "signals": 6,
-   "time": 2.298,
+   "time": 5.637,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -5121,7 +5075,7 @@
   {
    "model": "Modelica.Media.Examples.SimpleLiquidWater",
    "signals": 1,
-   "time": 0.125,
+   "time": 0.265,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -5129,14 +5083,14 @@
   {
    "model": "Modelica.Media.Examples.SolveOneNonlinearEquation.InverseIncompressible_sh_T",
    "signals": 2,
-   "time": 0.971,
+   "time": 1.417,
    "status": "error",
    "error": "error: in declaration of 'h_min': in function 'Modelica.Media.Incompressible.TableBased.h_T': in function 'Modelica.Math.Polynomials.fitting': in function 'Modelica.Math.Matrices.leastSquares': external function 'Modelica.Math.Matrices.LAPACK.dgelsy_vec' is not supported"
   },
   {
    "model": "Modelica.Media.Examples.SolveOneNonlinearEquation.Inverse_sh_T",
    "signals": 2,
-   "time": 0.351,
+   "time": 0.548,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -5144,14 +5098,14 @@
   {
    "model": "Modelica.Media.Examples.SolveOneNonlinearEquation.Inverse_sh_TX",
    "signals": 2,
-   "time": 1.012,
+   "time": 1.184,
    "status": "error",
    "error": "error: in component 'Modelica.Media.Examples.SolveOneNonlinearEquation.Inverse_sh_TX': in function 'Modelica.Media.Interfaces.PartialMedium.temperature_phX': in function 'Modelica.Media.IdealGases.Common.MixtureGasNasa.setState_phX': in function 'Modelica.Media.IdealGases.Common.MixtureGasNasa.T_hX'"
   },
   {
    "model": "Modelica.Media.Examples.SolveOneNonlinearEquation.Inverse_sine",
    "signals": 1,
-   "time": 0.139,
+   "time": 0.168,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -5159,7 +5113,7 @@
   {
    "model": "Modelica.Media.Examples.TwoPhaseWater.TestTwoPhaseStates",
    "signals": 2,
-   "time": 0.988,
+   "time": 1.868,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -5167,7 +5121,7 @@
   {
    "model": "Modelica.Media.Examples.WaterIF97",
    "signals": 3,
-   "time": 1.012,
+   "time": 1.588,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -5175,14 +5129,14 @@
   {
    "model": "Modelica.Media.Incompressible.Examples.TestGlycol",
    "signals": 8,
-   "time": 0.835,
+   "time": 1.235,
    "status": "error",
    "error": "error: in declaration of 'eta': in function 'Modelica.Media.Incompressible.TableBased.dynamicViscosity': in function 'Modelica.Math.Polynomials.fitting': in function 'Modelica.Math.Matrices.leastSquares': external function 'Modelica.Math.Matrices.LAPACK.dgelsy_vec' is not supported"
   },
   {
    "model": "Modelica.StateGraph.Examples.ControlledTanks",
    "signals": 21,
-   "time": 0.211,
+   "time": 0.178,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -5190,7 +5144,7 @@
   {
    "model": "Modelica.StateGraph.Examples.ExecutionPaths",
    "signals": 9,
-   "time": 0.167,
+   "time": 0.336,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -5198,7 +5152,7 @@
   {
    "model": "Modelica.StateGraph.Examples.FirstExample",
    "signals": 2,
-   "time": 0.098,
+   "time": 0.139,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -5206,7 +5160,7 @@
   {
    "model": "Modelica.StateGraph.Examples.FirstExample_Variant2",
    "signals": 2,
-   "time": 0.135,
+   "time": 0.222,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -5214,7 +5168,7 @@
   {
    "model": "Modelica.StateGraph.Examples.FirstExample_Variant3",
    "signals": 2,
-   "time": 0.106,
+   "time": 0.163,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -5222,7 +5176,7 @@
   {
    "model": "Modelica.StateGraph.Examples.ShowCompositeStep",
    "signals": 9,
-   "time": 0.137,
+   "time": 0.2,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -5230,7 +5184,7 @@
   {
    "model": "Modelica.StateGraph.Examples.ShowExceptions",
    "signals": 10,
-   "time": 0.169,
+   "time": 0.141,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -5238,7 +5192,7 @@
   {
    "model": "Modelica.Thermal.FluidHeatFlow.Examples.IndirectCooling",
    "signals": 4,
-   "time": 0.162,
+   "time": 0.174,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -5246,7 +5200,7 @@
   {
    "model": "Modelica.Thermal.FluidHeatFlow.Examples.OneMass",
    "signals": 2,
-   "time": 0.189,
+   "time": 0.167,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -5254,7 +5208,7 @@
   {
    "model": "Modelica.Thermal.FluidHeatFlow.Examples.ParallelCooling",
    "signals": 5,
-   "time": 0.175,
+   "time": 0.173,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -5262,7 +5216,7 @@
   {
    "model": "Modelica.Thermal.FluidHeatFlow.Examples.ParallelPumpDropOut",
    "signals": 5,
-   "time": 0.189,
+   "time": 0.224,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -5270,7 +5224,7 @@
   {
    "model": "Modelica.Thermal.FluidHeatFlow.Examples.PumpAndValve",
    "signals": 3,
-   "time": 0.146,
+   "time": 0.296,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -5278,7 +5232,7 @@
   {
    "model": "Modelica.Thermal.FluidHeatFlow.Examples.PumpDropOut",
    "signals": 2,
-   "time": 0.14,
+   "time": 0.228,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -5286,7 +5240,7 @@
   {
    "model": "Modelica.Thermal.FluidHeatFlow.Examples.SimpleCooling",
    "signals": 2,
-   "time": 0.168,
+   "time": 0.175,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -5294,7 +5248,7 @@
   {
    "model": "Modelica.Thermal.FluidHeatFlow.Examples.TestCylinder",
    "signals": 5,
-   "time": 0.098,
+   "time": 0.193,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -5302,7 +5256,7 @@
   {
    "model": "Modelica.Thermal.FluidHeatFlow.Examples.TestOpenTank",
    "signals": 2,
-   "time": 0.167,
+   "time": 0.238,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -5310,7 +5264,7 @@
   {
    "model": "Modelica.Thermal.FluidHeatFlow.Examples.TwoMass",
    "signals": 5,
-   "time": 0.149,
+   "time": 0.176,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -5318,7 +5272,7 @@
   {
    "model": "Modelica.Thermal.FluidHeatFlow.Examples.TwoTanks",
    "signals": 4,
-   "time": 0.172,
+   "time": 0.244,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -5326,7 +5280,7 @@
   {
    "model": "Modelica.Thermal.FluidHeatFlow.Examples.WaterPump",
    "signals": 1,
-   "time": 0.172,
+   "time": 0.151,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -5334,7 +5288,7 @@
   {
    "model": "Modelica.Thermal.HeatTransfer.Examples.ControlledTemperature",
    "signals": 2,
-   "time": 0.192,
+   "time": 0.232,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -5342,7 +5296,7 @@
   {
    "model": "Modelica.Thermal.HeatTransfer.Examples.GenerationOfFMUs",
    "signals": 3,
-   "time": 0.186,
+   "time": 0.193,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -5350,7 +5304,7 @@
   {
    "model": "Modelica.Thermal.HeatTransfer.Examples.Motor",
    "signals": 2,
-   "time": 1.502,
+   "time": 1.512,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -5358,7 +5312,7 @@
   {
    "model": "Modelica.Thermal.HeatTransfer.Examples.TwoMasses",
    "signals": 2,
-   "time": 0.139,
+   "time": 0.169,
    "missing": [],
    "failed": [],
    "status": "pass"
@@ -5366,23 +5320,26 @@
   {
    "model": "Modelica.Utilities.Examples.ReadRealMatrixFromFile",
    "signals": 1,
-   "time": 0.994,
-   "status": "error",
-   "error": "error: instantiating 'A': reference to a conditional component that is not present"
+   "time": 0.177,
+   "missing": [],
+   "failed": [],
+   "status": "pass"
   },
   {
    "model": "Modelica.Utilities.Examples.WriteRealMatrixToFile",
    "signals": 4,
-   "time": 0.97,
-   "status": "error",
-   "error": "error: in component 'Modelica.Utilities.Examples.WriteRealMatrixToFile': external function 'Modelica.Utilities.Streams.writeRealMatrix' is not supported"
+   "time": 0.055,
+   "missing": [],
+   "failed": [],
+   "status": "pass"
   },
   {
    "model": "Modelica.Utilities.Examples.readRealParameterModel",
    "signals": 3,
-   "time": 1.031,
-   "status": "error",
-   "error": "error: in declaration of 'J': reference to a conditional component that is not present"
+   "time": 0.134,
+   "missing": [],
+   "failed": [],
+   "status": "pass"
   }
  ]
 }
