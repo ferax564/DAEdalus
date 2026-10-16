@@ -10,6 +10,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Marked } from "marked";
+import katex from "katex";
+import { createRequire } from "node:module";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const docsDir = path.resolve(process.argv[2] ?? path.join(here, "../../docs"));
@@ -66,6 +68,25 @@ const NAV = [
     ["roadmap.md", "Roadmap"],
   ]],
 ];
+// LaTeX: `$...$` inline and `$$...$$` display math, rendered with KaTeX at build time.
+// Code spans and fences are protected first, so shell variables such as `$HOME` stay as written.
+function extractMath(md) {
+  const code = [];
+  let src = md.replace(/```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`\n]+`/g, (m) => {
+    code.push(m);
+    return `@@CODE${code.length - 1}@@`;
+  });
+  const math = [];
+  const hold = (tex, display) => {
+    math.push({ tex: tex.trim(), display });
+    return `@@MATH${math.length - 1}@@`;
+  };
+  src = src.replace(/\$\$([\s\S]+?)\$\$/g, (_, tex) => hold(tex, true));
+  src = src.replace(/(^|[^\\$\w])\$([^\s$](?:[^$\n]*?[^\s$])?)\$(?![\w$])/g, (_, pre, tex) => pre + hold(tex, false));
+  src = src.replace(/@@CODE(\d+)@@/g, (_, i) => code[+i]);
+  return { src, math };
+}
+
 const pages = NAV.flatMap(([, items]) => items.map(([file, title]) => ({ file, title })));
 const published = new Set(pages.map((p) => p.file));
 
@@ -102,6 +123,7 @@ function rewrite(href, page, kind) {
 }
 
 function render(page, md) {
+  const { src, math } = extractMath(md);
   const toc = [];
   const marked = new Marked({ gfm: true });
   marked.use({
@@ -133,7 +155,19 @@ function render(page, md) {
       },
     },
   });
-  const body = marked.parse(md).replace(/<table>/g, '<div class="table-wrap"><table>').replace(/<\/table>/g, "</table></div>");
+  const formula = ({ tex, display }) => {
+    try {
+      const html = katex.renderToString(tex, { displayMode: display, throwOnError: true, trust: false, output: "htmlAndMathml" });
+      return display ? `<div class="math display">${html}</div>` : `<span class="math">${html}</span>`;
+    } catch (err) {
+      problems.push(`${page}: cannot render ${display ? "$$" : "$"}${tex}$ (${err.message.split("\n")[0]})`);
+      return "";
+    }
+  };
+  const body = marked.parse(src)
+    .replace(/<p>\s*@@MATH(\d+)@@\s*<\/p>/g, (m, i) => (math[+i].display ? formula(math[+i]) : m))
+    .replace(/@@MATH(\d+)@@/g, (_, i) => formula(math[+i]))
+    .replace(/<table>/g, '<div class="table-wrap"><table>').replace(/<\/table>/g, "</table></div>");
   const title = (md.match(/^#\s+(.+)$/m)?.[1] ?? "DAEdalus").replace(/[`*]/g, "");
   return { body, toc, title };
 }
@@ -160,6 +194,7 @@ function layout(page, { body, toc, title }) {
 <title>${escapeHtml(title)} · DAEdalus docs</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3E%3Crect width=%2716%27 height=%2716%27 rx=%273%27 fill=%27%231f4e79%27/%3E%3Cpath d=%27M3 12 L6 5 L9 10 L13 3%27 stroke=%27white%27 stroke-width=%271.6%27 fill=%27none%27/%3E%3C/svg%3E">
 <link rel="stylesheet" href="docs.css">
+<link rel="stylesheet" href="katex/katex.min.css">
 </head>
 <body>
 <header class="top">
@@ -213,6 +248,11 @@ for (const a of assets) {
   fs.copyFileSync(path.join(docsDir, a), path.join(outDir, a));
 }
 fs.copyFileSync(path.join(here, "docs.css"), path.join(outDir, "docs.css"));
+// KaTeX's stylesheet and fonts, so the formulas render without a script.
+const katexDist = path.join(path.dirname(createRequire(import.meta.url).resolve("katex/package.json")), "dist");
+fs.mkdirSync(path.join(outDir, "katex"), { recursive: true });
+fs.copyFileSync(path.join(katexDist, "katex.min.css"), path.join(outDir, "katex", "katex.min.css"));
+fs.cpSync(path.join(katexDist, "fonts"), path.join(outDir, "katex", "fonts"), { recursive: true });
 if (problems.length) {
   console.error(problems.map((p) => `docs: ${p}`).join("\n"));
   process.exit(1);

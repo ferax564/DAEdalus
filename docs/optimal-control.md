@@ -102,6 +102,21 @@ dc.simulate(m, t_grid, u=..) # CasADi IDAS / CVODES, inputs held per interval
 
 ## Optimal control
 
+**The problem in symbols.** An optimal control problem chooses the inputs $u(t)$ (and the
+free end time $T$, if asked) that minimize a cost while the model and the limits hold:
+
+$$
+\begin{aligned}
+\min_{x,\,z,\,u,\,T}\quad & \int_0^T L(x, z, u)\,dt \\
+\text{subject to}\quad & \dot{x} = f(t, x, z, u, p), \qquad 0 = g(t, x, z, u, p), \\
+& x(0) = x_0, \qquad u_{\min} \le u(t) \le u_{\max}
+\end{aligned}
+$$
+
+A minimum-time move has $L = 1$ and a free $T$: the optimizer finds the shortest time that
+reaches the target. Collocation turns the continuous problem into a large but sparse nonlinear
+program, which IPOPT solves.
+
 `dc.OCP` transcribes the model by direct collocation:
 - inputs are constant on each interval;
 - states follow polynomials through Radau IIA points, which are stiffly
@@ -142,6 +157,15 @@ command on the exact model to show the difference is negligible.
 
 ## Model predictive control
 
+At every sampling instant the controller takes the measured state $\hat{x}(t)$, solves the
+optimal control problem over the next $N\,\Delta t$ seconds, and applies only the first piece of
+the answer. Then it measures again and solves again. This receding horizon is what makes MPC
+robust: a disturbance is corrected at the next step, not at the end of a fixed plan.
+
+$$
+u_{\mathrm{applied}}(t_k) = u^\star_0(\,\hat{x}(t_k);\; t_k,\, t_k + N\,\Delta t\,)
+$$
+
 ```python
 mpc = dc.MPC(m, N=25, dt=0.01, degree=2)
 o = mpc.ocp
@@ -158,6 +182,18 @@ Time-varying model inputs, such as a road profile given as a function of
 `time`, are therefore previewed by the prediction.
 
 ## Moving horizon estimation
+
+The estimator is the mirror image of MPC: it looks back over a window of the last $N$ intervals
+and finds the states and parameters that best explain the measurements. Its objective is a
+weighted least-squares fit,
+
+$$
+\min\ |x_0 - \bar{x}|^2_P + |p - \bar{p}|^2_{P_p} + \sum_k |y_k - h(x_k, z_k, u_k, p)|^2_R + \sum_k |w_k|^2_Q
+$$
+
+where $\bar{x}$ and $\bar{p}$ are the prior estimates (the *arrival cost*), $w_k$ are process
+disturbances, and $R$, $Q$, $P$ are weights set from standard deviations in each variable's own
+units. After each window the prior moves to the new estimate, one interval later.
 
 ```python
 mhe = dc.MHE(m, N=30, dt=1.0, measurements=["v_kmh"], meas_std=[0.3],

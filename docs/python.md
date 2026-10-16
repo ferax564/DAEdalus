@@ -54,7 +54,8 @@ Failures raise `daedalus.TranslationError` with the compiler's message.
 | `variables(kind=None)` | list of `daedalus.Variable` (name, kind, type, unit, display_unit, description, state, output, protected, final, free, value); `kind` filters: `"parameter"`, `"input"`, `"state"`, `"continuous"`, `"discrete"`, `"constant"` |
 | `parameters()` | `{name: value}`: evaluated defaults with overrides applied |
 | `set_parameters(mapping=None, **kw)` | override parameters or top-level inputs for later runs (unknown names raise `KeyError`); `reset_parameters()` clears them |
-| `simulate(start, stop, n, tol, method, vars, *, interval, step, params, store_events, timeout)` | returns a `Result`; unset options come from the experiment annotation; `method` is `bdf` (default), `dopri5`, `rk4` or `euler`; `params` apply to this run only; the GIL is released while it runs |
+| `simulate(start, stop, n, tol, method, vars, *, interval, step, params, store_events, timeout)` | returns a `Result`; unset options come from the experiment annotation; `method` is `bdf` (default), `radau`, `esdirk`, `dopri5`, `auto`, `rk4` or `euler`; `params` apply to this run only; the GIL is released while it runs |
+| `derivatives(t, states, *, inputs, params, read)` | The right-hand side `der(x) = f(t, x, u)` at given points, as a dictionary of arrays: a way to check or plot the model's dynamics without simulating. |
 | `linearize(at=None, *, start, tol, method, params, jacobian="exact")` | returns a `Linearization` (after initialization, or after simulating to `at`) |
 | `export_fmu(path=None, *, fmi_lib=None)` | writes an FMI 2.0 FMU (Model Exchange and Co-Simulation in one file) and returns its path |
 

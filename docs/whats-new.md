@@ -38,7 +38,7 @@ against a step-response specification first. See
 ## Scientific machine learning
 
 `daedalus.sciml` finds the physics a model is missing from measured data, turns it into a
-formula by symbolic regression, and learns neural surrogates that export back to
+formula by sparse regression, and learns neural surrogates that export back to
 Modelica (and from there to embedded C), in NumPy only. See
 [Scientific machine learning](sciml.md).
 
@@ -172,7 +172,7 @@ simulate models and read the structure and profile reports, with your own API ke
 
 The [scoreboard](https://daedalus.apps.ezkeel.com/scoreboard.html) compares every MSL
 4.1.0 example with the Modelica Association's reference results, signal by signal:
-**445 of 534 match**, 44 run but differ somewhere, 41 fail and 4 hit the time limit.
+**488 of 534 match**, 24 run but differ somewhere, 19 fail and 3 hit the time limit.
 It breaks the results down by package, shows the signals that differ and the error
 text for each model, and links each example to the workbench.
 

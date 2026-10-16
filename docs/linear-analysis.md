@@ -26,6 +26,75 @@ the start or after simulating to `--at T`:
 
 Outputs can be any continuous variable or state, not only top-level outputs.
 
+![The Linear tab for OptimalControl.ActiveSuspension in the workbench: Bode magnitude and phase, pole-zero map, step response and the summary with margins and the PID suggestion](img/linear/workbench.webp)
+
+## The math in brief
+
+Near the operating point the model is a linear state-space system,
+
+$$
+\dot{x} = A\,x + B\,u, \qquad y = C\,x + D\,u
+$$
+
+and each input-output pair has the transfer function
+
+$$
+G(s) = C\,(sI - A)^{-1} B + D .
+$$
+
+- **Poles** are the eigenvalues of $A$. The model is stable when all of them have a negative
+  real part. A pole $p$ has damping $\zeta = -\operatorname{Re}(p)\,/\,|p|$.
+- **DC gain** is $G(0)$: the steady change of $y$ for a unit step in $u$.
+- **Zeros** are the values of $s$ where $G(s)$ drops to zero.
+- **Balanced truncation** keeps the states that are easiest to excite and to observe. The
+  Hankel singular values $\sigma_i$ rank them, and the error of the reduced model is bounded by
+  $\|G - G_r\|_\infty \le 2\sum_{i > r}\sigma_i$.
+
+## Step response and PID suggestions
+
+Each step response is fitted with a first-order model plus dead time,
+
+$$
+G(s) \approx \frac{K\,e^{-Ls}}{\tau\,s + 1},
+$$
+
+using Smith's two-point method. The times $t_{28}$ and $t_{63}$ at which the response reaches
+28.3 % and 63.2 % of its final value give $\tau = 1.5\,(t_{63} - t_{28})$ and $L = t_{63} - \tau$.
+From that fit:
+
+- **SIMC PI** (Skogestad), with closed-loop time constant $\tau_c = \max(L,\ 0.1\,\tau)$:
+
+  $$
+  K_p = \frac{\tau}{K\,(\tau_c + L)}, \qquad T_i = \min\bigl(\tau,\ 4\,(\tau_c + L)\bigr)
+  $$
+
+- **Ziegler–Nichols** reaction-curve PID, only when there is dead time:
+
+  $$
+  K_p = \frac{1.2\,\tau}{K\,L}, \qquad T_i = 2L, \qquad T_d = 0.5\,L
+  $$
+
+A first-order fit is rough when the response overshoots. The tool says so, and the gains are a
+starting point to check by simulation.
+
+## LQR gain
+
+`--lqr q,r` minimizes the cost
+
+$$
+J = \int_0^\infty \left( x^T Q\,x + u^T R\,u \right) dt, \qquad Q = q\,I,\quad R = r\,I,
+$$
+
+over the feedback law $u = -Kx$, with $K = R^{-1} B^T P$. The matrix $P$ solves the algebraic
+Riccati equation
+
+$$
+A^T P + P A - P\,B\,R^{-1} B^T P + Q = 0 .
+$$
+
+The closed-loop poles are the eigenvalues of $A - BK$. Small $r$ compared with $q$ means cheap
+control: the gain is large and the poles move far to the left.
+
 ## Example: an active suspension
 
 `Daedalus.Examples.OptimalControl.ActiveSuspension` is a quarter car with an actuator force

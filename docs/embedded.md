@@ -94,6 +94,31 @@ What the code does and does not do:
 `pid_main.c` is a small host driver that reads one line of inputs per step on stdin and
 prints the outputs, for scripted tests.
 
+## The controller in symbols
+
+The PID controller computes the control signal from the error $e = r - y$ (set point minus
+measurement):
+
+$$
+u(t) = K_p\Bigl(e(t) + \frac{1}{T_i}\int_0^t e\,d\tau - T_d\,\frac{dy}{dt}\Bigr)
+$$
+
+The integral term removes steady error, and the derivative term reacts to how fast the output
+moves. The `DiscretePID` model runs the same law once every sample $T_s$ (10 ms here). The derivative
+is a filtered backward-Euler difference of the measurement, with filter time constant $T_f$:
+
+$$
+D_k = \frac{T_f\,D_{k-1} - K_d\,(y_k - y_{k-1})}{T_f + T_s}
+$$
+
+It acts on $y$, not on the error, so a step in the set point does not kick the output. The
+integral is updated only while the output is not saturated (conditional integration), which
+is the anti-windup.
+
+Tuning means choosing $K_p$, $T_i$ and $T_d$. Two ways are shown below: a closed-form rule from a
+step response, as in [Linear analysis](linear-analysis.md), and a search on the closed loop
+with `autotune`, which accounts for sampling and limits.
+
 ## Closing the loop
 
 The example package `Daedalus.Examples.Embedded` holds a DC motor speed loop:

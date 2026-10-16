@@ -21,7 +21,7 @@ network is small enough to train in seconds on a laptop.
 ```text
 data: 2501 samples of speed and current over 5 s, noise 0.01 rad/s
 missing torque recovered in 0.15 s: RMS error 2.46e-04 N.m (range 1.79e-02)
-symbolic regression: tau_missing = 2.00314e-07*w*abs(w) + 0.00399621*tanh(w/2.0)   (R2 0.99813, 2 of 8 terms)
+sparse regression: tau_missing = 2.00314e-07*w*abs(w) + 0.00399621*tanh(w/2.0)   (R2 0.99813, 2 of 8 terms)
   as Modelica:  MotorKnown m(tau_missing=2e-07*m.w*abs(m.w) + 0.004*tanh(m.w/2.0));
   true law:     4e-3*tanh(w/2) + 2e-7*w*abs(w)
   speed error vs the rig: 3.5e-07 rad/s with the discovered law, 4.1 rad/s without

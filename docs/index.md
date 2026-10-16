@@ -30,7 +30,7 @@ watch the 3-D animation.
   <a class="card" href="fmi.md"><img src="img/fmu_stalltest.png" alt=""><b>FMI and SSP <span class="new">New</span></b><span>Export FMI 2.0 and 3.0 FMUs, import FMUs from other tools as components, and run SSP systems.</span></a>
   <a class="card" href="analysis.md"><img src="img/analysis/card.webp" alt=""><b>Sensitivity, DOE and calibration <span class="new">New</span></b><span>Adjoint gradients for many parameters, designs of experiments with response surfaces, Sobol indices and fitting to data.</span></a>
   <a class="card" href="embedded.md"><img src="img/embedded/card.webp" alt=""><b>Embedded C and HIL <span class="new">New</span></b><span>Controllers as dependency-free C for Arduino and ESP32, software and processor in the loop, and PID autotuning.</span></a>
-  <a class="card" href="sciml.md"><img src="img/sciml/card.webp" alt=""><b>Scientific machine learning <span class="new">New</span></b><span>Neural surrogates, sparse regression of missing physics and physics checks, on top of the Python API.</span></a>
+  <a class="card" href="sciml.md"><img src="img/sciml/card.webp" alt=""><b>Scientific machine learning <span class="new">New</span></b><span>Neural surrogates and sparse regression of missing physics (SINDy), on top of the Python API.</span></a>
   <a class="card" href="msl.md"><img src="img/msl/card.webp" alt=""><b>Modelica Standard Library <span class="new">New</span></b><span>MSL 4.1.0 in the browser, with native external C functions and exact lookup tables; 488 of its 534 examples match the reference.</span></a>
   <a class="card" href="state-machines.md"><img src="img/state-machines/card.webp" alt=""><b>State machines <span class="new">New</span></b><span>Modelica state machines with transitions, hierarchy, parallel machines and clocks, natively and in the browser.</span></a>
   <a class="card" href="workbench.md"><img src="img/wb/card.webp" alt=""><b>Browser workbench</b><span>Package browser, icon, diagram, text and documentation views, variable browser, plots with display units.</span></a>
@@ -57,8 +57,9 @@ DAEdalus does the symbolic work the commercial tools do before any numerics:
 - alias elimination, Pantelides index reduction with dummy derivatives, BLT sorting and
   tearing, and exact symbolic Jacobians;
 - a compiled register tape that evaluates the model, natively or in WebAssembly;
-- variable-order BDF with dense or sparse LU, plus Dopri5, RK4 and Euler, with
-  zero-crossing events, `when` and `reinit`;
+- variable-order BDF, Radau IIA and ESDIRK with dense or sparse LU, Dopri5 with automatic
+  switching to BDF for stiff stretches, and RK4 and Euler, with zero-crossing events, `when`
+  and `reinit`;
 - results as Dymola-format `.mat` files (readable by Dymola, OMEdit and DyMat) or CSV.
 
 It scales close to linearly: a chain of 10,000 masses (130,000 unknowns after alias

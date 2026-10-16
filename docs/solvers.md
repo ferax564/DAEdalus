@@ -22,6 +22,34 @@ daedalus simulate model.mo -m M --method bdf --jacobian fd   # finite-difference
 daedalus test-library lib -m Pkg --method auto            # sweep with one method
 ```
 
+## The idea in brief
+
+The solver advances the state $x$ from $t_n$ to $t_{n+1} = t_n + h$ for $\dot{x} = f(t, x)$.
+Each step is accepted when the local error estimate is within tolerance,
+
+$$
+\|e\| \le \text{atol} + \text{rtol}\,|x| ,
+$$
+
+and otherwise retried with a smaller step $h$. The step is grown again when the error is small.
+
+What separates the methods is how they treat **stiffness**. Near a point, $f$ acts like the
+linear system $\dot{x} = J\,x$ with $J = \partial f / \partial x$. If some eigenvalue $\lambda$ of
+$J$ is large and negative, the solution decays fast, and an explicit method such as Dopri5 must
+keep $h\,|\lambda|$ below about 3.3 for stability, however smooth the solution looks. An implicit
+method stays stable at any step size, but it solves an equation at each step:
+
+- **BDF** solves $\sum_{j=0}^{k} \alpha_j\, x_{n+1-j} = h\,f(t_{n+1}, x_{n+1})$ with Newton's
+  method. Each Newton iteration uses the matrix $\alpha_0 I - h\,J$, which is why the Jacobian is
+  needed.
+- **Radau IIA** and **ESDIRK** take several stages per step, each one a Newton system of the same
+  kind, with a higher order per step.
+- **Dopri5** is explicit: fast on non-stiff models, and unusable on stiff ones. **Auto** runs
+  Dopri5 until stiffness appears, then switches to BDF, and back when the model calms down.
+
+The tradeoff is cost per step against step size. Explicit steps are cheap but small when the
+model is stiff; implicit steps are expensive but can be long.
+
 ## Per-model choice
 
 The `experiment` annotation selects the method when `--method` is not given.
@@ -98,6 +126,25 @@ filtered by the iteration matrix. A step whose dense output misses the
 tolerance is rejected. This costs one or two function evaluations per step.
 
 ## Auto switching
+
+<div class="diagram" role="img" aria-label="Auto switches between Dopri5 and BDF">
+<svg viewBox="0 0 760 230" xmlns="http://www.w3.org/2000/svg">
+  <defs><marker id="arr-auto" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" style="fill: var(--muted)"/></marker></defs>
+  <text class="s" x="40" y="58">start</text>
+  <rect class="box" x="40" y="70" width="240" height="90" rx="10"/>
+  <text class="t" x="60" y="104">Dopri5</text>
+  <text class="s" x="60" y="124">explicit, fast on non-stiff parts</text>
+  <rect class="hot" x="480" y="70" width="240" height="90" rx="10"/>
+  <text class="t" x="500" y="104">BDF</text>
+  <text class="s" x="500" y="124">implicit, stable on stiff parts</text>
+  <path class="arr" d="M280,100 H480" marker-end="url(#arr-auto)"/>
+  <text class="s" x="380" y="90" text-anchor="middle">stiff: h|λ| &gt; 3.25 on 15 steps</text>
+  <path class="arr" d="M480,140 H280" marker-end="url(#arr-auto)"/>
+  <text class="s" x="380" y="172" text-anchor="middle">calm: h·ρ(J) &lt; 1 on 15 steps,</text>
+  <text class="s" x="380" y="188" text-anchor="middle">after at least 20 BDF steps</text>
+  <text class="cap" x="380" y="222" text-anchor="middle">If Dopri5 fails, the run continues with BDF from the last accepted point.</text>
+</svg>
+</div>
 
 `--method auto` (`src/solver_auto.rs`) starts with Dopri5.
 

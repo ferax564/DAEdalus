@@ -167,3 +167,19 @@ video { width: 100%; }
   .pair { grid-template-columns: 1fr; }
   article h1 { font-size: 28px; }
 }
+
+/* Equations (KaTeX, rendered at build time) and inline diagrams. */
+.math.display { margin: 14px 0; overflow-x: auto; overflow-y: hidden; padding: 2px 0; }
+.math .katex { font-size: 1.08em; }
+.diagram { margin: 18px 0; overflow-x: auto; }
+.diagram svg { display: block; width: 100%; min-width: 560px; height: auto; }
+.diagram .box { fill: var(--panel); stroke: var(--line); stroke-width: 1.2; }
+.diagram .hot { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.4; }
+.diagram .t { font: 600 14px system-ui, -apple-system, "Segoe UI", sans-serif; fill: var(--fg); }
+.diagram text.s { font: 11.5px system-ui, -apple-system, "Segoe UI", sans-serif; fill: var(--muted); }
+.diagram .cap { font: italic 12px system-ui, sans-serif; fill: var(--muted); }
+.diagram .arr { stroke: var(--muted); stroke-width: 1.5; fill: none; }
+.diagram text { fill: var(--fg); }
+
+/* Long identifiers in running text wrap instead of widening the page on phones. */
+article code { overflow-wrap: anywhere; }
