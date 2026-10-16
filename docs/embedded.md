@@ -118,6 +118,12 @@ daedalus hil library/Daedalus -m Daedalus.Examples.Embedded.MotorBench \
 The result has one row per sample: time, the controller's inputs and outputs, the cycles
 the step took on the target, and any bench variables given with `--vars`.
 
+![The motor speed loop with the Modelica PID (MIL), the generated C in the loop (SIL), and the autotuned gains](img/embedded/loop.webp)
+
+The generated C (dots) follows the Modelica controller (line) sample for sample, through
+the set-point steps at 0.1 s and 1.5 s and the load step at 1 s. The dashed curve uses the
+gains `autotune` finds below.
+
 ### Tuning the gains
 
 `daedalus autotune` tunes controller parameters on the closed loop against a step-response

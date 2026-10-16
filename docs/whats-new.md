@@ -18,77 +18,77 @@ against a step-response specification first. See
 formula by symbolic regression, and learns neural surrogates that export back to
 Modelica (and from there to embedded C), in NumPy only. See
 [Scientific machine learning](sciml.md).
+
+## Linear analysis
+
+`daedalus linear-analysis` and the **Linear** tab: poles and zeros, Bode and Nyquist plots
+with margins, step and impulse responses, PID suggestions, balanced truncation and LQR,
+straight from a Modelica model. See [Linear analysis](linear-analysis.md).
+
+## Live plots and dashboards
+
+Results stream into the plot while a simulation runs. Dashboards of sliders, gauges and
+mini plots change parameters mid-run without restarting. Plots gain matrix layouts,
+expressions, FFTs, statistics and a plot strip under the diagram. See
+[Live plots and dashboards](plotting.md).
+
+## Equation and initialization debugger
+
+`daedalus debug` and the Structure tab's **Transformation chain** and
+**Initialization** cards show how a variable is computed and why initialization fails.
+They find the smallest under- or over-determined set of equations and the components
+left unconnected. See [Equation and initialization debugger](debugger.md).
+
+## Unit checking and display units
+
+Every equation's units are checked and missing units are inferred, with no false alarms on
+the MSL examples. Plots can show any axis in any compatible unit, or switch to Imperial.
+See [Unit checking](units.md).
+
+## Text editor with go-to-definition, completion and rename
+
+The Text view now uses the compiler's own name lookup: F12 to go to a definition,
+Shift+F12 for usages, F2 to rename, completion, hover and an outline. See
+[Text editor](editor.md).
+
+## Libraries, packages, diff and parameter data
+
+`daedalus lib` installs open libraries such as Buildings, ThermoSysPro and OpenIPSL by name
+and checks `uses` versions. `package` zips a model with its resources, `diff` compares
+classes structurally (with a diagram view in the workbench), and `params-from` turns CSV
+or SSV parameter data into modifiers with unit conversion. See
+[Libraries and packages](libraries.md).
+
+## FMI 3.0 export, FMU and SSP import
+
+`daedalus fmu --fmi-version 3` exports FMI 3.0 with exact directional derivatives. FMUs
+from other tools, FMI 2.0 or 3.0, simulate on their own or as components of a Modelica
+model, and SSP systems run, import and export. See [FMI and SSP](fmi.md).
+
+## Adjoint gradients and design of experiments
+
+`sensitivity --adjoint` gives the gradient of one quantity with respect to many
+parameters for about the cost of one extra solve, and drives L-BFGS-B in `optimize` and
+`calibrate`. `daedalus doe` runs full, fractional, central composite, Box–Behnken and
+Latin hypercube designs and fits response surfaces. See
+[Sensitivity, DOE and calibration](analysis.md#design-of-experiments).
+
 ## State machines
 
-The state machines of Modelica 3.6 chapter 17 now translate and simulate. The
-example from `ModelicaReference.StateMachines` runs as written:
+The state machines of Modelica 3.6 chapter 17 now translate and simulate: `transition`,
+`initialState`, `activeState`, `ticksInState()` and `timeInState()`, with immediate and
+delayed transitions, priorities, `synchronize`, hierarchy, parallel machines and resets.
+The example from `ModelicaReference.StateMachines` runs as written. See
+[State machines](state-machines.md).
 
-```modelica
-model Counter
-  inner Integer v(start = 0);
-  block Increase
-    outer output Integer v;
-  equation
-    v = previous(v) + 2;
-  end Increase;
-  Increase increase;
-  block Decrease
-    outer output Integer v;
-  equation
-    v = previous(v) - 1;
-  end Decrease;
-  Decrease decrease;
-equation
-  initialState(increase);
-  transition(increase, decrease, v >= 6, immediate = false);
-  transition(decrease, increase, v == 0, immediate = false);
-end Counter;
-```
+## MSL external C functions and exact lookup tables
 
-What is supported:
-
-**Operators.** All the chapter 17 operators work:
-- `transition(from, to, condition, immediate, reset, synchronize, priority)`,
-  where the last four arguments must be parameter expressions;
-- `initialState`, `activeState`, `ticksInState()` and `timeInState()`.
-
-**Transitions.**
-- Immediate transitions fire in the tick where their condition holds. Delayed
-  transitions take effect at the next tick.
-- When several transitions could fire, the one with the lowest `priority`
-  number wins.
-- With `synchronize = true`, a transition waits until every state machine
-  inside its from-state is in a final state.
-
-**Hierarchy.** Machines nest inside states, and several machines can run in
-parallel in one state. An inner machine pauses while its enclosing state is
-inactive. When the enclosing state is re-entered, the inner machine resumes
-where it stopped, or restarts in its initial state if the transition resets
-it.
-
-**Variables.**
-- An `outer output` variable defined in several states gets one merged
-  definition: `v = if activeState(s1) then e1 elseif ... else previous(v)`.
-- `inner outer output` variables pass the merged value of the inner states up
-  to the enclosing machine.
-- Variables of an inactive state hold their values.
-- A reset transition reinitializes the variables of its target state to
-  their start values.
-
-**Clock.** A state machine runs on the clock inferred for its partition. If no
-clock can be inferred, as in the example above, it runs on a default periodic
-clock of 1 s.
-
-Inside clocked partitions, `time` is now the nominal instant of the tick
-(`start + k·interval`), not the slightly later instant at which the event was
-located. This makes `timeInState()` and comparisons against `time` exact.
-
-**Limitations.**
-- `ticksInState()` and `timeInState()` can only be used in transition
-  conditions.
-- Each equation in a state must be solvable for the variable it defines.
-- An immediate transition whose condition reads a variable computed by its
-  from-state in the same tick forms an algebraic loop, which is rejected.
+The C libraries the MSL calls (`ModelicaRandom`, `ModelicaFFT`, `ModelicaIO`,
+`ModelicaInternal` and `ModelicaStrings`) now have native implementations that run in
+the browser too. Lookup tables follow the C tables exactly, including `CombiTable2D` and
+tables read from files. 21 more MSL examples now match their reference results, among
+them all the `Blocks.Examples.Noise` models, the FFT examples and `Utilities`' matrix
+file examples. See [Modelica Standard Library](msl.md#external-c-functions-and-lookup-tables).
 
 ## Structure explorer and state selection
 
@@ -149,7 +149,7 @@ simulate models and read the structure and profile reports, with your own API ke
 
 The [scoreboard](https://daedalus.apps.ezkeel.com/scoreboard.html) compares every MSL
 4.1.0 example with the Modelica Association's reference results, signal by signal:
-**424 of 534 match**, 49 run but differ somewhere, 56 fail and 5 hit the time limit.
+**445 of 534 match**, 44 run but differ somewhere, 41 fail and 4 hit the time limit.
 It breaks the results down by package, shows the signals that differ and the error
 text for each model, and links each example to the workbench.
 
@@ -259,12 +259,5 @@ FMPy in CI. See [FMI 2.0 export](fmi.md).
 
 Planar kinematic loops on a free body, driven loops and steady-state initialization now
 work, which is what the suspension models above are built on.
-
-## In progress
-
-This is being built now and gets its page here when it lands:
-
-- external C libraries (`Modelica.Utilities`, `Math.Random` and friends) and more
-  lookup-table support.
 
 The longer-term plan is in the [Roadmap](roadmap.md).

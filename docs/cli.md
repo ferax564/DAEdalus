@@ -18,14 +18,21 @@ moves it and `DAEDALUS_NO_CACHE` turns it off).
 | `check` | Translate the model and print statistics: variables, aliases removed, states, algebraic loops, events, tape size. |
 | `flatten` | Print the flat model. |
 | `dump` | Print the sorted, causalized equation system (BLT blocks, tearing). |
+| `units` | Every variable's declared or inferred unit, and the unit issues. See [Unit checking](units.md). |
+| `debug` | How a variable or equation is computed, why initialization fails, and which equations or connections are missing. See [Equation and initialization debugger](debugger.md). |
 | `structure` | Variable roles, BLT blocks, incidence, state selection and why, and the state Jacobian's eigenvalues and stiffness. See [Structure and state selection](structure.md). |
 | `simulate` | Simulate and write a Dymola `.mat` file or a CSV file. |
 | `linearize` | State-space matrices A, B, C, D. See [Linearization](linearize.md). |
 | `sweep` | Simulate once per parameter combination, in parallel, with a summary table. See [Experiments and sweeps](experiments.md#sweeps-on-the-command-line). |
 | `sensitivity`, `montecarlo`, `gsa`, `calibrate`, `optimize` | Parameter sensitivities, uncertainty bands, Sobol and Morris indices, fitting to measurements and design optimization. See [Sensitivity and calibration](analysis.md). |
+| `doe` | Design of experiments with response-surface fits. See [Sensitivity, DOE and calibration](analysis.md#design-of-experiments). |
 | `steady` | Steady state (`der(x) = 0`) with its stability, or a trim with `--free` and `--target`. See [Scripts and steady states](scripting.md#steady-states-and-trim). |
-| `fmu` | Export an FMI 2.0 FMU. See [FMI 2.0 export](fmi.md). |
+| `linear-analysis` | Poles, zeros, Bode, Nyquist, step responses, PID suggestions, model reduction and LQR. See [Linear analysis](linear-analysis.md). |
+| `fmu` | Export an FMI 2.0 or 3.0 FMU. See [FMI and SSP](fmi.md). |
+| `import-fmu`, `import-ssp`, `export-ssp` | Wrap an FMU as a Modelica block, and import or export SSP systems. See [FMI and SSP](fmi.md#importing-fmus). |
+| `codegen-c`, `hil`, `autotune` | Embedded C code, closed-loop tests in software, emulators or on a board, and controller tuning. See [Embedded C and processor in the loop](embedded.md). |
 | `export-casadi` | Write the index-reduced DAE as JSON for CasADi. See [Optimal control](optimal-control.md). |
+| `lib`, `package`, `diff`, `params-from` | Install libraries, pack a model as a zip, compare classes, and turn parameter data into modifiers. See [Libraries and packages](libraries.md). |
 | `mcp` | Serve the libraries to an AI assistant over the Model Context Protocol. See [AI assistant and MCP](assistant.md). |
 | `serve` | Run the local engine for the browser workbench: its simulations run natively on this computer. See [Workbench](workbench.md#speed-compiled-tapes-and-the-local-engine). |
 | `run` | Run a Dymola or OpenModelica script (`.mos`). See [Scripts and steady states](scripting.md). |
@@ -153,6 +160,12 @@ job runs the MSL examples against their reference results (see
 | `--profile [FILE.json]` | `simulate`: record a performance profile; see [Performance analyzer](performance.md) |
 | `--events` | `simulate`: print the event log |
 | `-s NAME=VALUES`, `--grouped`, `--stats S` | `sweep`: swept parameter, grouped instead of grid, summary columns |
+| `--fmi-version 3` | `fmu`: write an FMI 3.0 FMU |
+| `--fmi-type me\|cs`, `--comm-step H` | Simulating an FMU or SSP: interface and communication step |
+| `--units` | `check`: also print unit issues as warnings |
+| `--var NAME`, `--equation N`, `--init` | `debug`: what to explain |
+| `--inputs`, `--outputs`, `--reduce N`, `--lqr q,r`, `--bode`, `--step` | `linear-analysis` |
+| `--adjoint`, `--objective Q`, `--grad-method M` | `sensitivity`: adjoint gradient of one quantity |
 | `--fmi-lib FILE` | `fmu`: the FMI runtime library to bundle |
 | `--at-time T` | `steady`: start from the state at time T |
 | `--free a,b`, `--target y=v` | `steady`: trim these inputs or parameters to hit these targets |

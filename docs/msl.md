@@ -24,6 +24,45 @@ include:
 The remaining failures, and what is being done about them, are listed in the
 [Roadmap](roadmap.md#modelica-standard-library-coverage).
 
+## External C functions and lookup tables
+
+Many MSL models call C functions from the MSL's own C libraries. DAEdalus implements
+these natively, following the reference C sources, so the same models run in the
+browser:
+
+- `ModelicaRandom`: the xorshift64\*, xorshift128+ and xorshift1024\* generators, the
+  impure random generator and automatic seeds, behind `Modelica.Math.Random` and the
+  `Blocks.Noise` sources;
+- `ModelicaFFT`: the real FFT behind `Modelica.Math.FastFourierTransform`;
+- `ModelicaIO`: reading and writing real matrices in MATLAB v4, v6 and v7 files;
+- `ModelicaInternal` and `ModelicaStrings`: printing, files, time and string functions
+  used by `Modelica.Utilities`.
+
+Functions with constant arguments are evaluated once at translation. Functions with hidden
+state, such as the impure random generator, are never folded or cached.
+
+Lookup tables follow the C tables exactly:
+
+- `CombiTable1D` and `CombiTimeTable` with every smoothness kind of the C tables,
+  first and second derivatives, and the C time-event intervals;
+- `CombiTable2D` with bilinear, constant and bivariate Akima interpolation;
+- tables read from text, CSV and MATLAB v4, v6 and v7 files.
+
+Tables supplied through a `usertab` C function and MATLAB v7.3 (HDF5) files are not
+supported. These additions made 21 more examples match their reference results:
+
+- all `Blocks.Examples.Noise` models;
+- the FFT examples, `Rectifier6pulseFFT` and `Rectifier12pulseFFT`;
+- `Math.Random.Examples.GenerateRandomNumbers`;
+- `Utilities.Examples.ReadRealMatrixFromFile` and `WriteRealMatrixToFile`;
+- the excited synchronous machines (`SMEE_*`) and `RollingWheelSetPulling`, after a
+  state-selection fix.
+
+[Open the uniform noise example](https://daedalus.apps.ezkeel.com/#Modelica.Blocks.Examples.Noise.UniformNoise)
+
+The state machines of chapter 17 are covered in [State machines](state-machines.md).
+
+
 ## Checked against the reference results
 
 Simulating is not enough: the results have to be right. A nightly CI job simulates every
@@ -43,7 +82,7 @@ The [scoreboard](https://daedalus.apps.ezkeel.com/scoreboard.html) lists every e
 with its status, the signals that differ and the error text, with a link to open it in
 the workbench.
 
-![The MSL accuracy scoreboard: 424 of 534 examples match the reference results, with a breakdown by package](img/scoreboard.webp)
+![The MSL accuracy scoreboard: 445 of 534 examples match the reference results, with a breakdown by package](img/scoreboard.webp)
 
 The baseline is `docs/conformance/msl-4.1.0.json`, made by `tools/refcompare.py`.
 

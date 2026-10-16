@@ -803,13 +803,45 @@ impl<'m> Simulation<'m> {
         self.rt.run(&m.starts);
         self.rt.save_pre();
         if !m.externals.is_empty() && self.rt.ext.is_none() {
-            let make = crate::external_component::factory().ok_or_else(|| crate::external_component::unsupported(m))?;
+            let make = crate::external_component::factory()
+                .ok_or_else(|| crate::external_component::unsupported(m))?;
             self.rt.ext = Some(make(m)?);
         }
         let (stop, tol) = (self.opts.stop_time, self.opts.tolerance);
         self.with_ext(|h, rt| h.init(rt, t0, stop, tol))
             .unwrap_or(Ok(()))?;
         self.solve_init()?;
+        if self.rt.ext.is_some() {
+            // The FMUs entered initialization mode with the start values of their inputs:
+            // pass the solved inputs while they can still initialize with them, solving
+            // the model's initialization again until their outputs settle.
+            let mut settled = false;
+            for _ in 0..50 {
+                if !self
+                    .with_ext(|h, rt| h.init_update(rt))
+                    .unwrap_or(Ok(false))?
+                {
+                    settled = true;
+                    break;
+                }
+                self.solve_init()?;
+            }
+            if !settled {
+                return Err(
+                    "initialization: the outputs of the FMU components did not settle \
+                            with the solved inputs"
+                        .into(),
+                );
+            }
+            // Their initial states and outputs after initialization (which may still depend
+            // on the inputs): solve the model's initialization once more with them.
+            if self
+                .with_ext(|h, rt| h.exit_init(rt))
+                .unwrap_or(Ok(false))?
+            {
+                self.solve_init()?;
+            }
+        }
         for &(v, p) in &m.pre_init {
             self.rt.r[m.layout.pre0 + v as usize] = self.rt.r[p as usize];
         }
