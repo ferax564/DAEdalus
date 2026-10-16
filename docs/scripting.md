@@ -2,6 +2,9 @@
 
 ## `daedalus run script.mos`
 
+A script is a list of commands, the same as typing them one at a time. Many teams keep scripts that
+simulate a model and check the results against expected values; these are called regression scripts.
+
 `daedalus run` runs Dymola and OpenModelica scripts (`.mos`). It covers the commands
 that regression scripts use, so most scripts run without changes.
 

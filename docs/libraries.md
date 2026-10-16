@@ -1,6 +1,7 @@
 # Libraries, packages and parameter data
 
-DAEdalus installs open Modelica libraries by name and checks their versions. It packs a
+A **library** is a package of ready-made model parts, such as motors, pipes or springs, that your own
+models can use. DAEdalus installs open Modelica libraries by name and checks their versions. It packs a
 model with the files it needs into one zip, compares two versions of a class structurally,
 and turns parameter tables into Modelica modifiers.
 
