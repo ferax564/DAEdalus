@@ -1,9 +1,11 @@
 # Structure and state selection
 
-Before it integrates anything, DAEdalus sorts the model's equations, reduces its index and
-picks the states. The **Structure** view and `daedalus structure` show the result of each
-of those steps, explain why each state was chosen, and let you choose other states
-without editing the model.
+Before it simulates anything, DAEdalus works out the order in which the equations must be
+solved, and picks the **states**: the variables the solver steps forward in time, such as a
+position or a temperature. Some equations constrain each other, and DAEdalus rewrites them
+so the solver can handle them (this is called index reduction). The **Structure** view and
+`daedalus structure` show the result of each step and explain why each state was chosen.
+You can also choose other states without editing the model.
 
 ![The Structure view of TorqueConverter.Launch: state selection, the incidence matrix in BLT order and the state Jacobian](img/structure/launch.webp)
 
@@ -16,8 +18,10 @@ and pick the **Structure** tab next to **Flat model**.
   discrete.
 - **BLT blocks** in evaluation order: which equation computes which unknown and, for
   linear and nonlinear loops, the tear variables, the inner equations and the residuals.
-  Click a block for its equations.
-- **The incidence matrix** in BLT order, with the blocks outlined on the diagonal.
+  A block is a group of equations that must be solved together, such as a loop. Click a
+  block for its equations.
+- **The incidence matrix**: a grid that shows which equation uses which variable, reordered
+  so the blocks sit along the diagonal.
 - **State selection**: for each candidate set of the dummy-derivative method, which
   variables stayed states and which became dummy derivatives, their `stateSelect` tiers,
   and the reason.

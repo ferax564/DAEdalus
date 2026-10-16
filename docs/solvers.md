@@ -1,20 +1,29 @@
 # Solvers
 
-DAEdalus integrates the state-space form `der(x) = f(t, x)` that the symbolic
-backend produces. All methods share the event handling (zero crossings located
-on the dense output, event iteration, `reinit`), the output grid and the
-statistics.
+A solver is the part that steps a simulation forward in time. DAEdalus turns the model into
+the form `der(x) = f(t, x)`, where `x` is the list of state variables, such as positions and
+temperatures, and `der(x)` is how fast each one changes. The solver takes that form and
+advances `x` one small step at a time. Every method handles events the same way (finding the
+exact moment a condition flips, such as a valve opening, and restarting cleanly from there),
+along with the output grid and the statistics.
+
+The default is almost always right. Change it only when a run is slow or fails.
 
 ![Auto switching on the quarter car: the message log lists each switch between Dopri5 and BDF](img/solvers/quarter_car_auto.webp)
 
-| Method | `--method` | Kind | Use it for |
+| Method | `--method` | Type | Use it for |
 | --- | --- | --- | --- |
-| BDF | `bdf` (default) | stiff, multistep, order 1–5 | most models; the role Dassl plays in Dymola |
-| Radau IIA | `radau` | stiff, implicit Runge–Kutta, order 5 | very stiff or oscillatory problems at tight tolerances; few steps |
-| ESDIRK | `esdirk` | stiff, diagonally implicit Runge–Kutta, order 4 | stiff models with frequent events (cheap restarts) |
-| Auto | `auto` | Dopri5 ⇄ BDF | models that are stiff only part of the time (like Lsodar) |
-| Dopri5 | `dopri5` | explicit, order 5(4) | non-stiff models |
-| RK4, Euler | `rk4`, `euler` | explicit, fixed step | real-time style runs (step = output interval or `--step`) |
+| BDF | `bdf` (default) | handles stiff models; reuses past steps, orders 1–5 | most models; the role Dassl plays in Dymola |
+| Radau IIA | `radau` | handles stiff models; several stages per step, order 5 | very stiff or oscillating problems at tight tolerances; few steps |
+| ESDIRK | `esdirk` | handles stiff models; several stages per step, order 4 | stiff models with frequent events, since restarts are cheap |
+| Auto | `auto` | switches between Dopri5 and BDF | models that are stiff only part of the time (like Lsodar) |
+| Dopri5 | `dopri5` | fast on non-stiff models, order 5(4) | non-stiff models |
+| RK4, Euler | `rk4`, `euler` | fixed step size | real-time style runs (step = output interval or `--step`) |
+
+A model is **stiff** when some parts change very quickly while others change slowly. A method
+that is fast on normal models becomes very slow on stiff ones, because it must take tiny steps
+to stay accurate. Stiff models need an implicit method, which costs more per step but can take
+much larger steps.
 
 ```sh
 daedalus simulate model.mo -m M --method radau           # pick a method
@@ -92,6 +101,9 @@ imaginary part of each unknown next to each other, which keeps the sparsity.
 
 ## Radau IIA
 
+Try Radau when BDF is slow on a very stiff or oscillating model. The notes below describe how it
+is built.
+
 `src/solver_radau.rs` follows Hairer & Wanner's RADAU5 (*Solving ODEs II*,
 IV.8): three Radau IIA stages (order 5, L-stable, stiffly accurate).
 
@@ -106,6 +118,9 @@ IV.8): three Radau IIA stages (order 5, L-stable, stiffly accurate).
 - Dense output: the collocation polynomial.
 
 ## ESDIRK
+
+ESDIRK suits stiff models that have many events, because each restart after an event is cheap.
+The notes below describe how it is built.
 
 `src/solver_esdirk.rs` is ESDIRK4(3)6L[2]SA of Kennedy & Carpenter: six stages,
 an explicit first stage, diagonal `γ = 1/4`, L-stable and stiffly accurate,
