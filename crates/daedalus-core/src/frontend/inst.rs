@@ -1538,7 +1538,12 @@ impl<'a, 't> Flattener<'a, 't> {
                 // fields take the sizes of the selected record, not of the declaration's
                 // default (`OCV_SOC[:,2] = [SOCmin, ..; SOCmax, 1]`).
                 match self.translate_scoped(v, &mut Ctx::default()) {
-                    Ok(Val::Inst(src)) => self.collect_dim_hints(src, &cprefix),
+                    Ok(Val::Inst(src)) => {
+                        // The element is that record: its parameters take its values
+                        // now, for sizes declared from them (`resistor[cellData.nRC]`).
+                        self.collect_dim_hints(src, &cprefix);
+                        bound_src = Some(src);
+                    }
                     Ok(Val::Rec(fields)) => self.rec_dim_hints(&fields, &cprefix),
                     _ => {}
                 }
@@ -1769,6 +1774,25 @@ impl<'a, 't> Flattener<'a, 't> {
                     self.bind_var(cv, e, o);
                 }
                 (Comp::Inst(ci), Comp::Inst(si)) => self.alias_param_fields(ci, si),
+                // Arrays of records element by element (`cellData[Ns, Np]`), and arrays
+                // of parameters.
+                (Comp::Arr(cd, ce), Comp::Arr(sd, se)) if cd == sd => {
+                    for (c, s) in ce.iter().zip(se.iter()) {
+                        match (c, s) {
+                            (Comp::Inst(ci), Comp::Inst(si)) => self.alias_param_fields(*ci, *si),
+                            (Comp::Var(cv), Comp::Var(sv))
+                                if matches!(
+                                    self.model.vars[*cv as usize].kind,
+                                    VarKind::Parameter | VarKind::Constant
+                                ) =>
+                            {
+                                let e = self.model.arena.var(*sv);
+                                self.bind_var(*cv, e, o);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -1876,6 +1900,11 @@ impl<'a, 't> Flattener<'a, 't> {
                 let parts: Vec<Val> = match v {
                     Val::IA(_, ids) => ids.into_iter().map(Val::Inst).collect(),
                     Val::Tuple(t) => t,
+                    // A record array value held field-wise (`rc: Rec(R: A([2], ..))`):
+                    // element k takes element k of every field.
+                    Val::Rec(f) if el.len() > 1 => (0..el.len())
+                        .map(|k| slice_leading(Val::Rec(f.clone()), k, el.len()))
+                        .collect(),
                     other => vec![other],
                 };
                 for (k, x) in el.iter().enumerate() {
@@ -3870,6 +3899,20 @@ impl<'a, 't> Flattener<'a, 't> {
                 .map(|v| if let Val::Inst(i) = v { *i } else { 0 })
                 .collect();
             return Ok(Val::IA(dims, ids));
+        }
+        // Rows of instance arrays (`{{cd for j in 1:Np} for k in 1:Ns}`) stay instances.
+        if let Some(Val::IA(d0, _)) = vals.first()
+            && vals.iter().all(|v| matches!(v, Val::IA(d, _) if d == d0))
+        {
+            let mut d = dims;
+            d.extend(d0.iter().copied());
+            let mut ids = Vec::new();
+            for v in vals {
+                if let Val::IA(_, x) = v {
+                    ids.extend(x);
+                }
+            }
+            return Ok(Val::IA(d, ids));
         }
         if vals
             .iter()
