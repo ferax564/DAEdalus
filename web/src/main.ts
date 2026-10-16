@@ -1564,6 +1564,7 @@ function redrawThemedCanvases() {
   plot.draw();
   analysis.redraw();
   structureView.redraw();
+  linear.redraw();
   redrawPerformance();
 }
 document.querySelectorAll<HTMLButtonElement>("[data-theme-choice]").forEach((b) => {

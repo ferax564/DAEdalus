@@ -340,12 +340,16 @@ export function initAssistant(hooks: AssistantHooks) {
     setKey("");
     keyBox.classList.add("hidden");
   });
-  panel.querySelectorAll<HTMLButtonElement>(".assistant-starters button").forEach((b) => {
+  const starters = [...panel.querySelectorAll<HTMLButtonElement>(".assistant-starters button")];
+  const setStartersEnabled = (on: boolean) => {
+    for (const b of starters) b.disabled = !on;
+  };
+  for (const b of starters) {
     b.onclick = () => {
       const q = b.dataset.prompt ?? b.textContent ?? "";
       if (q) void send(q);
     };
-  });
+  }
 
   btn.onclick = () => {
     const open = panel.classList.contains("hidden");
@@ -372,6 +376,8 @@ export function initAssistant(hooks: AssistantHooks) {
   let abort: AbortController | null = null;
 
   async function send(question: string) {
+    // One request at a time: a second starter or submit would share `messages` and replace this controller, so Stop would miss the first call.
+    if (abort) return;
     const key = getKey() || memoryKey;
     if (!key) {
       pending = question;
@@ -380,73 +386,80 @@ export function initAssistant(hooks: AssistantHooks) {
       return;
     }
     pending = "";
+    const controller = new AbortController();
+    abort = controller;
+    stopBtn.classList.remove("hidden");
+    setStartersEnabled(false);
     const tools = [...builtinTools(hooks), ...extraTools];
     const byName = new Map(tools.map((t) => [t.name, t]));
     // Loaded on first use, so the SDK stays out of the page's initial bundle.
-    const { default: Anthropic } = await import("@anthropic-ai/sdk");
-    const client = new Anthropic({ apiKey: key, dangerouslyAllowBrowser: true });
-    const cur = hooks.currentClass();
-    show({ role: "user", text: question });
-    const base = messages.length;
-    messages.push({ role: "user", content: cur ? `(The workbench has ${cur} open.)\n\n${question}` : question });
-    const busy = show({ role: "assistant", text: "…" });
-    busy.classList.add("busy");
-    abort = new AbortController();
-    stopBtn.classList.remove("hidden");
+    let busy: HTMLElement | undefined;
     try {
-      for (let turn = 0; turn < 25; turn++) {
-        const res = await client.beta.messages.create(
-          {
-            model: MODEL,
-            max_tokens: 16000,
-            system: SYSTEM,
-            thinking: { type: "adaptive" },
-            tools: tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.input_schema })) as BetaToolUnion[],
-            messages,
-            betas: ["server-side-fallback-2026-07-01"],
-            fallbacks: "default",
-          },
-          { signal: abort.signal },
-        );
-        messages.push({ role: "assistant", content: res.content });
-        for (const b of res.content) if (b.type === "text" && b.text.trim()) logEl.insertBefore(show({ role: "assistant", text: b.text }), busy);
-        if (res.stop_reason === "refusal") {
-          logEl.insertBefore(show({ role: "error", text: "Claude declined this request." }), busy);
-          break;
-        }
-        if (res.stop_reason === "pause_turn") continue;
-        if (res.stop_reason !== "tool_use") break;
-        const results: BetaToolResultBlockParam[] = [];
-        for (const b of res.content) {
-          if (b.type !== "tool_use") continue;
-          const tool = byName.get(b.name);
-          let text: string;
-          let isError = false;
-          try {
-            if (!tool) throw new Error(`unknown tool ${b.name}`);
-            text = await tool.run((b.input ?? {}) as Record<string, unknown>);
-          } catch (e) {
-            text = `error: ${e instanceof Error ? e.message : String(e)}`;
-            isError = true;
+      const { default: Anthropic } = await import("@anthropic-ai/sdk");
+      const client = new Anthropic({ apiKey: key, dangerouslyAllowBrowser: true });
+      const cur = hooks.currentClass();
+      show({ role: "user", text: question });
+      const base = messages.length;
+      messages.push({ role: "user", content: cur ? `(The workbench has ${cur} open.)\n\n${question}` : question });
+      busy = show({ role: "assistant", text: "…" });
+      busy.classList.add("busy");
+      const bubble = busy;
+      try {
+        for (let turn = 0; turn < 25; turn++) {
+          const res = await client.beta.messages.create(
+            {
+              model: MODEL,
+              max_tokens: 16000,
+              system: SYSTEM,
+              thinking: { type: "adaptive" },
+              tools: tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.input_schema })) as BetaToolUnion[],
+              messages,
+              betas: ["server-side-fallback-2026-07-01"],
+              fallbacks: "default",
+            },
+            { signal: controller.signal },
+          );
+          messages.push({ role: "assistant", content: res.content });
+          for (const b of res.content) if (b.type === "text" && b.text.trim()) logEl.insertBefore(show({ role: "assistant", text: b.text }), bubble);
+          if (res.stop_reason === "refusal") {
+            logEl.insertBefore(show({ role: "error", text: "Claude declined this request." }), bubble);
+            break;
           }
-          const arg = JSON.stringify(b.input);
-          logEl.insertBefore(show({ role: "tool", text: `${isError ? "✗" : "✓"} ${b.name} ${arg.length > 120 ? arg.slice(0, 117) + "…" : arg}\n${text}` }), busy);
-          results.push({ type: "tool_result", tool_use_id: b.id, content: text.slice(0, 60000), is_error: isError });
+          if (res.stop_reason === "pause_turn") continue;
+          if (res.stop_reason !== "tool_use") break;
+          const results: BetaToolResultBlockParam[] = [];
+          for (const b of res.content) {
+            if (b.type !== "tool_use") continue;
+            const tool = byName.get(b.name);
+            let text: string;
+            let isError = false;
+            try {
+              if (!tool) throw new Error(`unknown tool ${b.name}`);
+              text = await tool.run((b.input ?? {}) as Record<string, unknown>);
+            } catch (e) {
+              text = `error: ${e instanceof Error ? e.message : String(e)}`;
+              isError = true;
+            }
+            const arg = JSON.stringify(b.input);
+            logEl.insertBefore(show({ role: "tool", text: `${isError ? "✗" : "✓"} ${b.name} ${arg.length > 120 ? arg.slice(0, 117) + "…" : arg}\n${text}` }), bubble);
+            results.push({ type: "tool_result", tool_use_id: b.id, content: text.slice(0, 60000), is_error: isError });
+          }
+          messages.push({ role: "user", content: results });
         }
-        messages.push({ role: "user", content: results });
-      }
-    } catch (e) {
-      if (!(e instanceof Anthropic.APIUserAbortError)) {
-        const msg = e instanceof Anthropic.AuthenticationError ? "The API key was rejected. Enter a valid key." : e instanceof Error ? e.message : String(e);
-        logEl.insertBefore(show({ role: "error", text: msg }), busy);
-        if (e instanceof Anthropic.AuthenticationError) setKey("");
-        // Drop the failed exchange so the conversation stays valid.
-        messages.length = base;
+      } catch (e) {
+        if (!(e instanceof Anthropic.APIUserAbortError)) {
+          const msg = e instanceof Anthropic.AuthenticationError ? "The API key was rejected. Enter a valid key." : e instanceof Error ? e.message : String(e);
+          logEl.insertBefore(show({ role: "error", text: msg }), bubble);
+          if (e instanceof Anthropic.AuthenticationError) setKey("");
+          // Drop the failed exchange so the conversation stays valid.
+          messages.length = base;
+        }
       }
     } finally {
-      busy.remove();
+      busy?.remove();
       stopBtn.classList.add("hidden");
       abort = null;
+      setStartersEnabled(true);
     }
   }
 
