@@ -174,7 +174,12 @@ ANALYSIS COMMANDS (text summary on stdout; -o FILE.json or FILE.csv writes data)
   sensitivity  local sensitivities dy/dp along the trajectory:
                  --params a,b --outputs x,y [--sens-method auto|exact|fd]
                  [--rel-step H]; exact = forward sensitivity equations with
-                 tape tangents (no events), fd = central differences
+                 tape tangents (no events), fd = central differences.
+                 With --adjoint --objective QOI: the gradient of one scalar
+                 (final, integral, mean, at, max, min of a variable) for many
+                 parameters by a backward adjoint solve with reverse-mode tape
+                 passes [--grad-method auto|adjoint|forward|fd] [--substeps N];
+                 auto falls back to forward sensitivities at events
   montecarlo   Monte Carlo statistics (mean, std, 5/50/95 % bands) over
                  --dist p=lo:hi | p=normal:MEAN:STD | p=lognormal:MEAN:STD
                  (repeatable) --outputs x,y [--qoi 'max(x)'] [-N SAMPLES]
@@ -187,10 +192,20 @@ ANALYSIS COMMANDS (text summary on stdout; -o FILE.json or FILE.csv writes data)
                  --data meas.csv --tune p=lo:hi[:start] (repeatable)
                  [--map column=var] [--weight column=W] [--window T0:T1]
                  [--max-iter N] [--sens-method auto|exact|fd]; prints the fit,
-                 standard errors and a Modelica modifier
+                 standard errors and a Modelica modifier; --optimizer lbfgsb
+                 minimizes the cost with adjoint gradients instead
   optimize     minimize scalar quantities over bounded parameters (Nelder-Mead):
                  --tune p=lo:hi --minimize QOI | --maximize QOI |
-                 --target QOI=VALUE (repeatable)
+                 --target QOI=VALUE (repeatable); --algorithm lbfgsb uses
+                 bound-constrained L-BFGS with adjoint gradients
+                 [--grad-method auto|adjoint|forward|fd]
+  doe          design of experiments: --factor p=lo:hi[:levels] (repeatable)
+                 --design ccd|bbd|full|frac|lhs --qoi 'max(x)' (repeatable)
+                 [--alpha face|rotatable|orthogonal|A] [--center N]
+                 [--generators D=ABC,E=AB] [--resolution R] [-N SAMPLES]
+                 [--seed S] [--pareto min,max] [--jobs N]; runs in parallel
+                 and fits quadratic response surfaces (R^2, coefficients),
+                 main effects, interactions and the Pareto front of 2 QoIs
 ";
 
 fn usage() -> String {

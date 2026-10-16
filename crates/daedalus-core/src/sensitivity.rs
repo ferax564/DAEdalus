@@ -221,6 +221,37 @@ fn base_tangent(rt: &mut Runtime, p: VarId, fixed: &[bool]) -> Vec<f64> {
     dr
 }
 
+/// Tangents of every register with respect to each parameter of `pids` at the
+/// initialized point of `sim` (see `base_tangent`): states hold `dx(t0)/dp`, dependent
+/// parameters `d(param)/dp`.
+pub(crate) fn param_bases(
+    sim: &mut Simulation,
+    pids: &[VarId],
+    o: &SimOptions,
+) -> Result<Vec<Vec<f64>>, String> {
+    let m = sim.rt.m;
+    let mut fixed = vec![false; m.vars.len()];
+    for &q in &m.free_params {
+        fixed[q as usize] = true;
+    }
+    for (name, _) in &o.params {
+        if let Some(i) = m.vars.iter().position(|v| &v.name == name) {
+            fixed[i] = true;
+        }
+    }
+    let bases: Vec<Vec<f64>> = pids
+        .iter()
+        .map(|&p| base_tangent(&mut sim.rt, p, &fixed))
+        .collect();
+    if let Some(e) = sim.rt.error.take() {
+        return Err(format!(
+            "nonlinear system for [{}] did not converge while differentiating the initialization",
+            m.newton[e.block].names.join(", ")
+        ));
+    }
+    Ok(bases)
+}
+
 /// Forward sensitivity equations (see the module documentation).
 pub fn exact(m: &Model, opts: &SimOptions, so: &SensOptions) -> Result<Sensitivities, ExactError> {
     let fail = ExactError::Failed;

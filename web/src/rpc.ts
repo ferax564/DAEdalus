@@ -167,6 +167,11 @@ export const api = {
   exportPackage: (model: string) => call<Uint8Array>("exportPackage", model),
   openPackage: (bytes: Uint8Array, prefix: string) =>
     checked(call<{ manifest: PackageManifest | null; files: number; resources: string[]; skipped: string[] } | { error: string }>("openPackage", bytes, prefix)),
+  /** Plan a design of experiments (see `daedalus_core::doe`): the runs' coded points and values. */
+  doePlan: <T>(spec: unknown) => call<T>("doePlan", spec),
+  /** Fit response surfaces, effects and the Pareto front to the responses of a planned design. */
+  doeAnalyze: <T>(model: string, spec: unknown, plan: unknown, responses: ((number | null)[] | null)[], errors: string[]) =>
+    call<T>("doeAnalyze", model, spec, plan, responses, errors),
 };
 
 export interface EditReply {

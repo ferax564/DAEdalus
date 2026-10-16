@@ -1076,6 +1076,68 @@ impl<'m> Simulation<'m> {
         Ok(())
     }
 
+    /// Integrate without stopping at intermediate times and call `sample(i, rt)` with the
+    /// solution at each of `times` (increasing, after the stepper's time) from the
+    /// integrator's dense output. For smooth runs only: when a relation changes (a state
+    /// event) it stops and returns the time of the step where it changed. Stopping the
+    /// integrator at many close times instead (as [`Simulation::advance_to`] does) can
+    /// make step size control fail.
+    pub fn advance_sampled(
+        &mut self,
+        st: &mut Stepper,
+        times: &[f64],
+        sample: &mut dyn FnMut(usize, &mut Runtime) -> Result<(), String>,
+    ) -> Result<Option<f64>, String> {
+        let m = self.rt.m;
+        let Some(&t_stop) = times.last() else {
+            return Ok(None);
+        };
+        let n_rel = m.layout.n_rel;
+        let mut k = 0;
+        let mut t = st.t;
+        let mut emit = |sim: &mut Self, st: &mut Stepper, upto: f64, k: &mut usize| {
+            while *k < times.len() && times[*k] <= upto * (1.0 + 1e-14) + 1e-300 {
+                let tk = times[*k];
+                if (st.solver.t() - tk).abs() <= 1e-15 * tk.abs().max(1.0) {
+                    st.xi.copy_from_slice(st.solver.x());
+                } else {
+                    st.solver.interpolate(tk, &mut st.xi);
+                }
+                let xi = st.xi.clone();
+                sim.rt.rhs(tk, &xi, &mut st.x);
+                sim.rt.run(&m.outputs);
+                sample(*k, &mut sim.rt)?;
+                *k += 1;
+            }
+            Ok::<(), String>(())
+        };
+        emit(self, st, t, &mut k)?;
+        while t < t_stop * (1.0 - 1e-15) - 1e-300 {
+            st.guard += 1;
+            if st.guard > 50_000_000 {
+                return Err("too many steps".into());
+            }
+            let tn = st.solver.step(&mut self.rt, t_stop)?;
+            self.log.extend(st.solver.take_log());
+            self.rt.error = None;
+            if n_rel > 0 {
+                self.rt.rhs(tn, st.solver.x(), &mut st.xi);
+                self.rt.eval_zc();
+                if (0..n_rel)
+                    .any(|i| self.rt.r[m.zc_raw[i] as usize] != self.rt.r[m.layout.rel0 + i])
+                {
+                    return Ok(Some(tn));
+                }
+            }
+            emit(self, st, tn, &mut k)?;
+            t = tn;
+            st.t = tn;
+        }
+        emit(self, st, f64::INFINITY, &mut k)?;
+        self.stats.solver = st.solver.stats();
+        Ok(None)
+    }
+
     /// The message of `terminate()`, once the model has called it.
     pub fn terminated(&self) -> Option<&str> {
         self.terminated.as_deref()

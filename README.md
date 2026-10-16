@@ -769,6 +769,73 @@ stay in the CasADi export below. The tests in
 results: exponential decay, a mass-spring-damper, Ishigami Sobol indices,
 Monte Carlo moments, and parameter recovery from synthetic data.
 
+### Adjoint gradients
+
+`--adjoint --objective QOI` computes the gradient of one scalar with respect to
+many parameters at the cost of about one forward and one backward solve,
+independent of the number of parameters:
+
+```sh
+./target/release/daedalus sensitivity model.mo -m M --adjoint \
+    --objective 'integral(x)' --params k1,k2,k3,k4,k5,k6
+```
+
+- Objective: one of `final(x)`, `at(x,T)`, `integral(x)`, `mean(x)`, with an
+  optional window (`integral(x,T0,T1)`). `max`/`min` are differentiated at the
+  argmax on the output grid.
+- The forward run stores the states on a mesh (`--substeps`, default 2 per
+  output interval) and at the Radau stage times, from the solver's dense output.
+- The backward pass solves `-dλ/dt = (df/dx)^T λ + (dg/dx)^T` with a 2-stage
+  Radau IIA step. Each `f_p^T λ` is one reverse pass over the tape
+  (`tape_reverse.rs`), including algebraic loops (implicit-function rule).
+  Point terms add jumps to `λ`, and `λ(t0)` is chained through the initialization.
+- `--grad-method auto|adjoint|forward|fd`: `auto` uses the adjoint and falls back
+  to forward sensitivities (or differences) for models with events, saying why.
+- Accuracy against forward sensitivities and central differences is about
+  1e-7 relative on the test models (`crates/daedalus-core/tests/adjoint.rs`).
+
+The same gradients drive bound-constrained optimization:
+- `optimize --algorithm lbfgsb` (projected L-BFGS with an active set and Armijo
+  backtracking);
+- `calibrate --optimizer lbfgsb`, which minimizes the weighted least-squares
+  cost with an adjoint gradient (one point term per measurement) and then
+  reports standard errors from the Jacobian at the solution.
+
+On a 6-state chain with 9 parameters, L-BFGS-B converges in about 5 runs plus
+5 gradients, where Nelder–Mead needs several hundred runs.
+
+### Design of experiments
+
+```sh
+./target/release/daedalus doe model.mo -m M --factor k=1:10 --factor c=0.1:1 \
+    --design ccd --qoi 'max(x)' --qoi 'integral(v)' --pareto min,min -o doe.csv
+```
+
+- Designs:
+  - `full`: full factorial with `p=lo:hi:levels` levels (default 2);
+  - `frac`: 2^(k-p) fractions with minimum-aberration generators, or your own
+    with `--generators D=ABC,E=AB` or `--resolution R`;
+  - `ccd` (default): central composite, with `--alpha face|rotatable|orthogonal|A`
+    and a resolution-V fraction for 5 or more factors;
+  - `bbd`: Box–Behnken;
+  - `lhs`: Latin hypercube with `-N` samples and `--seed`.
+- Runs go through the sweep machinery: all cores natively. In the browser they
+  are spread over the worker pool, and each worker evaluates the quantities.
+- Per quantity it fits a quadratic response surface in coded units (−1..1) by
+  least squares and prints R², adjusted R², RMSE and a coefficient table with
+  standard errors and t-values. Terms the design cannot estimate (e.g.
+  quadratics in a 2-level design) are dropped and listed.
+- It also reports main effects (mean response per level), two-factor
+  interaction tables and, with `--pareto` for two quantities, the
+  non-dominated runs.
+- Factors must be free parameters, like for the other analyses.
+
+The workbench's Analysis mode has the method **adjoint** in the Sensitivity tab
+(an objective field and a gradient bar chart). A **DOE** tab picks the design
+and quantities and shows main effects, interactions, the fitted coefficients
+and the Pareto front, with "Use" to apply a Pareto point's parameters. The
+Calibrate and Optimize tabs can choose L-BFGS-B.
+
 ## Performance
 
 The benchmark is `tools/gen_chain.py`: a chain of N masses and spring-dampers
