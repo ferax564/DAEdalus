@@ -1,6 +1,7 @@
 # What's new
 
-The most recent additions, newest first. Each links to the page that covers it in full.
+The most recent additions, newest first. Each links to the page that covers it in full. In plain terms: every entry is a feature or a
+fix that is now in DAEdalus, and the link leads to the page that explains it.
 
 ## MSL: 488 of 534 examples match the reference results
 

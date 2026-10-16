@@ -11,13 +11,17 @@ Only the classes a model needs are parsed, so pointing at a large library costs 
 parsed library files are cached on disk between runs (`~/.cache/daedalus`; `DAEDALUS_CACHE`
 moves it and `DAEDALUS_NO_CACHE` turns it off).
 
+In plain terms: each command does one job on a model, such as checking it, simulating it or
+listing its unit problems. The table below lists them, and the options further down change how
+each one runs.
+
 ## Commands
 
 | Command | What it does |
 | --- | --- |
 | `check` | Translate the model and print statistics: variables, aliases removed, states, algebraic loops, events, tape size. |
 | `flatten` | Print the flat model. |
-| `dump` | Print the sorted, causalized equation system (BLT blocks, tearing). |
+| `dump` | Print the equations in the order the solver evaluates them: the sorted, causalized system, with its BLT blocks and tearing (explained on [Structure and state selection](structure.md)). |
 | `units` | Every variable's declared or inferred unit, and the unit issues. See [Unit checking](units.md). |
 | `debug` | How a variable or equation is computed, why initialization fails, and which equations or connections are missing. See [Equation and initialization debugger](debugger.md). |
 | `structure` | Variable roles, BLT blocks, incidence, state selection and why, and the state Jacobian's eigenvalues and stiffness. See [Structure and state selection](structure.md). |

@@ -3,6 +3,9 @@
 `Daedalus.Examples` rebuilds the systems from six public engineering blog posts
 by Modelon and Claytex, using components from the bundled library.
 
+In plain terms: each example models a real kind of system, such as a torque converter or an
+aileron actuator, from the descriptions in those posts.
+
 The vendor models and parameter sets behind those posts are not public.
 Each example therefore states:
 - its source;
@@ -10,7 +13,7 @@ Each example therefore states:
 - the parameter values that were assumed.
 
 The aim is the same physics and the same kind of result plot, not identical
-numbers. Every example has a regression test in
+numbers. Every example has a regression test (an automated check that its result has not changed) in
 `crates/daedalus-core/tests/library.rs`, and CI simulates them all.
 
 Every example also has a [3-D animation](animation.md), as Dymola gives 1-D libraries: open it

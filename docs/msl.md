@@ -5,6 +5,10 @@ The workbench ships with the Modelica Standard Library 4.1.0: `Modelica`,
 `Daedalus` library, with nothing to install. On the command line, pass an MSL checkout as
 extra sources (see [Command line](cli.md#libraries)).
 
+In plain terms: the Modelica Standard Library is the common collection of ready-made model
+parts, and its examples come with reference results, the official answers published by the
+Modelica Association. An example "matches" when DAEdalus gives the same answers.
+
 ## Coverage
 
 **512 of the 534** MSL 4.1.0 example models translate and simulate to the end, and

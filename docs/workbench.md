@@ -2,7 +2,8 @@
 
 The workbench is a Dymola-style modeling and simulation environment that runs in the
 browser. The compiler and solvers are the same Rust code as the command line, compiled to
-WebAssembly and run in a Web Worker, so the page stays responsive while a model
+WebAssembly (a compact format that browsers run at close to native speed) and run in a Web
+Worker (a background thread, so the page stays responsive while a model
 translates or simulates. Simulation in the page or via `daedalus serve` stays on the
 machine; **✦ Assistant** sends the text it reads and the numbers it asks for to Anthropic.
 
