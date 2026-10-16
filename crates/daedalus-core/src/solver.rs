@@ -87,14 +87,18 @@ pub(crate) fn initial_step(
     f0: &[f64],
     order: f64,
     rtol: f64,
-    atol: f64,
+    atol: &[f64],
     span: f64,
 ) -> f64 {
     let n = x.len();
     if n == 0 {
         return span.max(1e-6);
     }
-    let scale: Vec<f64> = x.iter().map(|v| atol + rtol * v.abs()).collect();
+    let scale: Vec<f64> = x
+        .iter()
+        .zip(atol)
+        .map(|(v, a)| a + rtol * v.abs())
+        .collect();
     let d0 = rms(x.iter().zip(&scale).map(|(a, s)| a / s), n);
     let d1 = rms(f0.iter().zip(&scale).map(|(a, s)| a / s), n);
     let h0 = if d0 < 1e-5 || d1 < 1e-5 {
@@ -124,7 +128,8 @@ pub(crate) fn initial_step(
 
 pub struct Dopri5 {
     pub rtol: f64,
-    pub atol: f64,
+    /// Absolute tolerance of each state (`tolerance * |nominal|`).
+    pub atol: Vec<f64>,
     pub max_step: f64,
     t: f64,
     t_old: f64,
@@ -142,7 +147,7 @@ pub struct Dopri5 {
 }
 
 impl Dopri5 {
-    pub fn new(n: usize, rtol: f64, atol: f64, max_step: f64) -> Self {
+    pub fn new(n: usize, rtol: f64, atol: Vec<f64>, max_step: f64) -> Self {
         let z = || vec![0.0; n];
         Dopri5 {
             rtol,
@@ -251,7 +256,7 @@ impl Integrator for Dopri5 {
                 &f0,
                 4.0,
                 self.rtol,
-                self.atol,
+                &self.atol,
                 span.min(self.max_step),
             );
         }
@@ -290,7 +295,7 @@ impl Integrator for Dopri5 {
                     }
                 }
                 e *= h;
-                let sk = self.atol + self.rtol * self.x[i].abs().max(self.tmp[i].abs());
+                let sk = self.atol[i] + self.rtol * self.x[i].abs().max(self.tmp[i].abs());
                 if self.probe.enabled {
                     self.probe.err[i] = e / sk;
                 }
@@ -401,7 +406,8 @@ const NEWTON_MAXITER: usize = 4;
 
 pub struct Bdf {
     pub rtol: f64,
-    pub atol: f64,
+    /// Absolute tolerance of each state (`tolerance * |nominal|`).
+    pub atol: Vec<f64>,
     pub max_step: f64,
     n: usize,
     t: f64,
@@ -430,7 +436,7 @@ pub struct Bdf {
 
 impl Bdf {
     /// `pattern[i]` lists the states derivative `i` depends on.
-    pub fn new(n: usize, rtol: f64, atol: f64, max_step: f64, pattern: &[Vec<u32>]) -> Self {
+    pub fn new(n: usize, rtol: f64, atol: Vec<f64>, max_step: f64, pattern: &[Vec<u32>]) -> Self {
         let kappa = [0.0, -0.1850, -1.0 / 9.0, -0.0823, -0.0415, 0.0];
         let mut gamma = [0.0; MAX_ORDER + 1];
         for k in 1..=MAX_ORDER {
@@ -495,7 +501,7 @@ impl Bdf {
     /// algebraic loop failed or a derivative is not finite).
     fn compute_jac(&mut self, rt: &mut Runtime, t: f64, y: &[f64]) -> bool {
         self.jac
-            .compute(rt, t, y, self.atol, self.rtol, &mut self.stats)
+            .compute(rt, t, y, &self.atol, self.rtol, &mut self.stats)
     }
 
     fn factor(&mut self, c: f64) -> bool {
@@ -603,7 +609,7 @@ impl Integrator for Bdf {
                 &f0,
                 1.0,
                 self.rtol,
-                self.atol,
+                &self.atol,
                 span.min(self.max_step),
             );
             self.h_abs = h;
@@ -658,7 +664,7 @@ impl Integrator for Bdf {
                     s += self.d[k][i];
                 }
                 y_pred[i] = s;
-                scale[i] = self.atol + self.rtol * s.abs();
+                scale[i] = self.atol[i] + self.rtol * s.abs();
                 let mut p = 0.0;
                 for k in 1..=order {
                     p += self.d[k][i] * self.gamma[k];
@@ -752,7 +758,7 @@ impl Integrator for Bdf {
             let s = 0.9 * (2.0 * NEWTON_MAXITER as f64 + 1.0)
                 / (2.0 * NEWTON_MAXITER as f64 + n_iter as f64);
             for i in 0..n {
-                scale[i] = self.atol + self.rtol * y_new[i].abs();
+                scale[i] = self.atol[i] + self.rtol * y_new[i].abs();
             }
             let ec = self.error_const[order];
             let en = rms(dsum.iter().zip(&scale).map(|(d, s)| ec * d / s), n);

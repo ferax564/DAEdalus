@@ -285,11 +285,11 @@ fn exact_jacobian_matches_differences() {
         let t = 0.3;
         let mut st = SolverStats::default();
         let mut exact = StateJac::new(n, &m.jac_pattern, JacobianMode::Exact);
-        assert!(exact.compute(&mut sim.rt, t, &x, 1e-10, 1e-10, &mut st));
+        assert!(exact.compute(&mut sim.rt, t, &x, &vec![1e-10; n], 1e-10, &mut st));
         assert_eq!(exact.fallbacks, 0);
         assert_eq!(st.tangent_evals, exact.n_colors() as u64);
         let mut fd = StateJac::new(n, &m.jac_pattern, JacobianMode::Fd);
-        assert!(fd.compute(&mut sim.rt, t, &x, 1e-6, 1e-6, &mut st));
+        assert!(fd.compute(&mut sim.rt, t, &x, &vec![1e-6; n], 1e-6, &mut st));
         // Central differences, column by column.
         let mut f = |x: &[f64]| {
             let mut dx = vec![0.0; n];
