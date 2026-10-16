@@ -118,7 +118,10 @@ fn has_annotation(def: &ast::ClassDef, name: &str) -> bool {
     find_annotation(&def.annotation, name).is_some()
 }
 
-fn find_annotation<'e>(ann: &'e [ast::Expression], name: &str) -> Option<&'e ast::Expression> {
+pub(crate) fn find_annotation<'e>(
+    ann: &'e [ast::Expression],
+    name: &str,
+) -> Option<&'e ast::Expression> {
     ann.iter().find(|a| match a {
         ast::Expression::ClassModification { target, .. }
         | ast::Expression::FunctionCall { comp: target, .. } => {

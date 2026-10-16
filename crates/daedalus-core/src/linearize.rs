@@ -160,6 +160,12 @@ pub fn linearize_at_with(
     extra_outputs: &[VarId],
 ) -> Result<Linearization, String> {
     let m = rt.m;
+    if !m.externals.is_empty() {
+        return Err(format!(
+            "{} contains FMU components, which cannot be linearized",
+            m.name
+        ));
+    }
     let inputs = real_inputs(m);
     let mut outputs = real_outputs(m);
     outputs.extend(

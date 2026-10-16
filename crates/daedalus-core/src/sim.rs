@@ -172,7 +172,8 @@ impl Recorder {
         let is_param: Vec<bool> = {
             let mut p = vec![false; m.vars.len()];
             for &v in &m.param_vars {
-                p[v as usize] = true;
+                // Inputs are constant during a run, except those FMU components supply.
+                p[v as usize] = m.externals.is_empty() || m.vars[v as usize].kind != VarKind::Input;
             }
             p
         };
@@ -260,6 +261,8 @@ pub struct Simulation<'m> {
     pub stats: SimStats,
     /// Pending time events: jumps of delayed signals coming out of `delay()`.
     delay_events: Vec<f64>,
+    /// Event indicators of the external components at the last accepted point.
+    ext_z: Vec<f64>,
     /// Performance profile being recorded (`SimOptions::profile`).
     prof: Option<Box<crate::profile::Profiler>>,
 }
@@ -289,8 +292,103 @@ impl<'m> Simulation<'m> {
             log: Vec::new(),
             stats: SimStats::default(),
             delay_events: Vec::new(),
+            ext_z: Vec::new(),
             prof: None,
         }
+    }
+
+    /// Run `f` on the external components' hook (imported FMUs), if the model has one.
+    fn with_ext<R>(
+        &mut self,
+        f: impl FnOnce(&mut dyn crate::external::Hook, &mut Runtime<'m>) -> R,
+    ) -> Option<R> {
+        let mut h = self.rt.ext.take()?;
+        let r = f(&mut *h, &mut self.rt);
+        self.rt.ext = Some(h);
+        Some(r)
+    }
+
+    /// Event indicators of the external components at the current point (after
+    /// `run_ode`).
+    fn ext_indicators(&mut self) -> Vec<f64> {
+        let n = self.rt.ext.as_ref().map_or(0, |h| h.n_indicators());
+        let mut z = vec![0.0; n];
+        if n > 0 {
+            self.with_ext(|h, rt| h.indicators(rt, &mut z));
+        }
+        z
+    }
+
+    /// Event iteration including the external components: `begin` starts an event of
+    /// theirs too (false right after their initialization, which leaves them in event
+    /// mode).
+    fn event_iteration_ext(&mut self, begin: bool) -> Result<(), String> {
+        if self.rt.ext.is_none() {
+            return self.event_iteration();
+        }
+        if begin {
+            self.with_ext(|h, rt| h.begin_event(rt)).unwrap_or(Ok(()))?;
+            self.rt.run_ode();
+        }
+        self.event_iteration()?;
+        let mut settled = false;
+        for _ in 0..100 {
+            if !self
+                .with_ext(|h, rt| h.update_event(rt))
+                .unwrap_or(Ok(false))?
+            {
+                settled = true;
+                break;
+            }
+            self.rt.run_ode();
+            self.event_iteration()?;
+        }
+        if !settled {
+            return Err(format!(
+                "event iteration with the FMU components did not converge at t = {}",
+                self.rt.time()
+            ));
+        }
+        self.with_ext(|h, rt| h.end_event(rt)).unwrap_or(Ok(()))?;
+        self.rt.run_ode();
+        self.ext_z = self.ext_indicators();
+        if let Some(Some(msg)) = self.rt.ext.as_ref().map(|h| h.terminated()) {
+            self.terminated.get_or_insert(msg);
+        }
+        Ok(())
+    }
+
+    /// Earliest time event of the external components.
+    fn ext_time_event(&self) -> Option<f64> {
+        self.rt.ext.as_ref().and_then(|h| h.next_time_event())
+    }
+
+    /// Locate the first time in `(ta, tb]` where an event indicator of the external
+    /// components changes its sign relative to `self.ext_z`.
+    fn locate_ext(&mut self, solver: &dyn Integrator, ta: f64, tb: f64, xi: &mut [f64]) -> f64 {
+        let z0 = self.ext_z.clone();
+        let crossed = |z: &[f64]| {
+            z.iter()
+                .zip(&z0)
+                .any(|(&a, &b)| (b > 0.0 && a <= 0.0) || (b < 0.0 && a >= 0.0))
+        };
+        let mut dx = vec![0.0; xi.len()];
+        let (mut a, mut b) = (ta, tb);
+        for _ in 0..200 {
+            if b - a <= 1e-13 * b.abs().max(1.0) {
+                break;
+            }
+            let c = 0.5 * (a + b);
+            solver.interpolate(c, xi);
+            self.rt.rhs(c, xi, &mut dx);
+            let z = self.ext_indicators();
+            if crossed(&z) {
+                b = c;
+            } else {
+                a = c;
+            }
+        }
+        b
     }
 
     /// Record the delayed variables at the current solution point.
@@ -371,7 +469,7 @@ impl<'m> Simulation<'m> {
                         for (v, x) in updates.drain(..) {
                             self.rt.r[v] = x;
                         }
-                        self.rt.run(&m.ode);
+                        self.rt.run_ode();
                         self.rt.run(&m.when_prog);
                     }
                     fired.push(wi);
@@ -426,7 +524,7 @@ impl<'m> Simulation<'m> {
         for _ in 0..100 {
             self.rt.save_pre();
             let rel_changed = self.rt.latch_relations();
-            self.rt.run(&m.ode);
+            self.rt.run_ode();
             let mut conds = self.when_conds();
             let prev = std::mem::take(&mut self.cond_prev);
             let fired = self.fire(&conds, &prev);
@@ -437,9 +535,9 @@ impl<'m> Simulation<'m> {
             let mut rel_changed = rel_changed;
             if fired {
                 for _ in 0..100 {
-                    self.rt.run(&m.ode);
+                    self.rt.run_ode();
                     rel_changed |= self.rt.latch_relations();
-                    self.rt.run(&m.ode);
+                    self.rt.run_ode();
                     let now = self.when_conds();
                     let seen: Vec<Vec<bool>> = conds
                         .iter()
@@ -455,7 +553,7 @@ impl<'m> Simulation<'m> {
             }
             self.cond_prev = conds;
             // Recompute algebraics with the new discrete values.
-            self.rt.run(&m.ode);
+            self.rt.run_ode();
             if std::env::var("DAEDALUS_DEBUG_EVENTS").is_ok() {
                 let ch: Vec<String> = m
                     .discretes
@@ -559,7 +657,7 @@ impl<'m> Simulation<'m> {
                     self.rt.r[m.layout.rel0 + i] = v;
                 }
             }
-            self.rt.run(&m.ode);
+            self.rt.run_ode();
             if self.rt.error.is_some() {
                 self.rt.error = None;
                 continue;
@@ -572,7 +670,7 @@ impl<'m> Simulation<'m> {
             }
         }
         self.rt.r[m.layout.rel0..m.layout.rel0 + m.layout.n_rel].copy_from_slice(&base);
-        self.rt.run(&m.ode);
+        self.rt.run_ode();
         self.rt.error = None;
         false
     }
@@ -647,6 +745,13 @@ impl<'m> Simulation<'m> {
         self.rt.r[m.layout.initial] = 1.0;
         self.rt.run(&m.starts);
         self.rt.save_pre();
+        if !m.externals.is_empty() && self.rt.ext.is_none() {
+            let make = crate::external::factory().ok_or_else(|| crate::external::unsupported(m))?;
+            self.rt.ext = Some(make(m)?);
+        }
+        let (stop, tol) = (self.opts.stop_time, self.opts.tolerance);
+        self.with_ext(|h, rt| h.init(rt, t0, stop, tol))
+            .unwrap_or(Ok(()))?;
         self.solve_init()?;
         for &(v, p) in &m.pre_init {
             self.rt.r[m.layout.pre0 + v as usize] = self.rt.r[p as usize];
@@ -655,7 +760,7 @@ impl<'m> Simulation<'m> {
         for &r in &m.sample_rels {
             self.rt.r[m.layout.rel0 + r] = 0.0;
         }
-        self.rt.run(&m.ode);
+        self.rt.run_ode();
         // when-clauses activated by initial()
         let c1 = self.when_conds();
         self.rt.r[m.layout.initial] = 0.0;
@@ -676,18 +781,18 @@ impl<'m> Simulation<'m> {
         self.rt.r[m.layout.initial] = 0.0;
         let _ = fired;
         // Event iteration at the start time (handles sample() at t0 and initial() clauses).
-        self.event_iteration()?;
+        self.event_iteration_ext(false)?;
         self.check_newton("initialization")?;
         if !m.delays.is_empty() {
             // delay(x, d) = x(start) until start + d: settle the delays on the initial values
-            self.rt.run(&m.ode);
+            self.rt.run_ode();
             for _ in 0..2 {
                 for b in &mut self.rt.delays {
                     b.t.clear();
                     b.v.clear();
                 }
                 self.record_delays();
-                self.rt.run(&m.ode);
+                self.rt.run_ode();
                 self.event_iteration()?;
                 self.check_newton("initialization")?;
             }
@@ -843,24 +948,34 @@ impl<'m> Simulation<'m> {
         let rtol = o.tolerance;
         let atol = o.tolerance;
         self.stats.method = o.method.name().to_string();
+        // FMU components: the tape does not see through them (their derivatives and
+        // outputs are set from outside), so the state Jacobian is dense and by
+        // differences of the right-hand side.
+        let full: Vec<Vec<u32>>;
+        let (pattern, jacobian) = if m.externals.is_empty() {
+            (&m.jac_pattern, o.jacobian)
+        } else {
+            full = vec![(0..n as u32).collect(); n];
+            (&full, JacobianMode::Fd)
+        };
         let solver: Box<dyn Integrator> = match o.method {
             Method::Bdf => {
-                let b = Bdf::new(n, rtol, atol, max_step, &m.jac_pattern).with_jacobian(o.jacobian);
+                let b = Bdf::new(n, rtol, atol, max_step, pattern).with_jacobian(jacobian);
                 self.stats.jacobian_colors = b.n_colors();
                 Box::new(b)
             }
             Method::Radau => {
-                let r = Radau5::new(n, rtol, atol, max_step, &m.jac_pattern, o.jacobian);
+                let r = Radau5::new(n, rtol, atol, max_step, pattern, jacobian);
                 self.stats.jacobian_colors = r.n_colors();
                 Box::new(r)
             }
             Method::Esdirk => {
-                let e = Esdirk::new(n, rtol, atol, max_step, &m.jac_pattern, o.jacobian);
+                let e = Esdirk::new(n, rtol, atol, max_step, pattern, jacobian);
                 self.stats.jacobian_colors = e.n_colors();
                 Box::new(e)
             }
             Method::Auto => {
-                let b = Bdf::new(n, rtol, atol, max_step, &m.jac_pattern).with_jacobian(o.jacobian);
+                let b = Bdf::new(n, rtol, atol, max_step, pattern).with_jacobian(jacobian);
                 self.stats.jacobian_colors = b.n_colors();
                 Box::new(AutoSwitch::new(Dopri5::new(n, rtol, atol, max_step), b))
             }
@@ -940,7 +1055,7 @@ impl<'m> Simulation<'m> {
     pub fn handle_event(&mut self) -> Result<(), String> {
         self.stats.events += 1;
         self.rt.delay_right = true;
-        self.event_iteration()?;
+        self.event_iteration_ext(true)?;
         self.check_newton("event")?;
         self.record_delays();
         Ok(())
@@ -1014,6 +1129,11 @@ impl<'m> Simulation<'m> {
                 Some(&te) if te < t_stop => te,
                 _ => t_stop,
             };
+            let ext_te = self.ext_time_event().filter(|&te| te > t);
+            let t_lim = match ext_te {
+                Some(te) if te < t_lim => te,
+                _ => t_lim,
+            };
             let t_lim = if n == 0 {
                 t_lim.min(t + max_step)
             } else {
@@ -1059,6 +1179,21 @@ impl<'m> Simulation<'m> {
                     event_t = Some(best);
                 }
             }
+            // Event indicators of the external components (imported FMUs).
+            if !self.ext_z.is_empty() {
+                if n_rel == 0 {
+                    self.rt.rhs(tn, st.solver.x(), &mut st.xi);
+                }
+                let z = self.ext_indicators();
+                let crossed = z
+                    .iter()
+                    .zip(&self.ext_z)
+                    .any(|(&a, &b)| (b > 0.0 && a <= 0.0) || (b < 0.0 && a >= 0.0));
+                if crossed {
+                    let te = self.locate_ext(&*st.solver, tp, event_t.unwrap_or(tn), &mut st.xi);
+                    event_t = Some(event_t.map_or(te, |e| e.min(te)));
+                }
+            }
             let mut time_event = false;
             if event_t.is_none()
                 && let Some(&te) = self.delay_events.first()
@@ -1066,6 +1201,29 @@ impl<'m> Simulation<'m> {
             {
                 event_t = Some(tn);
                 time_event = true;
+            }
+            if event_t.is_none()
+                && let Some(te) = ext_te
+                && tn >= te * (1.0 - 1e-14) - 1e-300
+            {
+                event_t = Some(tn);
+                time_event = true;
+            }
+            if event_t.is_none() && self.rt.ext.is_some() {
+                // FMI step events: the components may ask for an event after a step.
+                self.rt.rhs(tn, st.solver.x(), &mut st.xi);
+                if self
+                    .with_ext(|h, rt| h.completed_step(rt))
+                    .unwrap_or(Ok(false))?
+                {
+                    event_t = Some(tn);
+                    time_event = true;
+                } else {
+                    self.ext_z = self.ext_indicators();
+                }
+                if let Some(Some(msg)) = self.rt.ext.as_ref().map(|h| h.terminated()) {
+                    self.terminated.get_or_insert(msg);
+                }
             }
             if let Some(te) = event_t {
                 let k = self.delay_events.partition_point(|&x| x <= te);
@@ -1140,7 +1298,7 @@ impl<'m> Simulation<'m> {
                 }
                 self.record_delays();
                 self.rt.delay_right = true;
-                self.event_iteration()?;
+                self.event_iteration_ext(true)?;
                 self.check_newton("event")?;
                 self.record_delays();
                 if let (Some(snap), Some(p)) = (snap, self.prof.as_deref_mut()) {
@@ -1221,7 +1379,7 @@ impl<'m> Simulation<'m> {
         let n_rel = m.layout.n_rel;
         let t = st.t;
         if self.terminated.is_some()
-            || n_rel == 0
+            || (n_rel == 0 && self.rt.ext.is_none())
             || (t - t_end).abs() > 1e-12 * t_end.abs().max(1.0)
         {
             return Ok(false);
@@ -1232,13 +1390,15 @@ impl<'m> Simulation<'m> {
         let due = (0..n_rel).any(|i| {
             (m.sample_rels.contains(&i) || mentions_time(&m.rel_text[i]))
                 && self.rt.r[m.zc_raw[i] as usize] != self.rt.r[m.layout.rel0 + i]
-        });
+        }) || self
+            .ext_time_event()
+            .is_some_and(|te| (te - t_end).abs() <= 1e-12 * t_end.abs().max(1.0));
         if due {
             self.stats.events += 1;
             st.last_event = t_end;
             self.rt.delay_right = true;
             let snap = self.prof.as_deref_mut().map(|p| p.event_begin(&self.rt));
-            self.event_iteration()?;
+            self.event_iteration_ext(true)?;
             self.check_newton("event")?;
             self.record_delays();
             if let (Some(snap), Some(p)) = (snap, self.prof.as_deref_mut()) {

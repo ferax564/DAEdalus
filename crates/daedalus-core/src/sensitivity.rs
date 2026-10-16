@@ -119,6 +119,9 @@ pub enum ExactError {
 
 /// Whether the exact method applies to the model (before running it).
 pub fn exact_applicable(m: &Model) -> Result<(), String> {
+    if !m.externals.is_empty() {
+        return Err("the model has FMU components".into());
+    }
     if !m.whens.is_empty() {
         return Err("the model has when-clauses".into());
     }

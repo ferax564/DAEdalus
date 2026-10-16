@@ -5,9 +5,10 @@ use daedalus_core::frontend::Library;
 use daedalus_core::sim::{Method, SimOptions};
 mod analysis;
 mod fmu;
+mod fmu_import;
 mod mcp;
-mod sweep;
 mod mos;
+mod sweep;
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -43,8 +44,17 @@ COMMANDS:
               solve for inputs or parameters so that variables hit targets
   run         run a Dymola / OpenModelica script: daedalus run script.mos
               [--msl DIR] (see docs/scripting.md)
-  fmu         export an FMI 2.0 FMU (Model Exchange and Co-Simulation) to -o
-              (default <Model>.fmu); needs the runtime libdaedalus_fmi.so
+  fmu         export an FMI 2.0 FMU (or FMI 3.0 with --fmi-version 3; Model
+              Exchange and Co-Simulation) to -o (default <Model>.fmu); needs the
+              runtime libdaedalus_fmi.so
+  import-fmu  daedalus import-fmu X.fmu [-o X.mo]: write a Modelica wrapper
+              block for an FMI 2.0 / 3.0 FMU, usable as a component
+              (--fmi-type me|cs, --class NAME, --within PACKAGE, --locals)
+  import-ssp  daedalus import-ssp X.ssp [-o X.mo]: the SSP system as a
+              Modelica model, with its FMUs unpacked next to it
+  export-ssp  write a model composed of FMU components as an .ssp (-o);
+              `simulate` also runs an .fmu or .ssp directly (Co-Simulation
+              components step at --comm-step, default span/500)
   mcp         serve the libraries to an AI assistant over the Model Context
               Protocol (stdio): browse, edit, check, simulate, linearize.
               `daedalus mcp [sources...] [-L DIR] [--workspace DIR]`
@@ -105,6 +115,15 @@ OPTIONS:
   --fmi-lib FILE          fmu: the FMI runtime library (default: next to this
                           executable, or $DAEDALUS_FMI_LIB)
   --timeout S             per-model time limit for test-library (default 60)
+  --fmi-version V         fmu: 2 (default) or 3
+  --fmi-type T            import-fmu, import-ssp, simulate X.fmu/.ssp: me | cs
+                          (default: Model Exchange for an FMU if it has it,
+                          Co-Simulation for SSP components)
+  --comm-step H           Co-Simulation communication step size
+  --class NAME            import-fmu: name of the wrapper block
+  --within PACKAGE        import-fmu: within clause of the wrapper
+  --locals                import-fmu: also expose the FMU's local variables as
+                          outputs (always on for `simulate X.fmu`)
   --state NAME=TIER       stateSelect override, TIER = always | prefer | default
                           | avoid | never; NAME may be a glob (arm.*.phi)
                           (repeatable; check, dump, simulate, linearize,
@@ -223,6 +242,8 @@ fn run() -> anyhow::Result<()> {
     let mut check_units = false;
     let mut list_all = false;
     let mut lti = daedalus_core::lti::LinearOptions::default();
+    let mut fmi_version: u32 = 2;
+    let mut import = fmu_import::ImportOptions::default();
     let mut i = 1;
     let next = |i: &mut usize| -> anyhow::Result<String> {
         *i += 1;
@@ -306,6 +327,24 @@ fn run() -> anyhow::Result<()> {
                     targets.push((k.trim().to_string(), v.trim().parse()?));
                 }
             }
+            "--fmi-version" => {
+                fmi_version = match next(&mut i)?.as_str() {
+                    "2" | "2.0" => 2,
+                    "3" | "3.0" => 3,
+                    v => anyhow::bail!("unknown FMI version '{v}' (2 | 3)"),
+                }
+            }
+            "--fmi-type" => {
+                let t = next(&mut i)?;
+                import.kind = Some(
+                    daedalus_core::external::FmiKind::parse(&t)
+                        .ok_or_else(|| anyhow::anyhow!("unknown FMI type '{t}' (me | cs)"))?,
+                )
+            }
+            "--comm-step" => import.step = Some(next(&mut i)?.parse()?),
+            "--class" => import.class = Some(next(&mut i)?),
+            "--within" => import.within = Some(next(&mut i)?),
+            "--locals" => import.locals = true,
             "--format" => {
                 format = next(&mut i)?;
                 set_format = true
@@ -365,7 +404,16 @@ fn run() -> anyhow::Result<()> {
         }
         i += 1;
     }
-    let model = model.ok_or_else(|| anyhow::anyhow!("no model given (-m)"))?;
+    if cmd == "import-fmu" || cmd == "import-ssp" {
+        let [src] = sources.as_slice() else {
+            anyhow::bail!("{cmd} takes one file");
+        };
+        return if cmd == "import-fmu" {
+            fmu_import::import_fmu(Path::new(src), output.as_deref(), &import)
+        } else {
+            fmu_import::import_ssp(Path::new(src), output.as_deref(), &import)
+        };
+    }
     let mut lib = Library::new();
     if let Ok(dir) = std::env::var("DAEDALUS_LIB") {
         libs.push(dir);
@@ -374,8 +422,26 @@ fn run() -> anyhow::Result<()> {
     // One model needs only part of a library: parse just the files it can reach
     // (test-library lists every model, so it parses everything).
     let lazy = cmd != "test-library";
+    // `.fmu` and `.ssp` sources become generated Modelica models (kept alive here).
+    let mut generated = Vec::new();
     for s in libs.iter().chain(sources.iter()) {
         let p = Path::new(s);
+        let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if p.is_file() && (ext.eq_ignore_ascii_case("fmu") || ext.eq_ignore_ascii_case("ssp")) {
+            let g = if ext.eq_ignore_ascii_case("fmu") {
+                fmu_import::fmu_source(p, &import)?
+            } else {
+                fmu_import::ssp_source(p, &import)?
+            };
+            for e in lib.set_document(&g.uri, &g.text) {
+                eprintln!("{e}");
+            }
+            if model.is_none() {
+                model = Some(g.model.clone());
+            }
+            generated.push(g);
+            continue;
+        }
         if p.is_dir() {
             if lazy {
                 lib.add_dir_lazy(p)?;
@@ -394,6 +460,7 @@ fn run() -> anyhow::Result<()> {
             }
         }
     }
+    let model = model.ok_or_else(|| anyhow::anyhow!("no model given (-m)"))?;
     if lazy && lib.has_pending() {
         let before = lib.docs.len();
         lib.load_for(&model);
@@ -830,9 +897,22 @@ fn run() -> anyhow::Result<()> {
             let out = output
                 .clone()
                 .unwrap_or_else(|| format!("{}.fmu", m.name.replace('.', "_")));
-            fmu::export(&m, std::path::Path::new(&out), fmi_lib.as_deref())?;
+            fmu::export(
+                &m,
+                std::path::Path::new(&out),
+                fmi_lib.as_deref(),
+                fmi_version,
+            )?;
             eprintln!("wrote {out}");
             Ok(())
+        }
+        "export-ssp" => {
+            let out = output
+                .clone()
+                .unwrap_or_else(|| format!("{}.ssp", model.rsplit('.').next().unwrap_or(&model)));
+            with_all_files(&mut lib, |l| {
+                fmu_import::export_ssp(l, &model, std::path::Path::new(&out))
+            })
         }
         "sweep" => {
             let m = with_all_files(&mut lib, |l| daedalus_core::translate(l, &model, &opts))?;

@@ -128,6 +128,12 @@ pub fn steady_state_at(
     sopts: &SteadyOptions,
 ) -> Result<SteadyState, String> {
     let m = rt.m;
+    if !m.externals.is_empty() {
+        return Err(format!(
+            "{} contains FMU components: steady states are not supported for them",
+            m.name
+        ));
+    }
     let find = |name: &str| -> Result<VarId, String> {
         m.vars
             .iter()
