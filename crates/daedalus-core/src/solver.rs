@@ -120,7 +120,9 @@ pub(crate) fn initial_step(
         let x1: Vec<f64> = x.iter().zip(f0).map(|(a, f)| a + h0 * f).collect();
         rt.rhs(t + h0, &x1, &mut f1);
         let ok = rt.error.take().is_none() && f1.iter().all(|v| v.is_finite());
-        rt.restore_tears(&tears);
+        // Only wild tears are put back: the probe's other iterates are the better start
+        // guesses (restoring all of them changed the first steps after a restart).
+        rt.restore_wild_tears(&tears);
         if ok {
             break;
         }
