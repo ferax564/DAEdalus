@@ -668,7 +668,9 @@ fn run() -> anyhow::Result<()> {
         }
         "simulate" => {
             let t1 = Instant::now();
-            let m = with_all_files(&mut lib, |l| daedalus_core::translate(l, &model, &opts))?;
+            let (m, dynamic) = with_all_files(&mut lib, |l| {
+                daedalus_core::statesets::translate(l, &model, &opts)
+            })?;
             let t_tr = t1.elapsed();
             for w in &m.warnings {
                 eprintln!("warning: {w}");
@@ -703,7 +705,11 @@ fn run() -> anyhow::Result<()> {
             let o_method = o.method;
             let o_dbg = o.clone();
             o.profile = profile.is_some() || print_events;
-            let (r, prof) = daedalus_core::sim::simulate_profiled(&m, o);
+            // Dynamic state selection (not while profiling: one model per profile).
+            let (r, prof) = match dynamic {
+                Some(d) if !o.profile => (daedalus_core::statesets::simulate(&m, d, o), None),
+                _ => daedalus_core::sim::simulate_profiled(&m, o),
+            };
             if let Some(p) = &prof {
                 if print_events {
                     print!("{}", p.event_log_text());
@@ -719,6 +725,9 @@ fn run() -> anyhow::Result<()> {
             let (res, stats) = match r {
                 Ok(r) => r,
                 Err(e) => {
+                    for l in e.partial.iter().flat_map(|p| &p.log) {
+                        eprintln!("{l}");
+                    }
                     if let (Some(out), Some(p)) = (&output, &e.partial) {
                         write_result(p, out, vars.as_deref())?;
                         eprintln!("partial results written to {out}");

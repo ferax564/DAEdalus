@@ -61,6 +61,39 @@ fn index3_pendulum_keeps_constraint() {
     assert!(close(9.81 * -y, 0.5 * (vx * vx + vy * vy), 1e-4));
 }
 
+/// Dynamic state selection: the static choice (y, vy at the start values) is singular at
+/// the bottom, where a static run reflects the pendulum back; the run switches to x.
+#[test]
+fn pendulum_switches_states_through_the_bottom() {
+    let path = format!("{}/tests/models/index.mo", env!("CARGO_MANIFEST_DIR"));
+    let text = std::fs::read_to_string(&path).unwrap();
+    let mut lib = Library::new();
+    assert!(lib.set_document(&path, &text).is_empty());
+    let o = Default::default();
+    let (m, d) = daedalus_core::statesets::translate(&lib, "T.SwingingPendulum", &o).unwrap();
+    let opts = SimOptions {
+        stop_time: 3.0,
+        tolerance: 1e-8,
+        interval: 0.01,
+        ..SimOptions::from_model(&m)
+    };
+    let d = d.expect("the state set depends on the solution");
+    let (r, _) = daedalus_core::statesets::simulate(&m, d, opts).unwrap();
+    assert!(r.log.iter().any(|l| l.contains("dynamic state selection")), "{:?}", r.log);
+    let xs = r.values("x").unwrap();
+    let ys = r.values("y").unwrap();
+    let es = r.values("E").unwrap();
+    let xmin = xs.iter().copied().fold(f64::INFINITY, f64::min);
+    assert!(close(xmin, -0.8, 1e-4), "swings to the other side: {xmin}");
+    for ((x, y), e) in xs.iter().zip(&ys).zip(&es) {
+        assert!(close(x * x + y * y, 1.0, 1e-7));
+        assert!(close(*e, -9.81 * 0.6, 1e-4), "energy {e}");
+    }
+    // A model whose state sets have constant Jacobians runs statically.
+    let (_, d) = daedalus_core::statesets::translate(&lib, "T.TwoInertias", &o).unwrap();
+    assert!(d.is_none());
+}
+
 #[test]
 fn index2_gear_constraint() {
     let r = run("index.mo", "T.TwoInertias", 2.0, Method::Bdf);

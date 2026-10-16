@@ -705,7 +705,11 @@ fn dummy_preference(w: &Work, trig: &FxHashSet<VarId>, nl: &FxHashSet<VarId>, z:
 }
 
 /// Select the states with the dummy-derivative method. Returns the state variables.
-pub fn select_states(w: &mut Work) -> Result<Vec<VarId>> {
+pub fn select_states(
+    w: &mut Work,
+    choice: &[Vec<String>],
+    at: Option<&[f64]>,
+) -> Result<Vec<VarId>> {
     // Chains of differentiated equations.
     let roots: Vec<usize> = (0..w.eqs.len())
         .filter(|&e| w.eqs[e].parent.is_none())
@@ -743,6 +747,16 @@ pub fn select_states(w: &mut Work) -> Result<Vec<VarId>> {
         // set), or, for a block singular there, at the start values themselves.
         let mut point0p = point0.clone();
         propagate_explicit(w, &mut point0p);
+        // A point of a run (dynamic state selection switching): pick there instead.
+        if let Some(at) = at {
+            for (v, &x) in at.iter().enumerate().take(w.vars.len()) {
+                if w.unknown[v] && x.is_finite() {
+                    point0[v] = x;
+                    point1[v] = x + perturb(v as VarId) * (1.0 + x.abs());
+                }
+            }
+            point0p = point0.clone();
+        }
         let max_c = chains.iter().map(|c| c.len() - 1).max().unwrap();
         let trig = trig_defined(w);
         // Candidates for step 1: highest derivatives that are derivative variables.
@@ -897,6 +911,16 @@ pub fn select_states(w: &mut Work) -> Result<Vec<VarId>> {
                         pick = pp;
                     }
                 }
+                // A choice made from outside (a switch of dynamic state selection).
+                if let Some(c) = choice.iter().find(|c| {
+                    c.len() == rows.len()
+                        && c.iter().all(|n| bcols.iter().any(|&b| w.name(cols[b]) == n))
+                }) {
+                    pick = c
+                        .iter()
+                        .filter_map(|n| bcols.iter().position(|&b| w.name(cols[b]) == n))
+                        .collect();
+                }
                 if pick.len() < rows.len() {
                     let names: Vec<&str> = bcols.iter().map(|&c| w.name(cols[c])).collect();
                     let eqs: Vec<String> = rows
@@ -910,6 +934,15 @@ pub fn select_states(w: &mut Work) -> Result<Vec<VarId>> {
                         names.join(", "),
                         eqs.join("; ")
                     );
+                }
+                if bcols.len() > rows.len() {
+                    w.state_sets.push(super::StateSetEqs {
+                        level: k,
+                        eqs: rows.iter().map(|&ri| (w.eqs[g[ri]].lhs, w.eqs[g[ri]].rhs)).collect(),
+                        candidates: bcols.iter().map(|&c| cols[c]).collect(),
+                        tiers: btiers.clone(),
+                        dummies: pick.iter().map(|&l| cols[bcols[l]]).collect(),
+                    });
                 }
                 if let Some(t) = &mut w.trace {
                     t.state_sets.push(super::trace::StateSet {

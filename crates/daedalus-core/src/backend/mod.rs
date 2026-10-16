@@ -13,6 +13,7 @@ pub mod alias;
 pub mod eval;
 pub mod graph;
 pub mod index;
+pub mod lincons;
 pub mod sort;
 pub mod state_select;
 pub mod trace;
@@ -104,6 +105,25 @@ pub struct System {
     pub origins: Vec<String>,
     /// Structural record for the structure report (only with [`Options::trace`]).
     pub trace: Option<trace::Trace>,
+    /// The blocks of the dummy-derivative selection that had a choice (for dynamic
+    /// state selection, [`crate::statesets`]).
+    pub state_sets: Vec<StateSetEqs>,
+}
+
+/// A block of the dummy-derivative selection with more candidates than equations: the
+/// equations are solved for `dummies`, the other candidates stay state derivatives.
+#[derive(Clone, Debug)]
+pub struct StateSetEqs {
+    /// 1 for the highest derivatives, 2 for the next order down, ...
+    pub level: usize,
+    /// The equations, `(lhs, rhs)`.
+    pub eqs: Vec<(ExprId, ExprId)>,
+    /// Derivative variables, most willing to become a dummy first.
+    pub candidates: Vec<VarId>,
+    /// The candidates' tiers (`4 * stateSelect class + heuristics`, lower is more
+    /// wanted as a state's derivative).
+    pub tiers: Vec<i64>,
+    pub dummies: Vec<VarId>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -149,6 +169,8 @@ pub struct Work {
     /// `(v, p)`: initialization solved `pre(v)` as variable `p`.
     pub pre_init: Vec<(VarId, VarId)>,
     pub trace: Option<trace::Trace>,
+    /// See [`System::state_sets`].
+    pub state_sets: Vec<StateSetEqs>,
 }
 
 impl Work {
@@ -317,6 +339,13 @@ pub struct Options {
     pub state_overrides: Vec<state_select::StateOverride>,
     /// Keep a [`trace::Trace`] of the structural decisions in [`System::trace`].
     pub trace: bool,
+    /// Dummy derivatives chosen from outside (dynamic state selection, [`crate::statesets`]):
+    /// each entry names the dummies of one state set, by variable name. A set whose
+    /// candidates include all the names of an entry takes them instead of its own pick.
+    pub dummy_choice: Vec<Vec<String>>,
+    /// Values of the variables (by id) at which the dummy derivatives without a choice
+    /// in `dummy_choice` are picked, instead of the start values: a point of a run.
+    pub select_at: Option<Vec<f64>>,
 }
 
 impl Default for Options {
@@ -326,6 +355,8 @@ impl Default for Options {
             tearing: true,
             state_overrides: Vec::new(),
             trace: false,
+            dummy_choice: Vec::new(),
+            select_at: None,
         }
     }
 }
@@ -494,6 +525,7 @@ pub fn compile_traced(
         invariant_eqs: FxHashSet::default(),
         init_only,
         pre_init: Vec::new(),
+        state_sets: Vec::new(),
         trace: opts.trace.then(|| trace::Trace {
             overrides: applied,
             sources: equations
@@ -543,10 +575,15 @@ pub fn compile_traced(
     index::create_derivative_vars(&mut w);
     let n_before = w.eqs.len();
     if opts.index_reduction {
+        lincons::expose_hidden_constraints(&mut w);
         tr!(index::pantelides(&mut w));
     }
     stats.differentiated_equations = w.eqs.len() - n_before;
-    let states = tr!(index::select_states(&mut w));
+    let states = tr!(index::select_states(
+        &mut w,
+        &opts.dummy_choice,
+        opts.select_at.as_deref()
+    ));
     stats.dummy_derivatives = w.dummy.len();
     let state_derivs: Vec<VarId> = states
         .iter()
@@ -664,6 +701,7 @@ pub fn compile_traced(
         warnings: w.warnings,
         origins: w.origins,
         trace: w.trace,
+        state_sets: w.state_sets,
     })
 }
 

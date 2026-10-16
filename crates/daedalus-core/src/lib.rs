@@ -44,6 +44,7 @@ pub mod solver_esdirk;
 pub mod solver_jac;
 pub mod solver_radau;
 pub mod sparse;
+pub mod statesets;
 pub mod steady;
 pub mod structure;
 pub mod sweep;
