@@ -13,6 +13,7 @@ pub mod alias;
 pub mod eval;
 pub mod graph;
 pub mod index;
+pub mod lincons;
 pub mod sort;
 pub mod state_select;
 pub mod trace;
@@ -543,6 +544,7 @@ pub fn compile_traced(
     index::create_derivative_vars(&mut w);
     let n_before = w.eqs.len();
     if opts.index_reduction {
+        lincons::expose_hidden_constraints(&mut w);
         tr!(index::pantelides(&mut w));
     }
     stats.differentiated_equations = w.eqs.len() - n_before;
