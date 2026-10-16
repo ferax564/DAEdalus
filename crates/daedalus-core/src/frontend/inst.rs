@@ -92,6 +92,8 @@ pub fn merge<'a>(outer: &Mod<'a>, inner: &Mod<'a>) -> Mod<'a> {
         r.value = outer.value.clone();
         r.each = outer.each;
     }
+    // `c(final p = x)` makes `p` final whatever its declaration says.
+    r.final_ |= outer.final_;
     for (n, om) in &outer.subs {
         if let Some(pos) = r.subs.iter().position(|(rn, _)| rn == n) {
             let merged = merge(om, &r.subs[pos].1);
@@ -1387,7 +1389,7 @@ impl<'a, 't> Flattener<'a, 't> {
                 v.is_flow = is_flow;
                 v.description = desc.clone();
                 v.is_protected = comp.is_protected;
-                v.is_final = comp.is_final || self.insts[inst as usize].is_final;
+                v.is_final = comp.is_final || m.final_ || self.insts[inst as usize].is_final;
                 v.is_output = causality_output && prefix.is_empty();
                 let vid = self.model.add_var(v);
                 if b == "Clock" {
