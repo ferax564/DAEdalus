@@ -94,6 +94,11 @@ input[type="number"] { width: 72px; }
 /* Less-used toolbar controls: all shown inline on wide windows; on phones they open from the More button. */
 .tools-more { display: contents; }
 .tools-menu-btn { display: none; }
+/* Local engine sits inside the More menu, but on wide windows it keeps its place after Simulate,
+   before Docs and the Assistant button (the buttons added by assistant.ts). */
+#btn-engine { order: 1; }
+#docs-link { order: 2; }
+#btn-assistant { order: 3; }
 .tools label { color: var(--muted); display: flex; gap: 4px; align-items: center; }
 .sep { width: 1px; height: 20px; background: var(--line); }
 label.file { position: relative; overflow: hidden; border: 1px dashed var(--line); border-radius: 6px; padding: 3px 8px; cursor: pointer; color: var(--fg); }
