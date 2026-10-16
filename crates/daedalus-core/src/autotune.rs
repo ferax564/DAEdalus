@@ -192,10 +192,12 @@ pub fn metrics(res: &Results, spec: &Spec) -> Result<Metrics, String> {
             _ => f64::INFINITY,
         };
         let band = 0.02 * step.abs();
-        m.settling_time = match idx.iter().rev().find(|&&i| (y[i] - target).abs() > band) {
-            Some(&i) if i == il => f64::INFINITY,
-            Some(&i) => t[i] - t0,
+        // settled at the first sample after the last one outside the band
+        let last_out = idx.iter().rposition(|&i| (y[i] - target).abs() > band);
+        m.settling_time = match last_out {
             None => 0.0,
+            Some(k) if k + 1 == idx.len() => f64::INFINITY,
+            Some(k) => t[idx[k + 1]] - t0,
         };
         m.steady_state_error = (y[il] - target).abs() / step.abs() * 100.0;
     }
@@ -249,6 +251,9 @@ fn meets(m: &Metrics, spec: &Spec) -> bool {
 pub fn tune(m: &Model, opts: &SimOptions, spec: &Spec) -> Result<Outcome, String> {
     if spec.gains.is_empty() {
         return Err("give at least one gain to tune".into());
+    }
+    if spec.max_control.is_some() && spec.control.is_none() {
+        return Err("a control-effort limit needs the control variable (control)".into());
     }
     let names: Vec<String> = spec.gains.iter().map(|g| g.name.clone()).collect();
     let current = crate::uq::param_values(m, opts, &names)?;
@@ -522,6 +527,9 @@ mod tests {
             max_settling: None,
             max_iter: 80,
         };
+        let mut no_u = spec.clone();
+        no_u.control = None;
+        assert!(tune(&m, &o, &no_u).unwrap_err().contains("control"));
         let out = tune(&m, &o, &spec).unwrap();
         let rep = out.report(&spec);
         assert!(out.after.criterion < 0.5 * out.before.criterion, "{rep}");

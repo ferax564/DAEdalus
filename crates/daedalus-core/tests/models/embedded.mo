@@ -52,4 +52,10 @@ package Emb "Models for the embedded C generator tests"
     T*der(y) = z - y;
     T*der(z) = u - z;
   end Lag;
+  model Guarded "An assertion outside when-clauses"
+    output Real y;
+  equation
+    y = 2*time;
+    assert(y <= 1.0 + 1e-6, "y above its limit");
+  end Guarded;
 end Emb;

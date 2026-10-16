@@ -117,6 +117,10 @@ pub struct Manifest {
     pub registers: usize,
     /// Size of the instance struct in bytes (estimate: registers plus bookkeeping).
     pub instance_bytes: usize,
+    /// Run time after which consecutive sample times are no longer distinct in the
+    /// arithmetic type (restart the controller, or use double, before then).
+    #[serde(default)]
+    pub horizon_s: f64,
 }
 
 pub struct Generated {
@@ -145,6 +149,7 @@ enum Ctx {
     Zc,
     When,
     Outputs,
+    Asserts,
     Body(u32),
     Jac(u32),
     Rt,
@@ -503,8 +508,25 @@ pub fn generate(m: &Model, opts: &Options) -> Result<Generated> {
         bail!("the step size must be positive");
     }
     let what = "embedded code";
-    for prog in [&m.starts, &m.init, &m.ode, &m.zc, &m.when_prog, &m.outputs] {
+    for prog in [
+        &m.starts,
+        &m.init,
+        &m.ode,
+        &m.zc,
+        &m.when_prog,
+        &m.outputs,
+        &m.asserts_prog,
+    ] {
         check_supported(m, prog, what)?;
+    }
+    // when-branches that call impure external functions run them as effects
+    if m.whens
+        .iter()
+        .any(|w| w.effects.iter().any(|e| !e.is_empty()))
+    {
+        bail!(
+            "{what}: impure external functions in when-clauses are not supported in embedded code"
+        );
     }
     for (_, seg) in &m.params {
         check_supported(m, seg, what)?;
@@ -567,6 +589,7 @@ pub fn generate(m: &Model, opts: &Options) -> Result<Generated> {
         add(Ctx::Zc, &m.zc, &mut ctxs);
         add(Ctx::When, &m.when_prog, &mut ctxs);
         add(Ctx::Outputs, &m.outputs, &mut ctxs);
+        add(Ctx::Asserts, &m.asserts_prog, &mut ctxs);
         for (i, b) in m.newton.iter().enumerate() {
             add(Ctx::Body(i as u32), &b.body, &mut ctxs);
             add(Ctx::Jac(i as u32), &b.jac, &mut ctxs);
@@ -622,6 +645,7 @@ pub fn generate(m: &Model, opts: &Options) -> Result<Generated> {
             }
         }
     }
+    rt.extend(m.asserts.iter().map(|(c, _)| *c));
     for b in &m.newton {
         rt.extend(&b.tears);
         rt.extend(&b.residuals);
@@ -714,6 +738,17 @@ pub fn generate(m: &Model, opts: &Options) -> Result<Generated> {
     fns.push_str(&g.function("f_zc", &m.zc, "", ""));
     fns.push_str(&g.function("f_when", &m.when_prog, "", ""));
     fns.push_str(&g.function("f_outputs", &m.outputs, "", ""));
+    // Assertions outside when-clauses: checked after every step, like the simulator.
+    let mut tail = String::new();
+    for (c, msg) in &m.asserts {
+        let _ = writeln!(
+            tail,
+            "    if ({} == RC(0.0)) m->status |= 8u; /* {} */",
+            g.operand(*c),
+            msg.replace("*/", "* /").replace('\n', " ")
+        );
+    }
+    fns.push_str(&g.function("f_asserts", &m.asserts_prog, "", &tail));
 
     let mut src = String::new();
     let _ = writeln!(
@@ -1072,6 +1107,16 @@ pub fn generate(m: &Model, opts: &Options) -> Result<Generated> {
         .enumerate()
         .map(|(k, &v)| port(v, "OUT", k, &vals))
         .collect();
+    // Time is T_START + k * step in real_t: a float keeps consecutive sample times
+    // apart for 2^24 steps; a double for far longer than a 32-bit counter lasts.
+    let (k_type, k_bytes) = match opts.real {
+        RealType::Float => ("uint32_t", 4),
+        RealType::Double => ("uint64_t", 8),
+    };
+    let horizon_s = match opts.real {
+        RealType::Float => opts.step * 16_777_216.0,
+        RealType::Double => opts.step * 4_503_599_627_370_496.0,
+    };
     let mut h = String::new();
     let guard = format!("{up}_H");
     let _ = writeln!(
@@ -1120,7 +1165,7 @@ pub fn generate(m: &Model, opts: &Options) -> Result<Generated> {
     );
     let _ = writeln!(
         h,
-        "typedef struct {{\n    real_t r[{}];\n    uint32_t k;        /* steps taken since start */\n    uint8_t status;\n    uint8_t cond_prev[{}];\n}} {p}_t;\n",
+        "typedef struct {{\n    real_t r[{}];\n    {k_type} k;        /* steps taken since start */\n    uint8_t status;\n    uint8_t cond_prev[{}];\n}} {p}_t;\n",
         g.n_global.max(1),
         n_br.max(1)
     );
@@ -1173,7 +1218,8 @@ pub fn generate(m: &Model, opts: &Options) -> Result<Generated> {
         n_states,
         n_newton: m.newton.len(),
         registers: g.n_global,
-        instance_bytes: g.n_global.max(1) * real_bytes + 4 + 1 + n_br.max(1),
+        instance_bytes: g.n_global.max(1) * real_bytes + k_bytes + 1 + n_br.max(1),
+        horizon_s,
     };
     let _ = g.opts;
     Ok(Generated {
@@ -1204,6 +1250,7 @@ fn promote_read_before_write(g: &mut Gen, params: &[Vec<Ins>]) {
         &m.zc,
         &m.when_prog,
         &m.outputs,
+        &m.asserts_prog,
     ];
     for b in &m.newton {
         progs.push(&b.body);
@@ -1713,6 +1760,7 @@ uint8_t {p}_start({p}_t *m)
     R[INITIAL_IDX] = RC(0.0);
     m->status |= events(m);
     f_outputs(m);
+    f_asserts(m);
     (void)c1; (void)c0; (void)edge;
     return m->status;
 }}
@@ -1754,6 +1802,7 @@ uint8_t {p}_step({p}_t *m)
     f_ode(m);
     m->status |= events(m);
     f_outputs(m);
+    f_asserts(m);
     return m->status;
 }}
 
@@ -1802,7 +1851,7 @@ int main(int argc, char **argv)
     static {p}_t m;
     char line[4096];
     long steps = argc > 1 ? atol(argv[1]) : -1;
-    int first = 1;
+    int first = 1, warned = 0;
     int i;
     {p}_init(&m);
     printf("time");
@@ -1827,6 +1876,10 @@ int main(int argc, char **argv)
         printf("%.9g", (double){p}_time(&m));
         for (i = 0; i < {up}_N_OUTPUTS; i++) printf(",%.9g", (double){p}_get_output(&m, (uint16_t)i));
         printf("\n");
+        if ((st & {up}_ASSERTION) && !warned) {{
+            fprintf(stderr, "assertion failed at t = %g\n", (double){p}_time(&m));
+            warned = 1;
+        }}
         if (st & ~{up}_ASSERTION) {{
             fprintf(stderr, "status %u at t = %g\n", st, (double){p}_time(&m));
             if (st & ({up}_NONLINEAR_FAILED | {up}_EVENTS_FAILED)) return 2;

@@ -207,6 +207,13 @@ pub fn codegen(m: &Model, so: &SimOptions, a: &Args, out_dir: Option<&str>) -> a
         man.instance_bytes,
         opts.real.c_name()
     );
+    if man.horizon_s < 3.0e7 {
+        eprintln!(
+            "note: in {} the sample times stay distinct for {:.1} h of continuous running; restart the controller before then, or use --real double",
+            opts.real.c_name(),
+            man.horizon_s / 3600.0
+        );
+    }
     for p in &man.inputs {
         eprintln!("  input  {:<3} {} ({})", p.index, p.name, p.macro_name);
     }

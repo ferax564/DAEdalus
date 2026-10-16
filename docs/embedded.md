@@ -80,9 +80,15 @@ What the code does and does not do:
 - **Clean.** The generated code compiles without warnings under
   `-std=c99 -Wall -Wextra -Wconversion -Wshadow -pedantic`.
 - **Parameters** are computed once in `init`; `-p name=value` bakes other values in.
-- **Not supported yet:** `delay()` and functions with `while` loops (`codegen-c` says so
-  and stops). Fixed-step integration of a stiff plant needs a small step: generate code for
-  controllers and simple plants, and simulate stiff physics in DAEdalus.
+- **Assertions** outside `when` clauses are checked after every step and set the
+  `ASSERTION` status bit, as the simulator would stop on them.
+- **Long runs.** Time is the start time plus the step count times the step. In `float`
+  consecutive sample times stay distinct for 2^24 steps (4.6 hours at 1 ms; `codegen-c`
+  prints the limit): restart the controller (`start`) before then, or use `double`.
+- **Not supported yet:** `delay()`, functions with `while` loops, external C functions
+  and 2-D tables (`codegen-c` says so and stops). Fixed-step integration of a stiff
+  plant needs a small step: generate code for controllers and simple plants, and
+  simulate stiff physics in DAEdalus.
 
 `pid.json` lists the inputs, outputs, step and RAM size; `daedalus hil` reads it.
 `pid_main.c` is a small host driver that reads one line of inputs per step on stdin and

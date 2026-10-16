@@ -30,6 +30,11 @@ fn have_cc() -> bool {
 /// Generate, compile and run `n` steps with constant inputs (their start values);
 /// returns rows `[time, outputs...]` and the output names.
 fn run_c(name: &str, opts: &Options, n: usize) -> (Vec<String>, Vec<Vec<f64>>) {
+    let (names, rows, _) = run_c_err(name, opts, n);
+    (names, rows)
+}
+
+fn run_c_err(name: &str, opts: &Options, n: usize) -> (Vec<String>, Vec<Vec<f64>>, String) {
     let lib = lib();
     let m = daedalus_core::translate(&lib, name, &Default::default()).unwrap();
     let g = embedded::generate(&m, opts).unwrap();
@@ -78,6 +83,7 @@ fn run_c(name: &str, opts: &Options, n: usize) -> (Vec<String>, Vec<Vec<f64>>) {
     let mut child = Command::new(&exe)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()
         .unwrap();
     use std::io::Write;
@@ -102,7 +108,7 @@ fn run_c(name: &str, opts: &Options, n: usize) -> (Vec<String>, Vec<Vec<f64>>) {
         .map(|l| l.split(',').map(|x| x.parse::<f64>().unwrap()).collect())
         .collect();
     let _ = std::fs::remove_dir_all(&dir);
-    (names, rows)
+    (names, rows, String::from_utf8_lossy(&out.stderr).into_owned())
 }
 
 fn reference(name: &str, stop: f64, n: usize) -> daedalus_core::results::Results {
@@ -246,4 +252,30 @@ fn parameter_overrides_are_baked_in() {
     assert!(g.source.contains("RC(5e-1)"), "override not in the code");
     o.params = vec![("nope".into(), 1.0)];
     assert!(embedded::generate(&m, &o).is_err());
+}
+
+#[test]
+fn assertions_set_the_status_bit() {
+    if !have_cc() {
+        return;
+    }
+    // y ramps up and passes the asserted limit at t = 0.5
+    let (_, rows, err) = run_c_err(
+        "Emb.Guarded",
+        &opts(0.01, RealType::Float, Integrator::Rk4),
+        100,
+    );
+    assert!(!rows.is_empty());
+    assert!(err.contains("assertion failed at t = 0.5"), "{err}");
+}
+
+#[test]
+fn step_counter_width_and_float_horizon() {
+    let lib = lib();
+    let m = daedalus_core::translate(&lib, "Emb.Lag", &Default::default()).unwrap();
+    let f = embedded::generate(&m, &opts(0.001, RealType::Float, Integrator::Rk4)).unwrap();
+    assert!((f.manifest.horizon_s - 16777.216).abs() < 1e-6);
+    assert!(f.header.contains("uint32_t k;"));
+    let d = embedded::generate(&m, &opts(0.001, RealType::Double, Integrator::Rk4)).unwrap();
+    assert!(d.header.contains("uint64_t k;"));
 }
