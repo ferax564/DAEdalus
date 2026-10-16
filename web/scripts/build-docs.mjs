@@ -27,8 +27,11 @@ const NAV = [
   ]],
   ["Using DAEdalus", [
     ["workbench.md", "Workbench"],
+    ["editor.md", "Text editor"],
+    ["plotting.md", "Live plots and dashboards"],
     ["animation.md", "3-D animation"],
     ["experiments.md", "Experiments and sweeps"],
+    ["libraries.md", "Libraries and packages"],
     ["cli.md", "Command line"],
     ["scripting.md", "Scripts (.mos) and steady states"],
     ["python.md", "Python API"],
@@ -38,17 +41,25 @@ const NAV = [
     ["examples.md", "Example library"],
     ["multibody.md", "Multibody vehicles"],
     ["msl.md", "Modelica Standard Library"],
+    ["state-machines.md", "State machines"],
   ]],
-  ["Analysis and export", [
+  ["Understanding a model", [
     ["structure.md", "Structure and state selection"],
-    ["solvers.md", "Solvers"],
+    ["debugger.md", "Equation and init debugger"],
+    ["units.md", "Unit checking"],
     ["performance.md", "Performance analyzer"],
-    ["analysis.md", "Sensitivity and calibration"],
+    ["solvers.md", "Solvers"],
+  ]],
+  ["Analysis and design", [
     ["linearize.md", "Linearization"],
-    ["fmi.md", "FMI 2.0 export"],
+    ["linear-analysis.md", "Linear analysis"],
+    ["analysis.md", "Sensitivity, DOE and calibration"],
     ["optimal-control.md", "Optimal control, MPC, MHE"],
-    ["embedded.md", "Embedded C and processor in the loop"],
     ["sciml.md", "Scientific machine learning"],
+  ]],
+  ["Export and deployment", [
+    ["fmi.md", "FMI and SSP"],
+    ["embedded.md", "Embedded C and processor in the loop"],
   ]],
   ["Internals", [
     ["architecture.md", "Architecture"],
