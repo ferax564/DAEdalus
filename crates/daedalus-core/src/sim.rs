@@ -275,6 +275,55 @@ pub struct Simulation<'m> {
     prof: Option<Box<crate::profile::Profiler>>,
     /// The nonlinear solve that stopped the run, for the debugger ([`crate::debug`]).
     pub newton_failure: Option<NewtonFailure>,
+    /// Dynamic state selection: watches the state choice after every accepted step.
+    monitor: Option<Box<dyn StateMonitor>>,
+    /// The switch of the state choice the monitor asked for.
+    switch_to: Option<StateSwitch>,
+}
+
+/// Watches the conditioning of a model's state choice during a run (dynamic state
+/// selection, [`crate::statesets`]).
+pub trait StateMonitor {
+    /// Called after accepted steps with the registers `r` (indexed by variable) at the
+    /// step's end `t`: the switch to make when the current choice has become
+    /// ill-conditioned.
+    fn check(&mut self, r: &[f64], t: f64) -> Option<StateSwitch>;
+}
+
+/// A change of the state choice asked for by a [`StateMonitor`].
+pub struct StateSwitch {
+    /// The dummy derivatives of each watched state set, by name.
+    pub choice: Vec<Vec<String>>,
+    /// The sets of `choice` that switch (the others keep their dummies when they can).
+    pub switched: Vec<usize>,
+    pub message: String,
+}
+
+/// Compiles the model again for a switch, picking the state sets it does not fix at
+/// the given values of the variables, with a monitor for the new choice; `None` when
+/// that is not possible.
+pub type Recompile<'a> =
+    dyn FnMut(&StateSwitch, &[f64]) -> Option<(Model, Box<dyn StateMonitor>)> + 'a;
+
+/// What a run hands over to the same model compiled with other states.
+struct Carry {
+    /// Variables, `pre` values, time flags and latched relations.
+    regs: Vec<f64>,
+    cond_prev: Vec<Vec<bool>>,
+    zc_scale: Vec<f64>,
+    stats: SimStats,
+    log: Vec<String>,
+    /// Counters of the integrators and Newton solves so far.
+    solver: SolverStats,
+    newton: (u64, u64),
+    k_out: u64,
+    event_budget: usize,
+    event_rows: usize,
+    guard: u64,
+    last_event: f64,
+    last_event_rows: usize,
+    same_instant: u32,
+    wall0: f64,
 }
 
 /// A Newton block that did not converge: which one, where and how far off.
@@ -317,6 +366,8 @@ impl<'m> Simulation<'m> {
             ext_z: Vec::new(),
             prof: None,
             newton_failure: None,
+            monitor: None,
+            switch_to: None,
         }
     }
 
@@ -1793,9 +1844,73 @@ impl<'m> Simulation<'m> {
                     e.residual
                 ));
             }
+            // Dynamic state selection: is the state choice still well-conditioned here?
+            if event_t.is_none() && self.monitor.is_some() {
+                let xs = st.solver.x().to_vec();
+                self.rt.rhs(t, &xs, &mut st.xi);
+                self.rt.error = None;
+                let nv = m.layout.nv;
+                let r = &self.rt.r[..nv];
+                if let Some(c) = self.monitor.as_mut().and_then(|mon| mon.check(r, t)) {
+                    self.switch_to = Some(c);
+                    break;
+                }
+            }
         }
         st.t = t;
         Ok(())
+    }
+
+    /// Hand the run over at the stepper's (accepted, consistent) point.
+    fn carry(&mut self, st: &Stepper, acc: &SolverStats, newton: (u64, u64)) -> Carry {
+        let m = self.rt.m;
+        let l = &m.layout;
+        Carry {
+            regs: self.rt.r[..l.rel0 + l.n_rel].to_vec(),
+            cond_prev: std::mem::take(&mut self.cond_prev),
+            zc_scale: std::mem::take(&mut self.zc_scale),
+            stats: self.stats.clone(),
+            log: std::mem::take(&mut self.log),
+            solver: acc.add(&st.solver.stats()),
+            newton: (
+                newton.0 + self.rt.newton_stats.solves,
+                newton.1 + self.rt.newton_stats.iterations,
+            ),
+            k_out: st.k_out,
+            event_budget: st.event_budget,
+            event_rows: st.event_rows,
+            guard: st.guard,
+            last_event: st.last_event,
+            last_event_rows: st.last_event_rows,
+            same_instant: st.same_instant,
+            wall0: st.wall0,
+        }
+    }
+
+    /// Continue a run handed over by the same model compiled with other states: the
+    /// variables keep their values, the new model computes its dummy derivatives and
+    /// algebraic variables from them, and a fresh integrator starts from its states.
+    fn resume(&mut self, c: &Carry) -> Result<Stepper, String> {
+        let m = self.rt.m;
+        self.eval_params()?;
+        self.rt.r[..c.regs.len()].copy_from_slice(&c.regs);
+        self.cond_prev = c.cond_prev.clone();
+        self.zc_scale = c.zc_scale.clone();
+        self.stats = c.stats.clone();
+        self.log = c.log.clone();
+        self.rt.run(&m.ode);
+        self.check_newton("dynamic state selection")?;
+        let mut st = self.make_stepper();
+        st.k_out = c.k_out;
+        st.event_budget = c.event_budget;
+        st.event_rows = c.event_rows;
+        st.guard = c.guard;
+        st.last_event = c.last_event;
+        st.last_event_rows = c.last_event_rows;
+        st.same_instant = c.same_instant;
+        st.wall0 = c.wall0;
+        self.restart(&mut st);
+        Ok(st)
     }
 
     /// A time event exactly at the stop time (`sample(0, T)` with StopTime a multiple of
@@ -2163,6 +2278,130 @@ pub fn simulate_profiled(
     Option<crate::profile::Profile>,
 ) {
     Simulation::new(m, opts).run_profiled()
+}
+
+/// Whether two compilations of one model can hand a run over to each other: the same
+/// variables, register layout of the variables and relations, and when-clauses.
+fn same_layout(a: &Model, b: &Model) -> bool {
+    let (la, lb) = (&a.layout, &b.layout);
+    la.nv == lb.nv
+        && la.pre0 == lb.pre0
+        && la.time == lb.time
+        && la.initial == lb.initial
+        && la.terminal == lb.terminal
+        && la.rel0 == lb.rel0
+        && la.n_rel == lb.n_rel
+        && a.vars.len() == b.vars.len()
+        && a.vars.iter().zip(&b.vars).all(|(x, y)| x.name == y.name)
+        && a.aliases.len() == b.aliases.len()
+        && a.aliases.iter().zip(&b.aliases).all(|(x, y)| x.0 == y.0)
+        && a.param_vars == b.param_vars
+        && a.whens.len() == b.whens.len()
+        && a.whens.iter().zip(&b.whens).all(|(x, y)| x.conds.len() == y.conds.len())
+        && b.delays.is_empty()
+        && b.externals.is_empty()
+}
+
+/// Most switches of the state choice in one run; later the last choice is kept.
+const MAX_SWITCHES: usize = 100;
+
+/// Simulate with dynamic state selection: `monitor` watches the state choice of `first`
+/// after every accepted step; when it asks for other dummy derivatives, the run stops
+/// there, `recompile` compiles the model with them, and the run continues with the new
+/// model from the values reached (one result, one set of statistics). Without a switch
+/// this is [`simulate`].
+pub fn simulate_switching(
+    first: &Model,
+    opts: SimOptions,
+    monitor: Box<dyn StateMonitor>,
+    recompile: &mut Recompile,
+) -> Result<(Results, SimStats), SimError> {
+    let (mut rec, order) = Recorder::new(first);
+    let mut owned: Option<Box<Model>> = None;
+    let mut monitor = Some(monitor);
+    let mut carry: Option<Carry> = None;
+    let mut switches = 0;
+    let t_init = crate::backend::web_time_now();
+    let mut t1 = t_init;
+    loop {
+        let cur: &Model = owned.as_deref().unwrap_or(first);
+        let mut sim = Simulation::new(cur, opts.clone());
+        let prev = carry.take();
+        let (acc, newton) = prev
+            .as_ref()
+            .map_or((SolverStats::default(), (0, 0)), |c| (c.solver, c.newton));
+        let started = match &prev {
+            None => sim.initialize().map(|()| {
+                sim.param_values_into(&mut rec, &order);
+                t1 = crate::backend::web_time_now();
+                sim.stats.init_ms = (t1 - t_init) * 1000.0;
+                let mut st = sim.make_stepper();
+                rec.record(&mut sim.rt);
+                sim.restart(&mut st);
+                st.event_budget = sim.event_budget(&rec);
+                st
+            }),
+            Some(c) => sim.resume(c),
+        };
+        let mut st = match started {
+            Ok(st) => st,
+            Err(e) => {
+                let partial = prev.is_some().then(|| {
+                    rec.res.log.append(&mut sim.log);
+                    rec.res
+                });
+                return Err(SimError { message: e, partial });
+            }
+        };
+        sim.monitor = monitor.take().filter(|_| switches < MAX_SWITCHES);
+        let stop = sim.opts.stop_time;
+        let mut r = sim.advance(&mut st, stop, Some(&mut rec));
+        if r.is_ok()
+            && let Some(sw) = sim.switch_to.take()
+        {
+            let mut c = sim.carry(&st, &acc, newton);
+            drop(sim);
+            let why = sw.message.clone();
+            match recompile(&sw, &c.regs[..cur.layout.nv]) {
+                Some((m2, mon2)) if same_layout(cur, &m2) => {
+                    c.log.push(why);
+                    owned = Some(Box::new(m2));
+                    monitor = Some(mon2);
+                    switches += 1;
+                }
+                _ => c.log.push(format!(
+                    "{why}: not possible (the model cannot be compiled with that choice); \
+                     continuing with the current states"
+                )),
+            }
+            carry = Some(c);
+            continue;
+        }
+        sim.stats.solver = acc.add(&st.solver.stats());
+        if r.is_ok() {
+            r = sim.stop_time_event(&mut st, &mut rec);
+        }
+        if r.is_ok() {
+            sim.terminal_event();
+        }
+        sim.stats.sim_ms = (crate::backend::web_time_now() - t1) * 1000.0;
+        sim.stats.newton_solves = newton.0 + sim.rt.newton_stats.solves;
+        sim.stats.newton_iterations = newton.1 + sim.rt.newton_stats.iterations;
+        sim.stats.output_points = rec.res.time.len();
+        sim.stats.states = cur.states.len();
+        sim.drain_ext_log();
+        rec.res.log.append(&mut sim.log);
+        if let Some(msg) = &sim.terminated {
+            rec.res.log.push(format!("terminated: {msg}"));
+        }
+        return match r {
+            Ok(()) => Ok((rec.res, sim.stats.clone())),
+            Err(e) => Err(SimError {
+                message: e,
+                partial: Some(rec.res),
+            }),
+        };
+    }
 }
 
 /// Whether a relation's text reads `time` as a whole word, on either side (`time >= T`,

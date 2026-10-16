@@ -1898,6 +1898,7 @@ fn clone_system(s: &System) -> System {
         origins: s.origins.clone(),
         externals: s.externals.clone(),
         trace: None,
+        state_sets: s.state_sets.clone(),
     }
 }
 

@@ -2184,6 +2184,9 @@ impl<'m> Runtime<'m> {
                     // the values they have (the start values `x(start = 0)` of an
                     // initialization variable that the equations leave free).
                     if norm <= 1e-12 * scale {
+                        // The Jacobian evaluation left the block's other unknowns at
+                        // perturbed points: evaluate them at the tears kept.
+                        self.run(&b.body);
                         return;
                     }
                     // perturb the tears slightly and retry
