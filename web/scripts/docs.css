@@ -183,3 +183,4 @@ video { width: 100%; }
 
 /* Long identifiers in running text wrap instead of widening the page on phones. */
 article code { overflow-wrap: anywhere; }
+article a { overflow-wrap: anywhere; }
