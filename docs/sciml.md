@@ -4,14 +4,16 @@
 
 - **Missing physics.** Keep the physics you trust in Modelica, give the part you cannot
   explain a top-level input, and recover that input's values from measurements.
-- **Symbolic regression.** Turn the recovered values into a short formula over candidate
-  terms (SINDy), and put the formula back into the model as an equation.
-- **Neural surrogates.** Sample parameters, simulate in parallel, fit a small network
-  from parameters to the quantities you care about, and export it as a Modelica block
-  that simulates anywhere and compiles to embedded C.
+- **Sparse regression.** Turn the recovered values into a short formula built from a few
+  candidate terms, such as products of the variables (SINDy), and put the formula back into
+  the model as an equation.
+- **Neural surrogates.** Run the model for many parameter values, then train a small neural
+  network that predicts the quantities you care about from those parameters. Export the network
+  as a Modelica block that simulates anywhere and compiles to embedded C.
 
-It needs the [Python API](python.md) and NumPy, nothing else: no PyTorch or JAX, and every
-network is small enough to train in seconds on a laptop.
+In short: you keep the equations you trust, and let the data fill in the rest. It needs the
+[Python API](python.md) and NumPy, nothing else: no PyTorch or JAX, and every network is small
+enough to train in seconds on a laptop.
 
 ## The worked example
 

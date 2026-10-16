@@ -8,6 +8,10 @@
   connections including array connects.
 - Backend: alias elimination, Pantelides with dummy derivatives, BLT, tearing,
   symbolic Jacobians, and a separate initialization system.
+- Unit checking of every equation, with inferred units and display units
+  ([units.md](units.md)).
+- State machines (Modelica `state` and StateGraph), natively and in the browser
+  ([state-machines.md](state-machines.md)).
 
 **Simulation**
 - Tape code generation.
@@ -45,6 +49,19 @@
   validated with FMPy in CI.
 - `mcp`: a Model Context Protocol server (browse, edit, check, simulate,
   linearize) and an in-app Claude assistant in the workbench with the same tools.
+- `linear-analysis`: poles and zeros, Bode and Nyquist with margins, step and
+  impulse responses, PID suggestions, balanced truncation and LQR
+  ([linear-analysis.md](linear-analysis.md)).
+- `debug`: traces how a variable is computed, and explains failed translations
+  and initializations ([debugger.md](debugger.md)).
+- `codegen-c`, `hil` (software and processor in the loop) and `autotune`: embedded
+  C and controller tuning ([embedded.md](embedded.md)).
+- `import-fmu`, `import-ssp` and `export-ssp`: FMU and SSP import and export
+  ([fmi.md](fmi.md)).
+- `lib`, `package`, `diff` and `params-from`: libraries, packages and parameter
+  tables ([libraries.md](libraries.md)).
+- `steady` (steady states and trim) and `run` (Dymola and OpenModelica `.mos`
+  scripts) ([scripting.md](scripting.md)).
 - `structure`: variable roles, BLT blocks with their equations, incidence,
   the dummy-derivative state sets and why each state was chosen; at a time
   point the exact state Jacobian with its condition number, eigenvalues, time
@@ -60,6 +77,8 @@
   - Monte Carlo bands, Sobol and Morris indices;
   - Levenberg–Marquardt calibration against CSV data;
   - Nelder–Mead design optimization (see the README).
+  - adjoint sensitivities for many parameters, and designs of experiments with
+    response-surface fits ([analysis.md](analysis.md)).
 - Browser workbench:
   - package browser, with the Modelica Standard Library 4.1.0 loaded on demand;
   - icon, diagram, text, documentation and flat-model views;
@@ -76,9 +95,16 @@
   shareable links that reopen and run a model with its overrides.
   - 3-D animation of MultiBody results and of every bundled example;
   - back and forward navigation between classes.
+- Live plots and dashboards that update while the model runs
+  ([plotting.md](plotting.md)).
+- Python API (`import daedalus`) and `daedalus.sciml`: missing physics, sparse
+  regression (SINDy) and neural surrogates ([python.md](python.md),
+  [sciml.md](sciml.md)).
 - `export-casadi` and the `daedalus_casadi` package: optimal control, MPC and
   moving horizon estimation.
 - `MultiBodyVehicle`: suspension corners, K&C and seven-post rigs and a full car.
+- Text editor with go to definition, completion, hover, find usages and rename
+  ([editor.md](editor.md)).
 - Release binaries for Linux, macOS and Windows.
 - CI: Rust tests, a simulation of every example, a 2000-mass scalability smoke
   test, and the WebAssembly and workbench build.
