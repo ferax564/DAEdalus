@@ -21,6 +21,8 @@ pub struct ClassTree<'a> {
     pub nodes: Vec<ClassNode<'a>>,
     /// Memoised resolution of extends clauses: class -> base classes.
     bases_cache: std::cell::RefCell<FxHashMap<ClassId, Vec<ClassId>>>,
+    /// Extends-clause redeclarations being resolved (guards against cycles).
+    redeclare_guard: std::cell::RefCell<FxHashSet<(ClassId, String)>>,
 }
 
 pub const ROOT: ClassId = 0;
@@ -38,6 +40,7 @@ impl<'a> ClassTree<'a> {
                 source: usize::MAX,
             }],
             bases_cache: Default::default(),
+            redeclare_guard: Default::default(),
         };
         // Insert documents with shorter `within` paths first so that package.mo
         // files establish their package before children land in it.
@@ -209,12 +212,58 @@ impl<'a> ClassTree<'a> {
         if let Some(&c) = self.nodes[id as usize].children.get(name) {
             return Some(c);
         }
+        if let Some(c) = self.extends_redeclare(id, name) {
+            return Some(c);
+        }
         for b in self.bases(id) {
             if let Some(c) = self.member_class_depth(b, name, depth + 1) {
                 return Some(c);
             }
         }
         // A short class definition `package P = Q` exposes Q's members.
+        None
+    }
+
+    /// Class `name` as redeclared by a modifier of an `extends` clause of `id`
+    /// (`extends PartialMedium(redeclare record ThermodynamicState = R)`): members of
+    /// `id` named `name` are then `R`, resolved in the scope of `id` (MLS 7.3).
+    fn extends_redeclare(&self, id: ClassId, name: &str) -> Option<ClassId> {
+        let def = self.def(id)?;
+        for ext in &def.extends {
+            for x in &ext.modifications {
+                let ast::Expression::Modification { target, value, .. } = &x.expr else {
+                    continue;
+                };
+                if !x.redeclare || target.parts.len() != 1 || &*target.parts[0].ident.text != name {
+                    continue;
+                }
+                let ast::Expression::ClassModification {
+                    target: cls,
+                    modifications,
+                    ..
+                } = &**value
+                else {
+                    continue;
+                };
+                if !modifications.is_empty() {
+                    continue;
+                }
+                let parts: Vec<&str> = cls.parts.iter().map(|p| &*p.ident.text).collect();
+                // `redeclare package Medium = Medium` names the enclosing scope's class.
+                if parts.first() == Some(&name) {
+                    continue;
+                }
+                let key = (id, name.to_string());
+                if !self.redeclare_guard.borrow_mut().insert(key.clone()) {
+                    continue;
+                }
+                let r = self.lookup(id, &parts, None);
+                self.redeclare_guard.borrow_mut().remove(&key);
+                if r.is_some() {
+                    return r;
+                }
+            }
+        }
         None
     }
 
