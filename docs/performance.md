@@ -1,6 +1,8 @@
 # Performance analyzer
 
-Why is my model slow, and why does it chatter? Tick **Profile** next to **Simulate**, or
+Why is my model slow, and why does it chatter? A model **chatters** when an event, such as a switch
+that flips on and off, keeps firing at almost the same moment, so the solver stops and restarts again
+and again and the run crawls. Tick **Profile** next to **Simulate**, or
 pass `--profile` to `daedalus simulate`, and DAEdalus records where the solver spent its
 steps and its time, like Dymola's Simulation Analysis or Amesim's Performance Analyzer.
 
