@@ -3,6 +3,7 @@
 #[cfg(feature = "archive")]
 pub mod archive;
 pub mod adjoint;
+pub mod autotune;
 pub mod backend;
 pub mod calibrate;
 pub mod casadi;
@@ -11,6 +12,8 @@ pub mod diff;
 pub mod edit;
 pub mod debug;
 pub mod doe;
+pub mod embedded;
+pub mod embedded_hil;
 pub mod expr;
 pub mod external;
 pub mod external_component;
@@ -30,6 +33,7 @@ pub mod params;
 pub mod modal;
 pub mod optimize;
 pub mod lti;
+pub mod preflight;
 pub mod profile;
 pub mod results;
 pub mod sensitivity;

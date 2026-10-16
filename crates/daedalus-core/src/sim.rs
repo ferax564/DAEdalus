@@ -1854,3 +1854,91 @@ pub(crate) fn mentions_time(text: &str) -> bool {
             && !text[i + 4..].chars().next().is_some_and(ident)
     })
 }
+
+/// Right-hand side `der(x) = f(t, x, u)` of a model evaluated at given points (for
+/// hybrid and data-driven modelling: the known physics at measured states). Parameters
+/// take their values (with `params` overrides), discrete variables their start values;
+/// relations are settled at each point. `inputs` holds one column per named top-level
+/// input (or parameter) with one value per point. Returns, per point, the state
+/// derivatives (in [`Model::states`] order) and the values of `read`.
+pub fn eval_rhs(
+    m: &Model,
+    params: &[(String, f64)],
+    t: &[f64],
+    states: &[Vec<f64>],
+    inputs: &[(String, Vec<f64>)],
+    read: &[String],
+) -> Result<(Vec<Vec<f64>>, Vec<Vec<f64>>), String> {
+    let n = t.len();
+    if states.len() != n {
+        return Err(format!("{} time points but {} state rows", n, states.len()));
+    }
+    let find = |name: &str| -> Result<usize, String> {
+        m.vars
+            .iter()
+            .position(|v| v.name == name)
+            .ok_or_else(|| format!("unknown variable '{name}'"))
+    };
+    let opts = SimOptions {
+        params: params.to_vec(),
+        ..SimOptions::from_model(m)
+    };
+    let mut sim = Simulation::new(m, opts);
+    sim.eval_params()?;
+    sim.rt.set_time(t.first().copied().unwrap_or(0.0));
+    sim.rt.run(&m.starts);
+    sim.rt.save_pre();
+    let input_ids: Vec<(usize, &Vec<f64>)> = inputs
+        .iter()
+        .map(|(name, col)| {
+            let v = find(name)?;
+            if col.len() != n {
+                return Err(format!(
+                    "input '{name}' has {} values for {n} points",
+                    col.len()
+                ));
+            }
+            Ok((v, col))
+        })
+        .collect::<Result<_, String>>()?;
+    let read_ids: Vec<usize> = read
+        .iter()
+        .map(|r| find(r))
+        .collect::<Result<_, String>>()?;
+    let nx = m.states.len();
+    let mut der = Vec::with_capacity(n);
+    let mut vals = Vec::with_capacity(n);
+    for k in 0..n {
+        if states[k].len() != nx {
+            return Err(format!(
+                "point {k}: {} states given, the model has {nx}",
+                states[k].len()
+            ));
+        }
+        for (v, col) in &input_ids {
+            sim.rt.r[*v] = col[k];
+        }
+        sim.rt.set_time(t[k]);
+        sim.rt.set_states(&states[k]);
+        sim.rt.run(&m.ode);
+        for _ in 0..5 {
+            if !sim.rt.latch_relations() {
+                break;
+            }
+            sim.rt.run(&m.ode);
+        }
+        if let Some(e) = sim.rt.error.take() {
+            return Err(format!(
+                "point {k} (t = {}): nonlinear system for [{}] did not converge",
+                t[k],
+                m.newton[e.block].names.join(", ")
+            ));
+        }
+        sim.rt.run(&m.outputs);
+        let mut dx = vec![0.0; nx];
+        sim.rt.get_derivs(&mut dx);
+        der.push(dx);
+        vals.push(read_ids.iter().map(|&v| sim.rt.r[v]).collect());
+    }
+    Ok((der, vals))
+}
