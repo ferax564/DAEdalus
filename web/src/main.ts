@@ -1273,6 +1273,22 @@ function setMode(m: typeof mode) {
   } else if (m === "modeling") showView();
 }
 $("topbar").querySelectorAll<HTMLButtonElement>("button[data-mode]").forEach((b) => (b.onclick = () => setMode(b.dataset.mode as typeof mode)));
+// The More menu (phones): opens the less-used toolbar controls; a tap outside or Escape closes it.
+const moreBtn = $("tools-menu-btn"), moreMenu = $("tools-more");
+const setMoreOpen = (open: boolean) => {
+  moreMenu.classList.toggle("open", open);
+  moreBtn.setAttribute("aria-expanded", String(open));
+};
+moreBtn.onclick = (e) => {
+  e.stopPropagation();
+  setMoreOpen(!moreMenu.classList.contains("open"));
+};
+document.addEventListener("click", (e) => {
+  if (!moreMenu.contains(e.target as Node)) setMoreOpen(false);
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") setMoreOpen(false);
+});
 // The toolbar wraps on narrow windows, so panels fixed under it (the Assistant drawer) follow its real height.
 new ResizeObserver(() => document.documentElement.style.setProperty("--topbar-h", `${$("topbar").offsetHeight}px`)).observe($("topbar"));
 
