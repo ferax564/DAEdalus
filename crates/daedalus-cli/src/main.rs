@@ -9,6 +9,7 @@ mod fmu;
 mod fmu_import;
 mod manage;
 mod mcp;
+mod serve;
 mod mos;
 mod sweep;
 
@@ -65,6 +66,9 @@ COMMANDS:
               Arduino or ESP32, or on a real board over its serial port
   autotune    tune controller gains on a closed-loop model against a step-response
               spec (ITAE, overshoot, effort, settling); see EMBEDDED OPTIONS
+  serve       run the local engine: the browser workbench simulates on this
+              machine (native speed, all cores) instead of in WebAssembly.
+              `daedalus serve [--port 7878] [--allow-origin ORIGIN]`
   mcp         serve the libraries to an AI assistant over the Model Context
               Protocol (stdio): browse, edit, check, simulate, linearize.
               `daedalus mcp [sources...] [-L DIR] [--workspace DIR]`
@@ -176,6 +180,8 @@ SWEEP OPTIONS:
   --format csv | mat      per-run file format in an output directory
   --summary FILE          write the summary table as CSV
   --jobs N                parallel threads (default: cores)
+  --no-jit                interpret the model instead of running it as compiled
+                          machine code (the same results, slower)
   --retranslate           translate every run again (default only for
                           non-free, Integer and Boolean parameters)
 
@@ -292,6 +298,9 @@ fn run() -> anyhow::Result<()> {
     let cmd = args[0].clone();
     if cmd == "mcp" {
         return mcp::run(&args[1..]);
+    }
+    if cmd == "serve" {
+        return serve::run(&args[1..]);
     }
     let (args, an) = analysis::take_args(args)?;
     let (args, emb) = embedded::take_args(args)?;
@@ -436,6 +445,7 @@ fn run() -> anyhow::Result<()> {
             "--stats" => stats_spec = Some(next(&mut i)?),
             "--summary" => summary_out = Some(next(&mut i)?),
             "--retranslate" => retranslate = true,
+            "--no-jit" => daedalus_core::jit::set_enabled(false),
             "--profile" => {
                 // The report file is optional: only a following `.json` argument is one.
                 let file = args.get(i + 1).filter(|f| f.ends_with(".json")).cloned();

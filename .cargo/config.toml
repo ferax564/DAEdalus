@@ -1,0 +1,6 @@
+# WebAssembly SIMD (128-bit vectors) lets LLVM vectorise the solver's dense loops in the
+# browser build; every current browser supports it (Chrome 91, Firefox 89, Safari 16.4).
+# The function table is exported and growable so compiled tapes (generated WebAssembly
+# modules, see daedalus_core::jit) can be added to it and called directly.
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "target-feature=+simd128", "-C", "link-arg=--export-table", "-C", "link-arg=--growable-table"]

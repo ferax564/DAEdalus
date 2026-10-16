@@ -34,6 +34,7 @@ moves it and `DAEDALUS_NO_CACHE` turns it off).
 | `export-casadi` | Write the index-reduced DAE as JSON for CasADi. See [Optimal control](optimal-control.md). |
 | `lib`, `package`, `diff`, `params-from` | Install libraries, pack a model as a zip, compare classes, and turn parameter data into modifiers. See [Libraries and packages](libraries.md). |
 | `mcp` | Serve the libraries to an AI assistant over the Model Context Protocol. See [AI assistant and MCP](assistant.md). |
+| `serve` | Run the local engine for the browser workbench: its simulations run natively on this computer. See [Workbench](workbench.md#speed-compiled-tapes-and-the-local-engine). |
 | `run` | Run a Dymola or OpenModelica script (`.mos`). See [Scripts and steady states](scripting.md). |
 | `test-library` | Translate and simulate every model with an `experiment` annotation in a package, each in its own process with a time limit, and print a report. |
 
@@ -149,6 +150,7 @@ job runs the MSL examples against their reference results (see
 | `--vars a,b,c` | Variables written to CSV, or printed |
 | `--no-index-reduction` | Disable Pantelides index reduction |
 | `--no-tearing` | Disable tearing |
+| `--no-jit` | Interpret the model instead of running it as compiled machine code (same results, slower; also `DAEDALUS_JIT=0`) |
 | `--jobs N` | Parallel processes for `test-library` |
 | `--timeout S` | Per-model time limit for `test-library` |
 | `--at T` | `linearize`: simulate to time T first |
@@ -170,6 +172,13 @@ job runs the MSL examples against their reference results (see
 | `--msl DIR` | `run`: an extra library root for `loadModel` |
 
 ## Performance
+
+Models run as machine code: the hot tapes (derivatives, outputs, zero crossings and
+algebraic loops) are compiled with Cranelift when the simulation starts, which takes a few
+milliseconds for most models. The results are bit for bit the same as the interpreter's
+(`--no-jit`); across the 555 MSL, Daedalus and MultiBodyVehicle examples the total run time
+drops by about 35%, and by half or more on multibody models (SevenPostRig 2.5 s to 1.2 s,
+EngineV6 5.7 s to 2.3 s).
 
 The benchmark is `tools/gen_chain.py`: a chain of N masses and spring-dampers driven by a
 sine force, a stiff system with 2N states, simulated for 1 s with BDF at tolerance 1e-6.

@@ -87,6 +87,36 @@ Parameters are editable in the variable browser: change a value and simulate aga
 the run uses the new value without touching the source. Overrides belong to the model they
 were made on and are cleared when you open another class.
 
+Simulating the same model again reuses its translation when only parameters or run
+settings changed, so the second run starts at once. Any edit to a source translates it
+again.
+
+## Speed: compiled tapes and the local engine
+
+The equations run as compiled code, not through an interpreter: each model's hot tapes
+(derivatives, outputs, zero crossings and algebraic loops) become a small WebAssembly
+module that the browser compiles to machine code. Multibody models run about 1.5 to 2
+times faster this way. The results are bit for bit the same as interpreting the tapes.
+
+**Local engine** goes further on a desktop. Start the engine that ships with the command
+line tool:
+
+```sh
+daedalus serve
+```
+
+and press **Local engine** in the toolbar. Simulations, analyses and experiment runs then
+go to the native process on your computer, which is faster again than the browser, uses
+every core for experiments and has no 4 GB memory limit. The class tree, diagrams and
+editing stay in the page, and every document and library you load is sent to the engine,
+so both always see the same sources. It gives the same numbers as `daedalus simulate`.
+The button shows the number of cores when it is connected; press it again to go back to
+the browser. The choice is remembered, and `?engine=URL` connects to another address.
+
+The engine listens on 127.0.0.1 only (port 7878, `--port` to change it) and answers only
+this site and pages served from localhost (`--allow-origin ORIGIN` adds another). Your
+models stay on your computer either way.
+
 ## Plots
 
 The plot window draws thousands of points per series smoothly and has:
