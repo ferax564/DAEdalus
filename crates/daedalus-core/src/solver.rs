@@ -838,21 +838,24 @@ impl Integrator for Bdf {
         let norms = [em, error_norm, ep];
         let mut best = 0;
         let mut factors = [0.0; 3];
-        // Factors are compared as they will be applied (capped at 10): among orders that
-        // all allow the largest step, the highest one is the most accurate. Otherwise a
-        // smooth restart (after an event) grows the step tenfold at order 1, and the
-        // global error of those long first-order steps exceeds the tolerance.
-        let cap = 10.0 / safety;
         for (k, &e) in norms.iter().enumerate() {
             let p = (order + k) as f64; // order-1+k+1
             factors[k] = if e == 0.0 {
-                cap
+                f64::INFINITY
             } else {
-                e.powf(-1.0 / p).min(cap)
+                e.powf(-1.0 / p)
             };
-            if factors[k] >= factors[best] {
+            if factors[k] > factors[best] {
                 best = k;
             }
+        }
+        // At order 1, when order 2 allows the largest step as well (the factor is capped
+        // at 10), take order 2. Otherwise a smooth restart (after an event) grows the
+        // step tenfold at order 1, and the global error of those long first-order steps
+        // exceeds the tolerance.
+        let cap = 10.0 / safety;
+        if order == 1 && best == 1 && factors[2] >= cap {
+            best = 2;
         }
         self.order = (order as isize + best as isize - 1) as usize;
         let factor = (safety * factors[best]).min(10.0);
