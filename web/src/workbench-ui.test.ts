@@ -38,6 +38,63 @@ test("index.html applies daedalus.theme in the head, before the module script", 
   expect(styles).not.toContain("hue-rotate");
 });
 
+function cssBlock(source: string, start: string, end: string): string {
+  const i = source.indexOf(start);
+  expect(i).toBeGreaterThanOrEqual(0);
+  const j = end ? source.indexOf(end, i + start.length) : source.length;
+  return source.slice(i, j === -1 ? source.length : j);
+}
+
+function hexToken(block: string, name: string): string {
+  const m = block.match(new RegExp(`${name}:\\s*(#[0-9a-fA-F]{6})`));
+  expect(m, name).toBeTruthy();
+  return m![1].toLowerCase();
+}
+
+/** Relative luminance of a #rrggbb token, 0 (black) to 1 (white). */
+function relLum(hex: string): number {
+  const n = parseInt(hex.slice(1), 16);
+  const lin = (c: number) => {
+    const s = c / 255;
+    return s <= 0.04045 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+  };
+  const r = lin((n >> 16) & 255);
+  const g = lin((n >> 8) & 255);
+  const b = lin(n & 255);
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+test("the diagram canvas is a dark sheet in dark theme and gridded in both", () => {
+  const light = cssBlock(tokens, ":root", 'html[data-theme="dark"]');
+  const dark = cssBlock(tokens, 'html[data-theme="dark"]', "@media");
+  const systemDark = cssBlock(tokens, "html:not([data-theme])", "");
+  const lightCanvas = hexToken(light, "--canvas");
+  const darkCanvas = hexToken(dark, "--canvas");
+  const systemCanvas = hexToken(systemDark, "--canvas");
+  expect(lightCanvas).toBe("#ffffff");
+  expect(relLum(darkCanvas)).toBeLessThan(0.08);
+  expect(relLum(systemCanvas)).toBeLessThan(0.08);
+  expect(darkCanvas).not.toBe("#ffffff");
+  expect(systemCanvas).not.toBe("#ffffff");
+
+  const lightGrid = hexToken(light, "--canvas-grid");
+  const darkGrid = hexToken(dark, "--canvas-grid");
+  const systemGrid = hexToken(systemDark, "--canvas-grid");
+  expect(relLum(lightGrid)).toBeGreaterThan(0.55);
+  expect(relLum(lightGrid)).toBeLessThan(relLum(lightCanvas));
+  expect(relLum(darkGrid)).toBeGreaterThan(relLum(darkCanvas) + 0.02);
+  expect(relLum(systemGrid)).toBeGreaterThan(relLum(systemCanvas) + 0.02);
+  expect(relLum(hexToken(dark, "--canvas-ink"))).toBeGreaterThan(0.7);
+  expect(relLum(hexToken(light, "--canvas-ink"))).toBeLessThan(0.15);
+  expect(relLum(hexToken(systemDark, "--canvas-ink"))).toBeGreaterThan(0.7);
+
+  expect(styles).toContain("background-color: var(--canvas)");
+  expect(styles).toContain("var(--canvas-grid)");
+  expect(styles).not.toContain("hue-rotate");
+  expect(styles).not.toContain("invert(");
+  expect(tokens).not.toContain("hue-rotate");
+});
+
 test("Flat model, Structure, Linear, and Diff sit on the class tab strip", () => {
   const doc = new DOMParser().parseFromString(html.replace(/<script[\s\S]*?<\/script>/gi, ""), "text/html");
   const tablist = doc.querySelector("#view-tabs [role=tablist]");

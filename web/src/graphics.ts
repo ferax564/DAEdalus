@@ -43,6 +43,25 @@ function color(v: AnnValue | undefined, d: string): string {
   if (Array.isArray(v) && v.length >= 3) return `rgb(${num(v[0])},${num(v[1])},${num(v[2])})`;
   return d;
 }
+
+/** True for the default near-black Modelica ink, not a tinted library colour. */
+export function isNearBlackInk(rgb: [number, number, number]): boolean {
+  const max = Math.max(rgb[0], rgb[1], rgb[2]);
+  const min = Math.min(rgb[0], rgb[1], rgb[2]);
+  return max <= 48 && max - min <= 16;
+}
+
+/**
+ * Stroke and text colour. Missing or near-black ink uses `--canvas-ink`, which is
+ * dark on a light sheet and light on a dark sheet. Explicit non-black colours stay.
+ */
+export function diagramInk(v: AnnValue | undefined): string {
+  if (Array.isArray(v) && v.length >= 3) {
+    const rgb: [number, number, number] = [num(v[0]), num(v[1]), num(v[2])];
+    if (!isNearBlackInk(rgb)) return `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
+  }
+  return "var(--canvas-ink)";
+}
 const enumLit = (v: AnnValue | undefined, d: string): string => (typeof v === "string" ? v.split(".").pop()! : d);
 
 /** Extent of a coordinate system ({{-100,-100},{100,100}} by default). */
@@ -127,7 +146,7 @@ function strokeAttrs(g: AnnRecord, key: "color" | "lineColor"): Record<string, s
   const pattern = enumLit(key === "color" ? g.pattern : g.pattern ?? g.borderPattern, "Solid");
   const thick = num(key === "color" ? g.thickness : g.lineThickness, 0.25);
   const a: Record<string, string | number> = {
-    stroke: pattern === "None" ? "none" : color(g[key], "black"),
+    stroke: pattern === "None" ? "none" : diagramInk(g[key]),
     "stroke-width": Math.max(1, thick * 4),
     "vector-effect": "non-scaling-stroke",
     "stroke-linejoin": "round",
@@ -273,7 +292,7 @@ export function drawGraphics(parent: SVGGElement, graphics: AnnRecord[], m: Mat,
         "font-size": fs,
         "text-anchor": align === "Left" ? "start" : align === "Right" ? "end" : "middle",
         "dominant-baseline": "central",
-        fill: color(g.textColor ?? g.lineColor, "black"),
+        fill: diagramInk(g.textColor ?? g.lineColor),
         transform: `scale(1,-1) translate(${cx},${-cy})${deg ? ` rotate(${-deg})` : ""}`,
         "font-family": typeof g.fontName === "string" && g.fontName ? g.fontName : "inherit",
       });

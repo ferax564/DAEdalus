@@ -6,6 +6,7 @@ import {
   condition,
   type ClassSource,
   type Mat,
+  diagramInk,
   drawGraphics,
   drawIcon,
   el,
@@ -342,7 +343,7 @@ export class DiagramView {
     const full = pm ? mul(m, pm) : m;
     const first = ct?.icon.graphics.find((g) => g.lineColor || g.fillColor || g.color);
     const col = (first?.lineColor ?? first?.color ?? first?.fillColor) as number[] | undefined;
-    return { p: applyM(full, center[0], center[1]), color: col ? `rgb(${col[0]},${col[1]},${col[2]})` : "#555" };
+    return { p: applyM(full, center[0], center[1]), color: col ? diagramInk(col) : "#555" };
   }
 
   private async drawAutoConnection(g: SVGGElement, cls: ClassInfo, mats: Map<string, Mat>, from: string, to: string) {

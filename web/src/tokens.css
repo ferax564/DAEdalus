@@ -22,10 +22,11 @@ html[data-theme="light"] {
   --syn-number: #1b7f5b;
   --syn-comment: #6b7385;
   --syn-atom: #a15c00;
-  /* The diagram is a sheet of paper in both themes. */
+  /* Light diagram sheet. The grid is a light gray on the white page. */
   --canvas: #ffffff;
   --canvas-ink: #1d2330;
   --canvas-frame: #c9ced8;
+  --canvas-grid: #d0d5e0;
   --diff-add: #2b8a3e;
   --diff-del: #c92a2a;
   --diff-mod: #d9480f;
@@ -55,9 +56,11 @@ html[data-theme="dark"] {
   --syn-number: #8ce99a;
   --syn-comment: #8a92a5;
   --syn-atom: #ffd08a;
-  --canvas: #ffffff;
-  --canvas-ink: #1d2330;
-  --canvas-frame: #c9ced8;
+  /* Dark diagram sheet. The grid is lighter than the sheet so the lines stay visible. */
+  --canvas: #141820;
+  --canvas-ink: #e7ebf3;
+  --canvas-frame: #5a6478;
+  --canvas-grid: #4e5870;
   --diff-add: #69db7c;
   --diff-del: #ff8787;
   --diff-mod: #ff922b;
@@ -88,9 +91,10 @@ html[data-theme="dark"] {
     --syn-number: #8ce99a;
     --syn-comment: #8a92a5;
     --syn-atom: #ffd08a;
-    --canvas: #ffffff;
-    --canvas-ink: #1d2330;
-    --canvas-frame: #c9ced8;
+    --canvas: #141820;
+    --canvas-ink: #e7ebf3;
+    --canvas-frame: #5a6478;
+    --canvas-grid: #4e5870;
     --diff-add: #69db7c;
     --diff-del: #ff8787;
     --diff-mod: #ff922b;
