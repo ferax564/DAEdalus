@@ -103,10 +103,10 @@ structural analysis of the model problem (6 equations, 7 unknowns):
 ```
 
 Connectors whose unconnected flow is zero by the language rules, such as an open output
-terminal, a free flange or a lone ground, only get notes. Over the 521 example models of
-the MSL 4.1.0 and the Daedalus library that flatten, this gives two warnings. Both are
-real (an `earth` resistor whose pin is left open in the transformer examples), and there
-are no false positives.
+terminal, a free flange or a lone ground, only get notes. Over the 551 example models of
+the MSL 4.1.0 and the Daedalus library (550 of the 551 flatten), this gives two warnings.
+Both are real (an `earth` resistor whose pin is left open in the transformer examples), and
+there are no false positives.
 
 See also [Structure and state selection](structure.md) for the block structure and the
 Jacobian.

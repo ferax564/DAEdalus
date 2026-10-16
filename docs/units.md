@@ -68,8 +68,9 @@ In the workbench, **Check** lists the unit issues in the Messages panel.
 - Rotations count as dimensionless when checking, so `rad/s` agrees with `Hz`, but not
   when converting for display.
 
-On the 509 MSL 4.1.0 examples that flatten and the 19 examples of the bundled libraries,
-it reports no issue. It costs about 1 % of the flattening time.
+On the 550 example models of the MSL 4.1.0 and the Daedalus library that flatten, it
+reports two issues, both real and both in the MSL's `TestGlycol` example. The other 549
+are clean. It costs about 1 % of the flattening time.
 
 ## Display units
 

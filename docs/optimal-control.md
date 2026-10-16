@@ -9,6 +9,11 @@ of problem:
 - **model predictive control** (MPC): an OCP re-solved in a closed loop;
 - **moving horizon estimation** (MHE) of states and parameters from measurements.
 
+In plain terms: you say what you want, such as reaching a target as fast as possible or keeping an
+error small, and the optimizer finds the inputs that achieve it. MPC repeats that search at every
+step using fresh measurements. MHE runs the other way: it estimates the hidden states and parameters
+from what was measured.
+
 The model stays in Modelica. Inputs that the optimizer may choose are
 top-level `input` variables, and every other model variable can appear in a
 cost or a constraint by its name.
