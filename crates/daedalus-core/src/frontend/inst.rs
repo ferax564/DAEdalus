@@ -1495,10 +1495,10 @@ impl<'a, 't> Flattener<'a, 't> {
                 self.collect_dim_hints(src, &cprefix);
                 bound_src = Some(src);
             } else if let Some(v) = &cm.value
-                && matches!(
+                && (matches!(
                     v.expr,
                     E::Array { .. } | E::ArrayComprehension { .. } | E::If { .. }
-                )
+                ) || self.is_record_constructor_call(v))
             {
                 // An element of a record array built from records (`{{if degraded then
                 // dataDegraded else dataOriginal for kp in 1:Np} for ks in 1:Ns}`): its
@@ -1739,6 +1739,23 @@ impl<'a, 't> Flattener<'a, 't> {
                 _ => {}
             }
         }
+    }
+
+    /// Whether a binding is a call of a record constructor (`mat = M330_50A()`): its
+    /// fields take the sizes of the constructed record (a subtype whose modifiers change
+    /// `tab[:, :]`), not of the declared record's defaults.
+    fn is_record_constructor_call(&mut self, v: &Scoped<'a>) -> bool {
+        let E::FunctionCall { comp, .. } = v.expr else {
+            return false;
+        };
+        let parts: Vec<&str> = comp.parts.iter().map(|p| &*p.ident.text).collect();
+        let env = if comp.local {
+            self.env_of(ROOT)
+        } else {
+            v.scope.env.clone()
+        };
+        self.lookup_class(&env, &parts)
+            .is_some_and(|c| matches!(self.tree.class_type(c), ClassType::Record))
     }
 
     /// Record the array sizes of a record value's fields under `prefix` (see `dim_hints`).
