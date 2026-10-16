@@ -1,11 +1,5 @@
-/** Views that stay on the tab strip. The rest live under More views. */
-export const PRIMARY_VIEWS = ["icon", "diagram", "text", "doc"] as const;
-/** Flat model, Structure, Linear, and Diff. Structure is still opened by `openDebugger`. */
-export const MORE_VIEWS = ["flat", "structure", "linear", "diff"] as const;
-
-export function isMoreView(view: string): boolean {
-  return (MORE_VIEWS as readonly string[]).includes(view);
-}
+/** Class views on the primary tab strip, in order. */
+export const PRIMARY_VIEWS = ["icon", "diagram", "text", "doc", "flat", "structure", "linear", "diff"] as const;
 
 export interface LogChrome {
   /** The log body is open. */

@@ -63,7 +63,6 @@ input[type="number"] { width: 72px; }
   box-shadow: 0 8px 28px var(--shadow);
 }
 .menu-pop.hidden { display: none; }
-.view-more .menu-pop { left: 0; right: auto; }
 #setup-menu-pop, #display-menu-pop { min-width: 260px; }
 .menu-pop button, .menu-pop a, .menu-pop label.file {
   display: flex; width: 100%; justify-content: flex-start; text-align: left;

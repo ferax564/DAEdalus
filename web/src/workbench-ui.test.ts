@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 // @ts-expect-error node builtin
 import { resolve } from "node:path";
 import { applyThemeChoice } from "./theme";
-import { MORE_VIEWS, PRIMARY_VIEWS, applyLogChrome, initialLogChrome, isMoreView, pushLogLine, toggleLogChrome } from "./workbench-ui";
+import { PRIMARY_VIEWS, applyLogChrome, initialLogChrome, pushLogLine, toggleLogChrome } from "./workbench-ui";
 
 const html = readFileSync(resolve("index.html"), "utf8");
 const tokens = readFileSync(resolve("src/tokens.css"), "utf8");
@@ -38,26 +38,18 @@ test("index.html applies daedalus.theme in the head, before the module script", 
   expect(styles).not.toContain("hue-rotate");
 });
 
-test("Flat model, Structure, Linear, and Diff sit under More views", () => {
+test("Flat model, Structure, Linear, and Diff sit on the class tab strip", () => {
   const doc = new DOMParser().parseFromString(html.replace(/<script[\s\S]*?<\/script>/gi, ""), "text/html");
   const tablist = doc.querySelector("#view-tabs [role=tablist]");
-  const more = doc.querySelector("#views-menu-pop");
   expect(tablist).toBeTruthy();
-  expect(more).toBeTruthy();
-  for (const view of PRIMARY_VIEWS) {
-    const button = tablist!.querySelector(`button[data-view="${view}"]`);
-    expect(button, view).toBeTruthy();
-    expect(more!.contains(button)).toBe(false);
-    expect(isMoreView(view)).toBe(false);
-  }
-  for (const view of MORE_VIEWS) {
-    const button = more!.querySelector(`button[data-view="${view}"]`);
-    expect(button, view).toBeTruthy();
-    expect(tablist!.querySelector(`:scope > button[data-view="${view}"]`)).toBeNull();
-    expect(isMoreView(view)).toBe(true);
-  }
+  expect(doc.querySelector("#views-menu-btn")).toBeNull();
+  expect(doc.querySelector("#views-menu-pop")).toBeNull();
+  const buttons = [...tablist!.querySelectorAll<HTMLButtonElement>("button[data-view]")].filter((b) => b.parentElement === tablist);
+  expect(buttons.map((b) => b.getAttribute("data-view"))).toEqual([...PRIMARY_VIEWS]);
+  for (const button of buttons) expect(button.getAttribute("role")).toBe("tab");
+  expect(tablist!.querySelector('button[data-view="linear"]')?.textContent).toBe("Linear");
   // openDebugger still finds Structure by data-view and can activate it directly.
-  expect(more!.querySelector('button[data-view="structure"]')).toBeTruthy();
+  expect(tablist!.querySelector('button[data-view="structure"]')).toBeTruthy();
 });
 
 test("the log stays one line until an error or a click", () => {

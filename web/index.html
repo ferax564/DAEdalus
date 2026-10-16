@@ -106,15 +106,10 @@
             <button data-view="diagram" class="active" role="tab" aria-selected="true">Diagram</button>
             <button data-view="text" role="tab" aria-selected="false" title="Modelica text. F12 or Ctrl/Cmd-click: go to definition · Shift+F12: find usages · F2: rename · Ctrl+Space: complete · Ctrl+Shift+O: outline">Text</button>
             <button data-view="doc" role="tab" aria-selected="false">Documentation</button>
-            <span class="menu view-more">
-              <button id="views-menu-btn" type="button" aria-controls="views-menu-pop" aria-expanded="false" aria-haspopup="menu"><span id="views-menu-label">More views</span><span id="views-fail-dot" class="fail-dot hidden" title="The last check failed"></span></button>
-              <div id="views-menu-pop" class="menu-pop hidden" role="menu">
-                <button data-view="flat" role="menuitem">Flat model</button>
-                <button data-view="structure" role="menuitem" title="BLT blocks, incidence, state selection and the state Jacobian">Structure <span id="structure-fail-dot" class="fail-dot hidden" title="The last check failed"></span></button>
-                <button data-view="linear" role="menuitem" title="Linear analysis: Bode, poles and zeros, step response, model reduction, LQR and PID tuning">Linear</button>
-                <button data-view="diff" role="menuitem" title="Differences from the version as loaded, or from a file" disabled>Diff</button>
-              </div>
-            </span>
+            <button data-view="flat" role="tab" aria-selected="false">Flat model</button>
+            <button data-view="structure" role="tab" aria-selected="false" title="BLT blocks, incidence, state selection and the state Jacobian">Structure</button>
+            <button data-view="linear" role="tab" aria-selected="false" title="Linear analysis: Bode, poles and zeros, step response, model reduction, LQR and PID tuning">Linear</button>
+            <button data-view="diff" role="tab" aria-selected="false" title="Differences from the version as loaded, or from a file" disabled>Diff</button>
             </span>
           </div>
           <div id="coach" class="coach hidden">

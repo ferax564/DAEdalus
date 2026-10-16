@@ -25,7 +25,7 @@ import { DiffView } from "./diffview";
 import { librarySources, openLibraries, openPackage, reportConflicts, restoreInstalled, savePackage, type LibHost } from "./libmgr";
 import { importParams } from "./paramsui";
 import { applyThemeChoice, readThemeChoice, type ThemeChoice } from "./theme";
-import { applyLogChrome, diffViewEnabled, initialLogChrome, isMoreView, pushLogLine, toggleLogChrome, type LogChrome } from "./workbench-ui";
+import { applyLogChrome, diffViewEnabled, initialLogChrome, pushLogLine, toggleLogChrome, type LogChrome } from "./workbench-ui";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -53,8 +53,6 @@ const expanded = new Set<string>(["Daedalus", "Daedalus.Examples"]);
 let current: ClassInfo | null = null;
 let view: ViewKind | "text" | "doc" | "flat" | "structure" | "linear" | "diff" = "diagram";
 let mode: "modeling" | "simulation" | "analysis" = "modeling";
-/** False after a failed Check, so More views can mark Structure. */
-let lastCheckOk = true;
 /** Package browser: examples until the user picks All (`daedalus.browser`). */
 let browserMode: "examples" | "all" = "examples";
 let summary: SimSummary | null = null;
@@ -258,18 +256,12 @@ function setActive(container: HTMLElement, attr: string, value: string) {
   });
 }
 
-const MORE_LABEL: Record<string, string> = { flat: "Flat model", structure: "Structure", linear: "Linear", diff: "Diff" };
-/** More views highlights the open extra view, and Diff waits for an edit. */
+/** Diff stays disabled until the open document differs from the text recorded in `baseline`. */
 function syncViewChrome() {
-  const more = isMoreView(view);
-  $("views-menu-btn").classList.toggle("active", more);
-  $("views-menu-label").textContent = more ? MORE_LABEL[view] ?? "More views" : "More views";
   const uri = current?.source?.uri;
   const edited = !!(uri && baseline.has(uri) && docs.has(uri) && docs.get(uri) !== baseline.get(uri));
-  const diffBtn = document.querySelector<HTMLButtonElement>('#views-menu-pop button[data-view="diff"]');
+  const diffBtn = document.querySelector<HTMLButtonElement>('#view-tabs button[data-view="diff"]');
   if (diffBtn) diffBtn.disabled = !diffViewEnabled(edited);
-  $("views-fail-dot").classList.toggle("hidden", lastCheckOk);
-  document.getElementById("structure-fail-dot")?.classList.toggle("hidden", lastCheckOk);
 }
 
 async function showView() {
@@ -1081,7 +1073,6 @@ $("btn-check").onclick = async () => {
   btn.disabled = true;
   try {
     const r = await api.check(current.path);
-    lastCheckOk = r.ok;
     syncViewChrome();
     if (r.ok) {
       const st = r.stats ?? {};
@@ -1504,11 +1495,10 @@ document.querySelectorAll<HTMLButtonElement>(".pane-toggle").forEach((btn) => {
     btn.setAttribute("aria-expanded", String(!collapsed));
   };
 });
-// File, Setup, More views, and Display: a tap outside or Escape closes them.
+// File, Setup, and Display: a tap outside or Escape closes them.
 const MENUS: [string, string][] = [
   ["file-menu-btn", "file-menu-pop"],
   ["setup-menu-btn", "setup-menu-pop"],
-  ["views-menu-btn", "views-menu-pop"],
   ["display-menu-btn", "display-menu-pop"],
 ];
 function closeMenus() {
