@@ -1288,6 +1288,7 @@ impl<'m> Simulation<'m> {
             max_step = dt;
         }
         let rtol = o.tolerance;
+        self.rt.set_integration_tolerance(rtol);
         // Absolute tolerance per state from its nominal value, as Dymola and
         // OpenModelica do: a state of size 1e-4 (`nominal = 1e-4`) is integrated to
         // 1e-4 * tolerance, not to the tolerance itself.
@@ -2007,7 +2008,13 @@ impl<'m> Simulation<'m> {
     /// Locate the first time in `(ta, tb]` where relation `i` changes its raw value.
     /// Width of the hysteresis band of relation `i`.
     fn hysteresis(&self, i: usize) -> f64 {
-        (1e-10 * self.zc_scale[i]).max(1e-14)
+        // The absolute floor (for relations whose sides stay at zero) must stay small
+        // against the time scale of the run: in a picosecond simulation (Spice3
+        // Inverter, stop time 1e-11) 1e-14 is a tenth of a ramp, and `time < T0 +
+        // Trising` was taken three output points late.
+        let span = (self.opts.stop_time - self.opts.start_time).abs();
+        let floor = if span > 0.0 { 1e-14f64.min(1e-6 * span) } else { 1e-14 };
+        (1e-10 * self.zc_scale[i]).max(floor)
     }
 
     fn locate(

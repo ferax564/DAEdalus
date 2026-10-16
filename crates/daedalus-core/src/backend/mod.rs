@@ -564,6 +564,7 @@ pub fn compile_traced(
     // analysis: `ir*m_resist = p.v - pin` with `m_resist = 0` is `p.v = pin`, not an
     // equation for `ir` (Spice3 diodes without series resistance).
     fold_final_zeros(&mut w);
+    fold_zero_coefficients(&mut w);
 
     // 2. Alias elimination
     let removed = alias::eliminate(&mut w);
@@ -868,6 +869,149 @@ impl System {
 }
 
 /// Replace final parameters whose value is exactly zero by the constant 0.
+/// Coefficients of derivatives that vanish for every value of the variables: a Spice3
+/// junction capacitance `capout := capin*sarg` computed by a function from a zero
+/// modelcard parameter (`CJC = 0`), multiplying `der(vbx)`. Tools that evaluate the
+/// `Evaluate = true` modelcards and inline the functions see a literal zero, and the
+/// derivative drops out of the equations (the node is algebraic). Here the function call
+/// is opaque, so the coefficient is evaluated at the start values and at a spread of
+/// other values of its arguments; when every result is exactly zero (a product with a
+/// zero parameter, not a coincidence), the variable is replaced by zero in the other
+/// equations. Without this the derivative is solved from `0*der(x) = ...` at run time.
+fn fold_zero_coefficients(w: &mut Work) {
+    use eval::{Values, eval};
+    let n = w.vars.len();
+    // Variables that occur in equations together with a derivative.
+    let mut with_der: FxHashSet<VarId> = FxHashSet::default();
+    for e in &w.eqs {
+        let mut has_der = false;
+        let mut vs = Vec::new();
+        for r in [e.lhs, e.rhs] {
+            w.arena.visit_all_leaves(r, &mut |nd| match nd {
+                Node::Der(_) => has_der = true,
+                Node::Var(v) => vs.push(v),
+                _ => {}
+            });
+        }
+        if has_der {
+            with_der.extend(vs);
+        }
+    }
+    if with_der.is_empty() {
+        return;
+    }
+    let is_param = |v: VarId| {
+        matches!(
+            w.vars[v as usize].kind,
+            VarKind::Parameter | VarKind::Constant
+        )
+    };
+    let pv = &w.param_values;
+    let starts: Vec<f64> = (0..n)
+        .map(|v| {
+            if is_param(v as VarId) {
+                return pv[v];
+            }
+            match w.vars[v].start {
+                Some(s) => {
+                    let vals = Values {
+                        var: &|u| pv[u as usize],
+                        pre: &|u| pv[u as usize],
+                        time: 0.0,
+                        initial: true,
+                        rel: None,
+                    };
+                    let x = eval(&w.arena, s, &vals, &mut FxHashMap::default());
+                    if x.is_finite() { x } else { 0.0 }
+                }
+                None => 0.0,
+            }
+        })
+        .collect();
+    const SPREAD: [f64; 6] = [0.0, 0.013, 0.37, 2.9, 41.0, 730.0];
+    const TIMES: [f64; 6] = [0.0, 1.3e-9, 7.1e-4, 0.43, 3.7, 61.0];
+    let sample = |v: VarId, k: usize| -> f64 {
+        let var = &w.vars[v as usize];
+        if is_param(v) || var.ty != VarType::Real || var.kind != VarKind::Continuous {
+            return starts[v as usize];
+        }
+        // deterministic pseudo-random sign and magnitude per variable and sample
+        let h = (v as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ (k as u64).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        let u = ((h >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0;
+        starts[v as usize] + SPREAD[k] * (0.5 + 0.5 * u.abs()) * u.signum()
+    };
+    let mut zero: Vec<(VarId, usize)> = Vec::new();
+    for (i, e) in w.eqs.iter().enumerate() {
+        let (x, def) = match (w.arena.node(e.lhs), w.arena.node(e.rhs)) {
+            (Node::Var(x), _) => (x, e.rhs),
+            (_, Node::Var(x)) => (x, e.lhs),
+            _ => continue,
+        };
+        let var = &w.vars[x as usize];
+        if !with_der.contains(&x)
+            || var.kind != VarKind::Continuous
+            || var.ty != VarType::Real
+            || w.arena.contains_impure(def)
+        {
+            continue;
+        }
+        let mut leaves_ok = true;
+        let mut has_var = false;
+        w.arena.visit_all_leaves(def, &mut |nd| match nd {
+            Node::Der(_) | Node::Pre(_) | Node::Rel(_) | Node::Delay(..) => leaves_ok = false,
+            Node::Var(v) if v == x => leaves_ok = false,
+            Node::Var(v) if !is_param(v) => {
+                has_var = true;
+                // Only continuous Reals are varied by the sampling below; a discrete or
+                // clocked value held at its start (`u = hold(-2*xd)`, xd(start = 0))
+                // would read as identically zero.
+                let vv = &w.vars[v as usize];
+                if vv.kind != VarKind::Continuous || vv.ty != VarType::Real {
+                    leaves_ok = false;
+                }
+            }
+            _ => {}
+        });
+        // Coefficients over parameters only are folded by parameter evaluation.
+        if !leaves_ok || !has_var {
+            continue;
+        }
+        let all_zero = (0..SPREAD.len()).all(|k| {
+            let vals = Values {
+                var: &|u| sample(u, k),
+                pre: &|u| sample(u, k),
+                time: TIMES[k],
+                initial: false,
+                rel: None,
+            };
+            eval(&w.arena, def, &vals, &mut FxHashMap::default()) == 0.0
+        });
+        if all_zero {
+            zero.push((x, i));
+        }
+    }
+    if zero.is_empty() {
+        return;
+    }
+    let zs: FxHashSet<VarId> = zero.iter().map(|z| z.0).collect();
+    let defs: FxHashSet<usize> = zero.iter().map(|z| z.1).collect();
+    let mut memo = FxHashMap::default();
+    for i in 0..w.eqs.len() {
+        if defs.contains(&i) {
+            continue;
+        }
+        let (l, r) = (w.eqs[i].lhs, w.eqs[i].rhs);
+        let mut fold = |arena: &mut Arena, e: ExprId| {
+            arena.rewrite(e, &mut memo, &mut |_, nd| match nd {
+                Node::Var(v) if zs.contains(&v) => Some(Arena::ZERO),
+                _ => None,
+            })
+        };
+        w.eqs[i].lhs = fold(&mut w.arena, l);
+        w.eqs[i].rhs = fold(&mut w.arena, r);
+    }
+}
+
 fn fold_final_zeros(w: &mut Work) {
     let zero: FxHashSet<VarId> = (0..w.vars.len() as VarId)
         .filter(|&v| {
