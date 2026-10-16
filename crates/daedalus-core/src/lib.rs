@@ -32,6 +32,7 @@ pub mod params;
 pub mod modal;
 pub mod optimize;
 pub mod lti;
+pub mod preflight;
 pub mod profile;
 pub mod results;
 pub mod sensitivity;

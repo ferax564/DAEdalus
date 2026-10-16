@@ -120,6 +120,16 @@ fn tools() -> Vec<Tool> {
             schema: || model_schema(json!({"max_lines": {"type": "integer"}})),
         },
         Tool {
+            name: "physics_check",
+            description: "Physics preflight of a model before trusting its results: parameters with no value, physical parameters with an impossible sign (mass, inertia, inductance, capacitance, resistance, stiffness, damping, absolute temperature...), states starting from a guessed 0, non-finite derivatives and unstable modes at the start, and, with `simulate`, a run that checks for blow-ups and negative absolute temperatures or pressures. Run it after building or editing a model.",
+            schema: || {
+                model_schema(json!({
+                    "simulate": {"type": "boolean", "description": "Also simulate the experiment (default true)"},
+                    "parameters": {"type": "object", "additionalProperties": {"type": "number"}}
+                }))
+            },
+        },
+        Tool {
             name: "generate_embedded_c",
             description: "Generate portable, allocation-free C99 for a model with top-level inputs and outputs (typically a controller block) that advances it by a fixed step: for microcontrollers such as Arduino (AVR) or ESP32. Returns the interface (inputs, outputs, RAM per instance), the header and the source. `daedalus codegen-c --hil` also writes firmware for closed-loop tests on emulated boards.",
             schema: || {
@@ -376,6 +386,21 @@ impl Server {
                 )
                 .map_err(|e| anyhow::anyhow!(e))?;
                 Ok(lin.report())
+            }
+            "physics_check" => {
+                let model = model()?;
+                let m = self.translate(&model)?;
+                let mut o = SimOptions::from_model(&m);
+                if let Some(Value::Object(p)) = a.get("parameters") {
+                    for (k, v) in p {
+                        let v = v
+                            .as_f64()
+                            .ok_or_else(|| anyhow::anyhow!("parameter {k}: not a number"))?;
+                        o.params.push((k.clone(), v));
+                    }
+                }
+                let sim = a.get("simulate").and_then(Value::as_bool).unwrap_or(true);
+                Ok(daedalus_core::preflight::check(&m, &o, sim, 60.0).text())
             }
             "generate_embedded_c" => {
                 let model = model()?;
@@ -797,6 +822,14 @@ mod tests {
         assert!(!err && t.contains("structure of Decay"), "{t}");
         let (t, err) = tool(&mut s, "profile_simulation", json!({"model": "Decay"}));
         assert!(!err && t.contains("finished"), "{t}");
+        let (t, err) = tool(&mut s, "physics_check", json!({"model": "Decay"}));
+        assert!(!err && t.contains("0 errors, 0 warnings"), "{t}");
+        let (t, err) = tool(
+            &mut s,
+            "physics_check",
+            json!({"model": "Decay", "parameters": {"k": -1.0}, "simulate": false}),
+        );
+        assert!(!err && t.contains("1 unstable mode"), "{t}");
         let (t, err) = tool(&mut s, "check_model", json!({"model": "Missing"}));
         assert!(err && t.starts_with("error"), "{t}");
         let (t, err) = tool(&mut s, "set_source", json!({"file": "../x.mo", "text": ""}));
