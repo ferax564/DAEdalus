@@ -308,6 +308,24 @@ pub fn eliminate(w: &mut Work) -> usize {
                     rvm.fixed = Some(true);
                 }
             }
+            // The class keeps an explicitly declared stateSelect over the default of
+            // its other members (`body.r_0(stateSelect = avoid)` aliased to the
+            // connector's `frame_a.r_0`), the strongest one if several are declared.
+            let rank = |s: StateSelect| match s {
+                StateSelect::Always => 4,
+                StateSelect::Prefer => 3,
+                StateSelect::Avoid => 2,
+                StateSelect::Never => 1,
+                StateSelect::Default => 0,
+            };
+            if let Some(ss) = list
+                .iter()
+                .map(|&(v, _)| w.vars[v as usize].state_select)
+                .filter(|&s| s != StateSelect::Default)
+                .max_by_key(|&s| rank(s))
+            {
+                w.vars[rep as usize].state_select = ss;
+            }
             let rep_e = w.arena.var(rep);
             for &(v, s) in &list {
                 if v == rep {

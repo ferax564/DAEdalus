@@ -364,6 +364,18 @@ pub fn compile_traced(
     } = flat;
     let mut vars = vars;
     let mut warnings = warnings;
+    // `reinit(x, ..)` implicitly gives x `stateSelect = StateSelect.always` (spec 8.3.6):
+    // otherwise index reduction may pick a variable related to x as the state
+    // (`H1 = -beta - Hc`, Preisach hysteresis) and the reinit is lost.
+    for w in &whens {
+        for (_, acts) in &w.branches {
+            for a in acts {
+                if let WhenAction::Reinit(v, _) = a {
+                    vars[*v as usize].state_select = StateSelect::Always;
+                }
+            }
+        }
+    }
     let applied = state_select::apply(&mut vars, &opts.state_overrides, &mut warnings);
     let mut arena = arena;
     let mut initial_equations = initial_equations;

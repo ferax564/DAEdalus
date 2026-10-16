@@ -120,6 +120,22 @@ def tube_check(rt, ry, at, ay):
     return bad / n, worst
 
 
+def grid_intervals(uniq):
+    """Number of output intervals of the reference's equidistant grid. The result
+    file also holds rows at events, often a hair off a grid point, so counting the
+    distinct times would shift every output point off the reference grid; the
+    typical spacing gives the grid itself."""
+    span = uniq[-1] - uniq[0]
+    steps = sorted(b - a for a, b in zip(uniq, uniq[1:]) if b - a > 1e-9 * span)
+    if not steps:
+        return len(uniq) - 1
+    dt = steps[len(steps) // 2]
+    n = round(span / dt)
+    if n < 1 or abs(n * dt - span) > 1e-6 * span:
+        return len(uniq) - 1
+    return n
+
+
 def model_dir(ref, model):
     return os.path.join(ref, *model.split("."))
 
@@ -133,6 +149,20 @@ def list_models(ref, prefix, top="Modelica"):
             if rel.startswith(prefix):
                 out.append(rel)
     return sorted(out)
+
+
+def creation_tolerance(d):
+    """The relative tolerance the reference result was generated with (creation.txt:
+    the model's experiment annotation multiplied by 0.1), or None if not recorded."""
+    try:
+        with open(os.path.join(d, "creation.txt")) as f:
+            for line in f:
+                m = re.match(r"\s*Tolerance\s*=\s*([0-9.eE+-]+)", line)
+                if m:
+                    return float(m.group(1))
+    except OSError:
+        pass
+    return None
 
 
 def run_one(args, model):
@@ -159,7 +189,10 @@ def run_one(args, model):
             "--start", repr(uniq[0]), "--stop", repr(uniq[-1]),
         ]
         if len(uniq) > 1:
-            cmd += ["-n", str(len(uniq) - 1)]
+            cmd += ["-n", str(grid_intervals(uniq))]
+        tol = creation_tolerance(d)
+        if tol is not None:
+            cmd += ["--tol", repr(tol)]
         t0 = time.time()
         try:
             p = subprocess.run(cmd, capture_output=True, text=True, timeout=args.timeout)
@@ -235,6 +268,7 @@ def main():
         "commit": source_commit(),
         "msl_version": args.msl_version or msl_version(args.msl),
         "tolerance": TOL,
+        "solver_tolerance": "from each reference's creation.txt (the experiment tolerance x 0.1)",
         "method": "csv-compare style tube: half-width tolerance*(time span) in time, tolerance*(signal range) in value",
         "reference": "MAP-LIB_ReferenceResults (Dymola-generated)",
         "filter": args.filter,

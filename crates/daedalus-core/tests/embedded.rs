@@ -108,7 +108,11 @@ fn run_c_err(name: &str, opts: &Options, n: usize) -> (Vec<String>, Vec<Vec<f64>
         .map(|l| l.split(',').map(|x| x.parse::<f64>().unwrap()).collect())
         .collect();
     let _ = std::fs::remove_dir_all(&dir);
-    (names, rows, String::from_utf8_lossy(&out.stderr).into_owned())
+    (
+        names,
+        rows,
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
 }
 
 fn reference(name: &str, stop: f64, n: usize) -> daedalus_core::results::Results {

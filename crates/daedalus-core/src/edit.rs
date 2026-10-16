@@ -19,7 +19,9 @@ fn class_source<'a>(
         .find_path(class)
         .ok_or_else(|| anyhow!("class {class} not found"))?;
     let node = tree.node(id);
-    let def = node.def.ok_or_else(|| anyhow!("class {class} has no definition"))?;
+    let def = node
+        .def
+        .ok_or_else(|| anyhow!("class {class} has no definition"))?;
     let doc = lib
         .docs
         .get(node.source)
@@ -62,7 +64,10 @@ pub fn apply_modifier(
     let mut pos = comp.name_token.location.end as usize;
     if pos > text.len() || text.get(comp.name_token.location.start as usize..pos) != Some(component)
     {
-        bail!("cannot locate the declaration of {component} in {}", doc.uri);
+        bail!(
+            "cannot locate the declaration of {component} in {}",
+            doc.uri
+        );
     }
     let skip_ws = |mut p: usize| {
         while p < text.len() && text.as_bytes()[p].is_ascii_whitespace() {
@@ -122,13 +127,17 @@ fn flatten(t: &ModTree, prefix: &str, out: &mut Vec<(String, String)>) -> bool {
 fn quote(s: &str) -> String {
     format!(
         "\"{}\"",
-        s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n")
+        s.replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('\n', "\\n")
     )
 }
 
 fn valid_key(k: &str) -> bool {
     !k.is_empty()
-        && k.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && k.chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
         && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
@@ -192,7 +201,11 @@ pub fn set_metadata(
             (None, None) => return Ok((doc.uri.clone(), text.to_string())),
         }
         let joined = parts.join(",");
-        let new_inner = if joined.trim().is_empty() { String::new() } else { joined };
+        let new_inner = if joined.trim().is_empty() {
+            String::new()
+        } else {
+            joined
+        };
         return Ok((
             doc.uri.clone(),
             format!("{}{}{}", &text[..open + 1], new_inner, &text[close..]),
@@ -202,10 +215,9 @@ pub fn set_metadata(
         return Ok((doc.uri.clone(), text.to_string()));
     };
     // No class annotation: add one before `end Name;`.
-    let end_tok = def
-        .end_name_token
-        .as_ref()
-        .ok_or_else(|| anyhow!("{class} is a short class definition: no place for an annotation"))?;
+    let end_tok = def.end_name_token.as_ref().ok_or_else(|| {
+        anyhow!("{class} is a short class definition: no place for an annotation")
+    })?;
     let name_at = end_tok.location.start as usize;
     let before = text[..name_at].trim_end();
     if !before.ends_with("end") {

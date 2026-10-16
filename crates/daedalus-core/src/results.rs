@@ -35,7 +35,14 @@ pub struct Results {
 
 impl Results {
     pub fn find(&self, name: &str) -> Option<&ResultVar> {
-        self.vars.iter().find(|v| v.name == name)
+        self.vars.iter().find(|v| v.name == name).or_else(|| {
+            // `cell[1, 1].v` as tools print subscripts: compare without the blanks.
+            if !name.contains(' ') {
+                return None;
+            }
+            let key: String = name.chars().filter(|c| !c.is_whitespace()).collect();
+            self.vars.iter().find(|v| v.name == key)
+        })
     }
 
     /// Trajectory of a variable sampled on the result time grid.
@@ -80,16 +87,20 @@ impl Results {
     }
 
     pub fn write_csv(&self, out: &mut dyn Write, names: Option<&[String]>) -> io::Result<()> {
-        let sel: Vec<&ResultVar> = match names {
-            Some(ns) => ns.iter().filter_map(|n| self.find(n)).collect(),
-            None => self.vars.iter().collect(),
+        // Columns are headed by the names asked for (`cell[1, 1].v` finds `cell[1,1].v`).
+        let sel: Vec<(&str, &ResultVar)> = match names {
+            Some(ns) => ns
+                .iter()
+                .filter_map(|n| self.find(n).map(|v| (n.as_str(), v)))
+                .collect(),
+            None => self.vars.iter().map(|v| (v.name.as_str(), v)).collect(),
         };
         write!(out, "time")?;
-        for v in &sel {
-            write!(out, ",\"{}\"", v.name)?;
+        for (n, _) in &sel {
+            write!(out, ",\"{n}\"")?;
         }
         writeln!(out)?;
-        let cols: Vec<Vec<f64>> = sel.iter().map(|v| self.values_of(v)).collect();
+        let cols: Vec<Vec<f64>> = sel.iter().map(|(_, v)| self.values_of(v)).collect();
         let mut line = String::new();
         for (i, t) in self.time.iter().enumerate() {
             line.clear();

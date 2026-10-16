@@ -225,7 +225,8 @@ fn init_report_of_a_healthy_model() {
     assert!(r.failure.is_none());
     let x = r.unknowns.iter().find(|u| u.name == "x").unwrap();
     assert_eq!(x.start_use, "fixed");
-    assert_eq!(x.value, Some(1.0));
+    // Solved together with y in one Newton block: exact up to rounding.
+    assert!((x.value.unwrap() - 1.0).abs() < 1e-9, "{:?}", x.value);
     // y has no fixed attribute: its start value closes the initial system or is a guess.
     assert!(r.relevant >= 2);
     assert!(r.unconnected.is_empty());

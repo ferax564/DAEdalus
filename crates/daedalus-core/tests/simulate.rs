@@ -285,3 +285,19 @@ fn state_machine_errors() {
     assert!(err("SM.TicksInStateInState").contains("transition conditions"));
     assert!(err("SM.SamePriority").contains("different priorities"));
 }
+
+#[test]
+fn redeclared_model_modifiers_and_branch_asserts() {
+    let r = run("redeclare_mods.mo", "RM.Top", 1.0, Method::Bdf);
+    assert!(close(
+        r.final_value("pipe1.flowModel.y").unwrap(),
+        20.0,
+        1e-12
+    ));
+    assert!(close(
+        r.final_value("hx.pipe.flowModel.y").unwrap(),
+        60.0,
+        1e-12
+    ));
+    assert!(close(r.final_value("props.h").unwrap(), -200.0, 1e-9));
+}

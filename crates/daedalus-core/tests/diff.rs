@@ -45,7 +45,11 @@ fn structural_diff_finds_components_parameters_connections_equations() {
     let k = comp("k").expect("k changed");
     assert_eq!(k.change, "modified");
     assert!(k.parameter);
-    assert!(k.details.iter().any(|x| x.contains("= 100 -> = 120")), "{:?}", k.details);
+    assert!(
+        k.details.iter().any(|x| x.contains("= 100 -> = 120")),
+        "{:?}",
+        k.details
+    );
     let dd = comp("d").expect("d added");
     assert_eq!(dd.change, "added");
     assert!(dd.parameter);
@@ -58,7 +62,11 @@ fn structural_diff_finds_components_parameters_connections_equations() {
     let mass = comp("mass").unwrap();
     assert_eq!(mass.change, "modified");
     assert!(mass.moved);
-    assert!(mass.details.iter().any(|x| x.starts_with("modifier s")), "{:?}", mass.details);
+    assert!(
+        mass.details.iter().any(|x| x.starts_with("modifier s")),
+        "{:?}",
+        mass.details
+    );
     assert!(comp("spring").is_none());
 
     // connections: the swapped spring-mass connection is the same one, rerouted
@@ -66,12 +74,25 @@ fn structural_diff_finds_components_parameters_connections_equations() {
     assert_eq!(ch("removed"), 1, "{:?}", d.connections);
     assert_eq!(ch("added"), 1);
     assert_eq!(ch("rerouted"), 1);
-    let removed = d.connections.iter().find(|c| c.change == "removed").unwrap();
-    assert_eq!((removed.from.as_str(), removed.to.as_str()), ("fixed.flange", "spring.flange_a"));
+    let removed = d
+        .connections
+        .iter()
+        .find(|c| c.change == "removed")
+        .unwrap();
+    assert_eq!(
+        (removed.from.as_str(), removed.to.as_str()),
+        ("fixed.flange", "spring.flange_a")
+    );
 
     // equations
-    assert_eq!(d.equations.iter().filter(|e| e.change == "removed").count(), 1);
-    assert_eq!(d.equations.iter().filter(|e| e.change == "added").count(), 1);
+    assert_eq!(
+        d.equations.iter().filter(|e| e.change == "removed").count(),
+        1
+    );
+    assert_eq!(
+        d.equations.iter().filter(|e| e.change == "added").count(),
+        1
+    );
     assert!(d.equations.iter().any(|e| e.text.contains("mass.v")));
 
     // other
@@ -80,7 +101,10 @@ fn structural_diff_finds_components_parameters_connections_equations() {
 
     let r = d.report();
     assert!(r.contains("+ damper : Damper"), "{r}");
-    assert!(r.contains("- connect(fixed.flange, spring.flange_a)"), "{r}");
+    assert!(
+        r.contains("- connect(fixed.flange, spring.flange_a)"),
+        "{r}"
+    );
 }
 
 #[test]
@@ -98,7 +122,10 @@ fn text_diff_and_unified_format() {
     let ops: String = lines.iter().map(|l| l.op).collect();
     assert_eq!(ops, "  -+   +");
     let u = unified(&lines, "a", "b", 1);
-    assert!(u.starts_with("--- a\n+++ b\n@@ -2,3 +2,3 @@\n b\n-c\n+X\n d\n"), "{u}");
+    assert!(
+        u.starts_with("--- a\n+++ b\n@@ -2,3 +2,3 @@\n b\n-c\n+X\n d\n"),
+        "{u}"
+    );
     assert!(u.contains("+g"));
     // line numbers in the diff are those of the files
     let d = diff_sources(OLD, NEW, Some("Plant"), None).unwrap();

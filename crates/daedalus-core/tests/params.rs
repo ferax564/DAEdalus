@@ -35,7 +35,14 @@ fn csv_formats() {
     let csv = "# valve data\nname;value;unit\nd;12;mm\ndp_nominal;1.5;bar\nzeta;2.5;\nopen;FALSE\nlabel;\"a; b\"\ntable;{1, 2; 3}\n";
     let p = params::parse(csv, "v.csv").unwrap();
     assert_eq!(p.len(), 6);
-    assert_eq!(p[0], ParamValue { name: "d".into(), value: "12".into(), unit: Some("mm".into()) });
+    assert_eq!(
+        p[0],
+        ParamValue {
+            name: "d".into(),
+            value: "12".into(),
+            unit: Some("mm".into())
+        }
+    );
     assert_eq!(p[3].value, "false");
     assert_eq!(p[4].value, "\"a; b\"");
     assert_eq!(p[5].value, "{1, 2; 3}");
@@ -70,8 +77,14 @@ fn ssv_values() {
 #[test]
 fn modifier_and_record() {
     let p = params::parse_csv("v1.d,0.02\nv1.zeta,3\nv2.d,0.03\nk,5\n").unwrap();
-    assert_eq!(params::modifier("sys", &p), "sys(v1(d = 0.02, zeta = 3), v2(d = 0.03), k = 5)");
-    let r = params::record("Data", &params::parse_csv("a,1.5,m\nn,3\ns,hello\nv1.d,2\n").unwrap());
+    assert_eq!(
+        params::modifier("sys", &p),
+        "sys(v1(d = 0.02, zeta = 3), v2(d = 0.03), k = 5)"
+    );
+    let r = params::record(
+        "Data",
+        &params::parse_csv("a,1.5,m\nn,3\ns,hello\nv1.d,2\n").unwrap(),
+    );
     assert!(r.contains("parameter Real a(unit=\"m\") = 1.5;"), "{r}");
     assert!(r.contains("parameter Integer n = 3;"));
     assert!(r.contains("parameter String s = \"hello\";"));
@@ -89,7 +102,13 @@ fn check_converts_units_and_reports_unknown_names() {
     assert_eq!(c.params[1].value, "150000");
     assert!(c.messages.iter().any(|m| m.contains("bogus")));
     // dotted names through components of the model
-    let c = params::check(&l, "P.System", None, &params::parse_csv("v2.d,10,cm\n").unwrap()).unwrap();
+    let c = params::check(
+        &l,
+        "P.System",
+        None,
+        &params::parse_csv("v2.d,10,cm\n").unwrap(),
+    )
+    .unwrap();
     assert_eq!(c.params[0].value, "0.1");
     assert!(params::check(&l, "P.System", Some("nope"), &p).is_err());
     assert_eq!(params::convert(20.0, "degC", "K"), Some(293.15));
@@ -100,10 +119,17 @@ fn check_converts_units_and_reports_unknown_names() {
 fn apply_modifier_merges_into_the_declaration() {
     let l = lib();
     let p = params::parse_csv("zeta,5\nd,0.02\n").unwrap();
-    let (uri, text) = daedalus_core::edit::apply_modifier(&l, "P.System", "v1", &ModTree::from_params(&p)).unwrap();
+    let (uri, text) =
+        daedalus_core::edit::apply_modifier(&l, "P.System", "v1", &ModTree::from_params(&p))
+            .unwrap();
     assert_eq!(uri, "p.mo");
-    assert!(text.contains("Valve v1(zeta=5, open=false, d=0.02) \"first\";"), "{text}");
-    let (_, text) = daedalus_core::edit::apply_modifier(&l, "P.System", "v2", &ModTree::from_params(&p)).unwrap();
+    assert!(
+        text.contains("Valve v1(zeta=5, open=false, d=0.02) \"first\";"),
+        "{text}"
+    );
+    let (_, text) =
+        daedalus_core::edit::apply_modifier(&l, "P.System", "v2", &ModTree::from_params(&p))
+            .unwrap();
     assert!(text.contains("Valve v2(zeta=5, d=0.02);"), "{text}");
     // the edited text still parses, and the new values are there
     let mut l2 = Library::new();
@@ -111,20 +137,28 @@ fn apply_modifier_merges_into_the_declaration() {
     let info = inspect::class_info(&l2, "P.System").unwrap();
     let v2 = info.components.iter().find(|c| c.name == "v2").unwrap();
     assert_eq!(v2.modifiers.len(), 2);
-    assert!(daedalus_core::edit::apply_modifier(&l, "P.System", "x9", &ModTree::default()).is_err());
+    assert!(
+        daedalus_core::edit::apply_modifier(&l, "P.System", "x9", &ModTree::default()).is_err()
+    );
 }
 
 #[test]
 fn metadata_annotation_is_read_and_edited() {
     let l = lib();
-    let kv = vec![("owner".to_string(), "Ada".to_string()), ("review".to_string(), "2026-10-01".to_string())];
+    let kv = vec![
+        ("owner".to_string(), "Ada".to_string()),
+        ("review".to_string(), "2026-10-01".to_string()),
+    ];
     // a class with an annotation
     let (_, t1) = daedalus_core::edit::set_metadata(&l, "P.System", &kv).unwrap();
     let mut l1 = Library::new();
     assert!(l1.set_document("p.mo", &t1).is_empty(), "{t1}");
     let info = inspect::class_info(&l1, "P.System").unwrap();
     assert_eq!(info.metadata, kv);
-    assert!(info.experiment.is_some(), "the experiment annotation is kept");
+    assert!(
+        info.experiment.is_some(),
+        "the experiment annotation is kept"
+    );
     // replace, then remove
     let kv2 = vec![("owner".to_string(), "Grace \"G\"".to_string())];
     let (_, t2) = daedalus_core::edit::set_metadata(&l1, "P.System", &kv2).unwrap();
@@ -140,7 +174,10 @@ fn metadata_annotation_is_read_and_edited() {
     let mut l4 = Library::new();
     assert!(l4.set_document("p.mo", &t4).is_empty(), "{t4}");
     assert_eq!(inspect::class_info(&l4, "P.Valve").unwrap().metadata, kv);
-    assert!(daedalus_core::edit::set_metadata(&l, "P.Valve", &[("bad key".into(), "x".into())]).is_err());
+    assert!(
+        daedalus_core::edit::set_metadata(&l, "P.Valve", &[("bad key".into(), "x".into())])
+            .is_err()
+    );
 }
 
 #[test]
@@ -159,5 +196,11 @@ end Lib;
     assert_eq!(m.revisions.as_deref(), Some("<html>r1</html>"));
     let p = inspect::class_info(&l, "Lib").unwrap();
     assert_eq!(p.version.as_deref(), Some("2.1.0"));
-    assert_eq!(p.uses, vec![("Modelica".into(), "4.0.0".into()), ("Other".into(), "1.0".into())]);
+    assert_eq!(
+        p.uses,
+        vec![
+            ("Modelica".into(), "4.0.0".into()),
+            ("Other".into(), "1.0".into())
+        ]
+    );
 }
