@@ -12,6 +12,11 @@ the equations as you wrote them, with their components and source lines.
 differentiation for index reduction, dummy derivatives, solving for it and tearing. Each
 step names the equation as written, the component it came from and its file and line.
 
+Two terms come up in the output. An **alias** is a variable that is just another name for
+another one, such as the current in two wires joined end to end, so DAEdalus removes it. A
+**tear variable** is one picked to break a loop of equations: the solver guesses its value,
+then corrects the guess again and again (Newton's method) until the loop balances.
+
 ```sh
 daedalus debug crates/daedalus-core/tests/models/debug.mo -m Debug.DiodeLoop --var d.i
 ```
@@ -49,7 +54,8 @@ the Text view at that line.
 `--init` lists the unknowns of the initial system and the start values it used. For each
 start value it says whether it is fixed or only a guess, and which modification set it.
 For a block that fails, it shows the residuals at the last iterate and the variables with
-the largest Newton update.
+the largest Newton update. A **residual** is how far an equation is from being satisfied.
+A solve has converged when every residual is close to zero.
 
 ```sh
 daedalus debug crates/daedalus-core/tests/models/debug.mo -m Debug.InitFail --init
@@ -83,7 +89,10 @@ simulation in the Messages panel links to it.
 ## Too many or too few equations
 
 When translation fails, `debug` finds the smallest under- or over-determined subset of
-equations and lists its equations and unknowns with their component paths. It also
+equations and lists its equations and unknowns with their component paths. A model is
+**underdetermined** when it has fewer equations than unknowns, so some value is never
+pinned down, and **overdetermined** when it has more, so some equations are extra. An extra
+equation may be redundant, or it may contradict the others. It also
 reports physical connectors that are left unconnected:
 
 ```sh
