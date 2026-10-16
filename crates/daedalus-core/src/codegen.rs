@@ -2013,6 +2013,7 @@ impl<'m> Runtime<'m> {
         let (mut neg, mut pos): (Option<(f64, f64)>, Option<(f64, f64)>) = (None, None);
         let mut prev_abs = f64::INFINITY;
         let mut n_forced = 0u32;
+        let mut n_stalled = 0u32;
         // A linear block normally converges in one step; if it does not (an ill-conditioned
         // or switching system), it continues as a damped Newton iteration.
         let max_iter = if self.step_cap > 0.0 { 400 } else { 50 };
@@ -2067,6 +2068,7 @@ impl<'m> Runtime<'m> {
             for (i, &s) in b.residuals.iter().enumerate() {
                 rhs[i] = -self.r[s as usize];
             }
+            let f_entry = -rhs[0];
             // Row weights for the damping test: residuals of very different scale
             // (1/tau next to a fraction) are compared relative to their sensitivity.
             weights.clear();
@@ -2223,6 +2225,55 @@ impl<'m> Runtime<'m> {
                     break;
                 }
                 lambda *= 0.5;
+            }
+            // One tear whose damped Newton step stalled (the residual first grows along
+            // the step: a fold of a piecewise-linear characteristic, as in a Schmitt
+            // trigger whose branch ends) and no sign change known yet: search outwards
+            // along the Newton direction, then against it, for a point of opposite sign,
+            // so that the bracketing above can take over.
+            if lambda < 1e-3 && !forced {
+                n_stalled += 1;
+            } else {
+                n_stalled = 0;
+            }
+            if n == 1 && n_stalled >= 2 && !self.init_mode && (neg.is_none() || pos.is_none()) {
+                let x0 = old[0];
+                let f0 = f_entry;
+                let (lo, hi) = b.bounds[0];
+                let t = b.tears[0] as usize;
+                let keep = self.r[t];
+                let mut found = None;
+                if f0 != 0.0 && f0.is_finite() {
+                    'dirs: for dir in [rhs[0].signum(), -rhs[0].signum()] {
+                        let mut d = rhs[0].abs().max(1e-6 * (1.0 + x0.abs()));
+                        for _ in 0..64 {
+                            let x = x0 + dir * d;
+                            if !x.is_finite() || x < lo || x > hi {
+                                break;
+                            }
+                            self.r[t] = x;
+                            self.run(&b.body);
+                            let f = self.r[b.residuals[0] as usize];
+                            if f.is_finite() && f != 0.0 && (f < 0.0) != (f0 < 0.0) {
+                                found = Some((x, f));
+                                break 'dirs;
+                            }
+                            d *= 2.0;
+                        }
+                    }
+                }
+                match found {
+                    Some((x, f)) => {
+                        if f < 0.0 {
+                            neg = Some((x, f));
+                        } else {
+                            pos = Some((x, f));
+                        }
+                        self.r[t] = x;
+                        continue;
+                    }
+                    None => self.r[t] = keep,
+                }
             }
             let step = (0..n)
                 .map(|i| (lambda * rhs[i]).abs() / (1.0 + old[i].abs()))
