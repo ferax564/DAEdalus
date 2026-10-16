@@ -1318,7 +1318,9 @@ impl<'m> Simulation<'m> {
             .zip(&m.sample_next)
             .filter(|&(&i, _)| self.rt.r[m.layout.rel0 + i] == 0.0)
             .map(|(_, &v)| self.rt.r[v as usize])
-            .filter(|&ts| ts > t)
+            // A tick only round-off ahead (a slice ended at 0.1 + 0.1 + .. just short of
+            // 0.4) is no step limit: the next step crosses it and it fires at its time.
+            .filter(|&ts| ts > t + 1e-12 * t.abs().max(1e-3))
             .min_by(f64::total_cmp)
             .map(|t0| {
                 let ticks = m
