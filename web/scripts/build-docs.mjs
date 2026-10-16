@@ -130,31 +130,34 @@ function render(page, md) {
     renderer: {
       heading({ tokens, depth }) {
         const text = this.parser.parseInline(tokens);
-        const id = slugify(text);
-        if (depth === 2 || depth === 3) toc.push({ depth, id, text: text.replace(/<[^>]+>/g, "") });
+        const id = slugify(plain(text));
+        if (depth === 2 || depth === 3) toc.push({ depth, id, text: plain(text).replace(/<[^>]+>/g, "") });
         if (depth === 1) return `<h1>${text}</h1>\n`;
         return `<h${depth} id="${id}"><a class="anchor" href="#${id}" aria-hidden="true">#</a>${text}</h${depth}>\n`;
       },
       link({ href, title, tokens }) {
         const text = this.parser.parseInline(tokens);
         const h = rewrite(href, page, "link");
+        title = title && plain(title);
         const ext = /^https?:/.test(h) && !h.startsWith(REPO) ? ' rel="noopener"' : "";
         return `<a href="${escapeHtml(h)}"${title ? ` title="${escapeHtml(title)}"` : ""}${ext}>${text}</a>`;
       },
       image({ href, title, text }) {
         const h = rewrite(href, page, "image");
-        const cap = title ? `<figcaption>${escapeHtml(title)}</figcaption>` : "";
-        return `<figure><a href="${escapeHtml(h)}" class="zoom"><img src="${escapeHtml(h)}" alt="${escapeHtml(text)}" loading="lazy"></a>${cap}</figure>`;
+        const cap = title ? `<figcaption>${escapeHtml(plain(title))}</figcaption>` : "";
+        return `<figure><a href="${escapeHtml(h)}" class="zoom"><img src="${escapeHtml(h)}" alt="${escapeHtml(plain(text))}" loading="lazy"></a>${cap}</figure>`;
       },
       html({ text }) {
         // Raw HTML (videos, card grids): rewrite src, poster and href attributes.
-        return text.replace(/\b(src|poster|href)="([^"]+)"/g, (_, a, v) => `${a}="${escapeHtml(rewrite(v, page, a === "href" ? "link" : "asset"))}"`);
+        return plain(text).replace(/\b(src|poster|href)="([^"]+)"/g, (_, a, v) => `${a}="${escapeHtml(rewrite(v, page, a === "href" ? "link" : "asset"))}"`);
       },
       code({ text, lang }) {
         return `<pre><code${lang ? ` class="language-${escapeHtml(lang)}"` : ""}>${escapeHtml(text)}</code></pre>\n`;
       },
     },
   });
+  // Attributes and anchors take the TeX as plain text; only text nodes get the rendered formula.
+  const plain = (text) => text.replace(/@@MATH(\d+)@@/g, (_, i) => math[+i].tex);
   const formula = ({ tex, display }) => {
     try {
       const html = katex.renderToString(tex, { displayMode: display, throwOnError: true, trust: false, output: "htmlAndMathml" });
