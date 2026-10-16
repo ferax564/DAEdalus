@@ -240,12 +240,12 @@ impl Recorder {
         )
     }
 
-    /// Drop the last stored row.
-    fn pop(&mut self) {
-        self.res.time.pop();
+    /// Drop the last stored row; returns its time.
+    fn pop(&mut self) -> Option<f64> {
         for c in &mut self.res.series {
             c.pop();
         }
+        self.res.time.pop()
     }
 
     fn record(&mut self, rt: &mut Runtime) {
@@ -1656,14 +1656,16 @@ impl<'m> Simulation<'m> {
                 self.rt.rhs(te, &st.xi, &mut st.x);
                 let snap = self.prof.as_deref_mut().map(|p| p.event_begin(&self.rt));
                 let store = o.store_events && st.event_rows < event_budget && rec.is_some();
+                let mut merged_at = None;
                 if store && let Some(rec) = rec.as_deref_mut() {
                     // An event right after another one at the same instant (a friction
                     // element starting to slide: `startForward` at `sa > tau0_max`, then
                     // `mode = Forward` as `w > 0` an instant later) continues it: the
                     // values in between hold for no time, so its rows replace the right
                     // values of the first one instead of adding a spike.
+                    // They keep its time: both are the same event instant.
                     if same && rec.res.time.len() == st.last_event_rows {
-                        rec.pop();
+                        merged_at = rec.pop();
                     } else {
                         rec.record(&mut self.rt);
                     }
@@ -1692,6 +1694,9 @@ impl<'m> Simulation<'m> {
                 if let Some(rec) = rec.as_deref_mut() {
                     if store {
                         rec.record(&mut self.rt);
+                        if let (Some(t0), Some(t)) = (merged_at, rec.res.time.last_mut()) {
+                            *t = t0;
+                        }
                         st.last_event_rows = rec.res.time.len();
                     }
                     // Output point coinciding with the event.
