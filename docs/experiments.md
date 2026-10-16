@@ -1,8 +1,9 @@
 # Experiments: sweeps, runs and share links
 
-Every simulation in the workbench is kept as a run you can overlay, subtract or share,
-and a parameter sweep fans out over all your cores, in the browser or on the command
-line.
+In plain terms, a **run** is one simulation with its settings and results, and a **sweep** is many
+runs with different parameter values. Every run in the workbench is kept, so you can overlay two of
+them, subtract one from the other or share a link. A sweep runs its cases in parallel, on all your
+cores, either in the browser or on the command line.
 
 ![Nine runs of a spring-rate and bump-height sweep overlaid in one plot](img/experiments/overlay.webp)
 

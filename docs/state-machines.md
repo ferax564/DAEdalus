@@ -1,7 +1,9 @@
 # State machines
 
-The state machines of Modelica 3.6 (chapter 17 of the specification) translate and
-simulate, natively and in the browser. This is the example from
+A state machine describes a system that is always in one of a few named modes, and moves
+between them when a condition happens: a valve that is open, closing or closed, or a controller
+that is idle, heating or cooling. Modelica 3.6 defines this with its own syntax (chapter 17 of the
+specification). DAEdalus translates and simulates these machines, natively and in the browser. This is the example from
 `ModelicaReference.StateMachines`, run as written:
 
 ```modelica
