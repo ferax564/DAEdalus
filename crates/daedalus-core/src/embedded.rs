@@ -18,7 +18,7 @@
 //! discrete values and their `pre`, relations, inputs, outputs, Newton tears).
 
 use crate::codegen::{Action, Ins, Model, Slot};
-use crate::expr::{Cmp, Fn1, Fn2, Table, VarId};
+use crate::expr::{Cmp, Fn1, Fn2, VarId};
 use crate::flat::VarKind;
 use anyhow::{Result, bail};
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -216,13 +216,17 @@ fn reads_writes(ins: &Ins, reads: &mut Vec<Slot>, writes: &mut Vec<Slot>) {
             writes.push(d);
             reads.extend([c, a, b]);
         }
-        Ins::Interp(d, _, _, x) | Ins::InterpDer(d, _, _, x) | Ins::Delay(d, _, x) => {
+        Ins::Interp(d, _, x, ne) | Ins::Interp2(d, _, x, ne) => {
+            writes.push(d);
+            reads.extend([x, ne]);
+        }
+        Ins::Delay(d, _, x) => {
             writes.push(d);
             reads.push(x);
         }
         Ins::Call(d, ..) | Ins::CallD(d, ..) => writes.push(d),
         Ins::Jz(c, _) => reads.push(c),
-        Ins::Jmp(_) | Ins::Newton(_) => {}
+        Ins::Jmp(_) | Ins::Newton(_) | Ins::Exec(_) => {}
     }
 }
 
@@ -234,7 +238,15 @@ fn check_supported(m: &Model, prog: &[Ins], what: &str) -> Result<()> {
                 "{what}: delay() is not supported in embedded code (it needs a history buffer)"
             ),
             Ins::Call(..) | Ins::CallD(..) => {
-                bail!("{what}: functions with while-loops are not supported in embedded code yet")
+                bail!(
+                    "{what}: functions with while-loops and external C functions are not supported in embedded code yet"
+                )
+            }
+            Ins::Exec(_) => {
+                bail!("{what}: impure external functions are not supported in embedded code")
+            }
+            Ins::Interp2(..) => {
+                bail!("{what}: 2-D tables are not supported in embedded code yet")
             }
             Ins::Newton(i) => {
                 let b = &m.newton[*i as usize];
@@ -357,22 +369,25 @@ impl<'m> Gen<'m> {
                 Ins::Select(d, c, a, b) => {
                     format!("{} = ({} != RC(0.0)) ? {} : {};", o(d), o(c), o(a), o(b))
                 }
-                Ins::Interp(d, t, c, x) => {
+                Ins::Interp(d, vk, x, ne) => {
+                    let (t, col) = self.m.views[(vk >> 2) as usize];
                     used_tables.push(t);
-                    if c == Table::NEXT_EVENT {
-                        format!("{} = dl_next_event(&TBL{t}, {});", o(d), o(x))
-                    } else {
-                        format!("{} = dl_interp(&TBL{t}, {c}, {});", o(d), o(x))
-                    }
-                }
-                Ins::InterpDer(d, t, c, x) => {
-                    used_tables.push(t);
-                    format!("{} = dl_slope(&TBL{t}, {c}, {});", o(d), o(x))
+                    format!(
+                        "{} = dl_tab_eval(&TBL{t}, {}, {col}, {}, {});",
+                        o(d),
+                        vk & 3,
+                        o(x),
+                        o(ne)
+                    )
                 }
                 Ins::Jz(c, k) => format!("if ({} == RC(0.0)) goto L{};", o(c), pc + 1 + k as usize),
                 Ins::Jmp(k) => format!("goto L{};", pc + 1 + k as usize),
                 Ins::Newton(i) => format!("dl_newton(m, &NB{i});"),
-                Ins::Delay(..) | Ins::Call(..) | Ins::CallD(..) => {
+                Ins::Delay(..)
+                | Ins::Call(..)
+                | Ins::CallD(..)
+                | Ins::Interp2(..)
+                | Ins::Exec(..) => {
                     unreachable!("rejected by check_supported")
                 }
             };
@@ -721,32 +736,35 @@ pub fn generate(m: &Model, opts: &Options) -> Result<Generated> {
     tables.sort_unstable();
     for t in &tables {
         let tb = &m.tables[*t as usize];
-        let data: Vec<String> = tb.data.iter().map(|&v| lit(v)).collect();
-        let slopes: Vec<String> = tb.slopes.iter().map(|&v| lit(v)).collect();
-        let _ = writeln!(
-            src,
-            "DL_UNUSED static const real_t TBL{t}_data[] = {{{}}};",
-            data.join(", ")
-        );
-        if !slopes.is_empty() {
+        let mut src_tables = String::new();
+        let mut arr = |name: &str, v: &mut dyn Iterator<Item = f64>| -> String {
+            let items: Vec<String> = v.map(lit).collect();
+            if items.is_empty() {
+                return "0".into();
+            }
             let _ = writeln!(
-                src,
-                "DL_UNUSED static const real_t TBL{t}_slopes[] = {{{}}};",
-                slopes.join(", ")
+                src_tables,
+                "DL_UNUSED static const real_t TBL{t}_{name}[] = {{{}}};",
+                items.join(", ")
             );
-        }
+            format!("TBL{t}_{name}")
+        };
+        let data = arr("data", &mut tb.data.iter().copied());
+        let spline = arr(
+            "spline",
+            &mut tb.spline.iter().flat_map(|c| c.iter().copied()),
+        );
+        let events = arr("events", &mut tb.events.iter().copied());
+        src.push_str(&src_tables);
         let _ = writeln!(
             src,
-            "DL_UNUSED static const dl_table TBL{t} = {{TBL{t}_data, {}, {}, {}, {}, {}, {}, {}}};",
-            if slopes.is_empty() {
-                "0".to_string()
-            } else {
-                format!("TBL{t}_slopes")
-            },
+            "DL_UNUSED static const dl_table TBL{t} = {{{data}, {spline}, {events}, {}, {}, {}, {}, {}, {}, {}, {}}};",
             tb.rows,
             tb.cols,
+            tb.events.len(),
             tb.extrapolation,
             tb.smoothness,
+            u8::from(tb.time),
             lit(tb.shift),
             lit(tb.start)
         );
@@ -1277,109 +1295,165 @@ DL_UNUSED static real_t dl_atan2(real_t x, real_t y) { return (x == RC(0.0) && y
 
 typedef struct {
     const real_t *data;
-    const real_t *slopes;
-    uint16_t rows, cols;
-    uint8_t extrapolation, smoothness;
+    const real_t *spline; /* [c0, c1, c2] per segment and column */
+    const real_t *events; /* time events of a time table, table coordinates */
+    uint16_t rows, cols, nev;
+    uint8_t extrapolation, smoothness, time;
     real_t shift, start;
 } dl_table;
 
+/* 1-D tables: the same lookups as the simulator (crates/daedalus-core/src/table1.rs). */
 #define TB(t, r, c) ((t)->data[(uint32_t)(r) * (t)->cols + (c)])
-DL_UNUSED static real_t dl_tmap(const dl_table *t, real_t x)
+#define TX(t, r) TB(t, r, 0)
+#define DL_TTOL (sizeof(real_t) == 4 ? RC(1e-6) : RC(1e-10))
+DL_UNUSED static int dl_near(real_t x, real_t y)
 {
-    x -= t->shift;
-    if (t->extrapolation == 2 && t->rows >= 2) {
-        real_t x0 = TB(t, 0, 0), p = TB(t, t->rows - 1, 0) - x0;
-        if (p > RC(0.0)) {
-            real_t q = (x - x0) - DL_FLOOR((x - x0) / p) * p;
-            return x0 + q;
-        }
-    }
-    return x;
+    real_t a = dl_max(dl_max(DL_FABS(x), DL_FABS(y)), RC(1e-10));
+    return DL_FABS(y - x) < a * DL_TTOL;
 }
-DL_UNUSED static uint16_t dl_locate(const dl_table *t, real_t x, real_t *w)
+DL_UNUSED static int dl_tfind(const dl_table *t, real_t v, int lo, int hi)
 {
-    uint16_t n = t->rows, lo = 0, hi = (uint16_t)(n - 1);
-    real_t x0, x1;
-    if (x <= TB(t, 0, 0)) lo = 0;
-    else if (x >= TB(t, n - 1, 0)) lo = (uint16_t)(n - 2);
-    else {
-        while (hi - lo > 1) {
-            uint16_t mid = (uint16_t)((lo + hi) / 2);
-            if (TB(t, mid, 0) <= x) lo = mid; else hi = mid;
-        }
+    while (hi > lo + 1) {
+        int mid = (lo + hi) / 2;
+        if (v < TX(t, mid)) hi = mid; else lo = mid;
     }
-    x0 = TB(t, lo, 0);
-    x1 = TB(t, lo + 1, 0);
-    *w = x1 > x0 ? (x - x0) / (x1 - x0) : (x >= x1 ? RC(1.0) : RC(0.0));
     return lo;
 }
-DL_UNUSED static real_t dl_interp(const dl_table *t, uint16_t col, real_t x)
+DL_UNUSED static real_t dl_tseg(const dl_table *t, int kind, int col, int i, real_t u, int step)
 {
-    real_t w, y0, y1;
-    uint16_t r;
-    int inside;
-    if (x < t->start || t->rows == 0) return RC(0.0);
-    if (t->rows == 1) return TB(t, 0, col);
-    x = dl_tmap(t, x);
-    r = dl_locate(t, x, &w);
-    y0 = TB(t, r, col);
-    y1 = TB(t, r + 1, col);
-    inside = w >= RC(0.0) && w <= RC(1.0);
-    if (!inside && t->extrapolation == 0) return w < RC(0.0) ? y0 : y1;
-    if (t->smoothness == 1) return w >= RC(1.0) ? y1 : y0;
-    if (t->smoothness == 2) {
-        real_t h = TB(t, r + 1, 0) - TB(t, r, 0);
-        real_t s0 = t->slopes[(uint32_t)r * t->cols + col], s1 = t->slopes[(uint32_t)(r + 1) * t->cols + col];
-        real_t w2 = w * w, w3 = w2 * w;
-        if (!inside) return w < RC(0.0) ? y0 + s0 * w * h : y1 + s1 * (w - RC(1.0)) * h;
-        return (RC(2.0) * w3 - RC(3.0) * w2 + RC(1.0)) * y0 + (w3 - RC(2.0) * w2 + w) * h * s0
-             + (RC(-2.0) * w3 + RC(3.0) * w2) * y1 + (w3 - w2) * h * s1;
+    real_t t0 = TX(t, i), t1 = TX(t, i + 1), y0 = TB(t, i, col), y1 = TB(t, i + 1, col);
+    if (t->smoothness == 1) {
+        if (kind != 0) return RC(0.0);
+        return (step && u >= t1) ? y1 : y0;
     }
-    return y0 + w * (y1 - y0);
-}
-DL_UNUSED static real_t dl_slope(const dl_table *t, uint16_t col, real_t x)
-{
-    real_t w, x0, x1, h;
-    uint16_t r;
-    int inside;
-    if (x < t->start || t->rows < 2) return RC(0.0);
-    x = dl_tmap(t, x);
-    r = dl_locate(t, x, &w);
-    inside = w >= RC(0.0) && w <= RC(1.0);
-    if ((!inside && t->extrapolation == 0) || t->smoothness == 1) return RC(0.0);
-    x0 = TB(t, r, 0);
-    x1 = TB(t, r + 1, 0);
-    if (x1 <= x0) return RC(0.0);
-    h = x1 - x0;
     if (t->smoothness == 2) {
-        real_t s0 = t->slopes[(uint32_t)r * t->cols + col], s1 = t->slopes[(uint32_t)(r + 1) * t->cols + col];
-        real_t y0 = TB(t, r, col), y1 = TB(t, r + 1, col), w2 = w * w;
-        if (!inside) return w < RC(0.0) ? s0 : s1;
-        return ((RC(6.0) * w2 - RC(6.0) * w) * y0 + (RC(3.0) * w2 - RC(4.0) * w + RC(1.0)) * h * s0
-              + (RC(-6.0) * w2 + RC(6.0) * w) * y1 + (RC(3.0) * w2 - RC(2.0) * w) * h * s1) / h;
+        const real_t *c = t->spline + 3 * ((uint32_t)i * t->cols + (uint32_t)col);
+        real_t v = u - t0;
+        if (kind == 0) return y0 + ((c[0] * v + c[1]) * v + c[2]) * v;
+        if (kind == 1) return (RC(3.0) * c[0] * v + RC(2.0) * c[1]) * v + c[2];
+        return RC(6.0) * c[0] * v + RC(2.0) * c[1];
     }
-    return (TB(t, r + 1, col) - TB(t, r, col)) / h;
+    if (t1 <= t0 || (t->time && dl_near(t0, t1))) return kind == 0 ? y1 : RC(0.0);
+    if (kind == 0) return y0 + (y1 - y0) * (u - t0) / (t1 - t0);
+    if (kind == 1) return (y1 - y0) / (t1 - t0);
+    return RC(0.0);
 }
-DL_UNUSED static real_t dl_next_event(const dl_table *t, real_t x)
+DL_UNUSED static real_t dl_textrap(const dl_table *t, int kind, int col, int right, real_t u)
 {
-    real_t eps, xs;
-    uint16_t r;
-    if (x < t->start) return t->start;
-    if (t->rows == 0) return DL_INF;
-    eps = RC(1e-6) * (RC(1.0) + DL_FABS(x));
-    xs = x - t->shift;
-    if (t->extrapolation == 2 && t->rows >= 2) {
-        real_t x0 = TB(t, 0, 0), x1 = TB(t, t->rows - 1, 0), p = x1 - x0;
+    int n = t->rows, i;
+    real_t t0, t1, y0, y1;
+    if (t->extrapolation != 1) {
+        if (kind != 0) return RC(0.0);
+        return right ? TB(t, n - 1, col) : TB(t, 0, col);
+    }
+    if (kind >= 2) return RC(0.0);
+    if (t->smoothness == 2) {
+        real_t y, sl, x0;
+        if (!right) {
+            y = TB(t, 0, col);
+            sl = t->spline[3 * (uint32_t)col + 2];
+            x0 = TX(t, 0);
+        } else {
+            const real_t *c = t->spline + 3 * ((uint32_t)(n - 2) * t->cols + (uint32_t)col);
+            real_t v = TX(t, n - 1) - TX(t, n - 2);
+            y = TB(t, n - 1, col);
+            sl = (RC(3.0) * c[0] * v + RC(2.0) * c[1]) * v + c[2];
+            x0 = TX(t, n - 1);
+        }
+        return kind == 0 ? y + sl * (u - x0) : sl;
+    }
+    i = right ? n - 2 : 0;
+    t0 = TX(t, i);
+    t1 = TX(t, i + 1);
+    y0 = TB(t, i, col);
+    y1 = TB(t, i + 1, col);
+    if (t1 <= t0 || (t->time && dl_near(t0, t1))) {
+        if (kind != 0) return RC(0.0);
+        return right ? y1 : y0;
+    }
+    return kind == 0 ? y0 + (y1 - y0) * (u - t0) / (t1 - t0) : (y1 - y0) / (t1 - t0);
+}
+DL_UNUSED static real_t dl_tgeneric(const dl_table *t, int kind, int col, real_t u)
+{
+    int n = t->rows;
+    real_t umin = TX(t, 0), umax = TX(t, n - 1);
+    if (t->extrapolation == 2) {
+        real_t p = umax - umin;
         if (p > RC(0.0)) {
-            real_t k = DL_FLOOR((xs - x0) / p), local = xs - k * p;
-            for (r = 0; r < t->rows; r++)
-                if (TB(t, r, 0) > local + eps) return TB(t, r, 0) + k * p + t->shift;
-            return x1 + k * p + t->shift;
+            if (u < umin) {
+                u += DL_CEIL((umin - u) / p) * p;
+                if (u < umin) u += p;
+            } else if (u > umax) {
+                u -= DL_CEIL((u - umax) / p) * p;
+                if (u > umax) u -= p;
+            }
+            u = dl_min(dl_max(u, umin), umax);
+        }
+    } else if (u < umin) {
+        return dl_textrap(t, kind, col, 0, u);
+    } else if (u > umax || (t->time && u >= umax)) {
+        return dl_textrap(t, kind, col, 1, u);
+    }
+    return dl_tseg(t, kind, col, dl_tfind(t, u, 0, n - 1), u, 1);
+}
+DL_UNUSED static real_t dl_tnext(const dl_table *t, real_t x)
+{
+    real_t xs, eps;
+    int k;
+    if (x < t->start) return t->start;
+    if (t->rows < 2 || t->nev == 0) return DL_INF;
+    xs = x - t->shift;
+    eps = (sizeof(real_t) == 4 ? RC(1e-6) : RC(1e-12)) * (RC(1.0) + DL_FABS(xs));
+    if (t->extrapolation == 2) {
+        real_t x0 = TX(t, 0), x1 = TX(t, t->rows - 1), p = x1 - x0;
+        if (p > RC(0.0)) {
+            real_t q = DL_FLOOR((xs - x0) / p), local = xs - q * p;
+            if (local < x0) {
+                q -= RC(1.0);
+                local += p;
+            }
+            for (k = 0; k < t->nev; k++)
+                if (t->events[k] > local + eps) return t->events[k] + q * p + t->shift;
+            return t->events[0] + (q + RC(1.0)) * p + t->shift;
         }
     }
-    for (r = 0; r < t->rows; r++)
-        if (TB(t, r, 0) > xs + eps) return TB(t, r, 0) + t->shift;
+    for (k = 0; k < t->nev; k++)
+        if (t->events[k] > xs + eps) return t->events[k] + t->shift;
     return DL_INF;
+}
+/* kind: 0 value, 1 first and 2 second derivative, 3 next time event; ne: the current
+   nextTimeEvent of a time table (+inf when there is none). */
+DL_UNUSED static real_t dl_tab_eval(const dl_table *t, int kind, int col, real_t x, real_t ne)
+{
+    int n = t->rows, periodic = t->extrapolation == 2, j, i0, i1;
+    real_t u, tmin, tmax, e, tol, prev, v;
+    if (kind == 3) return dl_tnext(t, x);
+    if (x < t->start || n == 0) return RC(0.0);
+    if (t->time && ne == ne && ne < RC(1e30) && ne <= t->start) return RC(0.0);
+    if (n == 1) return kind == 0 ? TB(t, 0, col) : RC(0.0);
+    u = x - t->shift;
+    if (!(t->time && ne == ne && ne < RC(1e30))) return dl_tgeneric(t, kind, col, u);
+    tmin = TX(t, 0);
+    tmax = TX(t, n - 1);
+    e = ne - t->shift;
+    if (periodic) {
+        real_t p = tmax - tmin;
+        if (p > RC(0.0)) {
+            real_t r = (e - tmax) / p, rr = DL_FLOOR(r + RC(0.5));
+            e -= (DL_FABS(r - rr) < RC(1e-5) ? rr : DL_CEIL(r)) * p;
+        }
+    }
+    tol = DL_TTOL * RC(10.0) * dl_max(dl_max(DL_FABS(tmax - tmin), DL_FABS(e)), RC(1.0));
+    for (j = 0; j < t->nev; j++)
+        if (DL_FABS(t->events[j] - e) <= tol) break;
+    if (j == t->nev) return dl_tgeneric(t, kind, col, u);
+    if (!periodic && j == 0) return dl_textrap(t, kind, col, 0, dl_min(tmin - (ne - x), tmin));
+    prev = j == 0 ? tmin : t->events[j - 1];
+    for (i1 = 0; i1 < n && !dl_near(TX(t, i1), t->events[j]); i1++) {}
+    for (i0 = n - 1; i0 >= 0 && !dl_near(TX(t, i0), prev); i0--) {}
+    if (i1 == n || i0 < 0 || i0 >= i1) return dl_tgeneric(t, kind, col, u);
+    v = dl_min(dl_max(TX(t, i1) - (ne - x), TX(t, i0)), TX(t, i1));
+    return dl_tseg(t, kind, col, dl_tfind(t, v, i0, i1), v, 0);
 }
 
 "#,
