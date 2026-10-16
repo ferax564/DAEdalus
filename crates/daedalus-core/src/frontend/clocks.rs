@@ -1457,7 +1457,10 @@ impl<'a, 't> Flattener<'a, 't> {
         diffed: &mut Vec<VarId>,
     ) -> Result<usize> {
         let mut unknown: FxHashSet<VarId> = vars.iter().copied().collect();
-        let row = |this: &Self, e: &Equation, unknown: &FxHashSet<VarId>, dvar: &FxHashMap<VarId, VarId>| {
+        let row = |this: &Self,
+                   e: &Equation,
+                   unknown: &FxHashSet<VarId>,
+                   dvar: &FxHashMap<VarId, VarId>| {
             let mut r: Vec<VarId> = Vec::new();
             for side in [e.lhs, e.rhs] {
                 this.model.arena.visit_leaves(side, &mut |n| {
@@ -1502,7 +1505,8 @@ impl<'a, 't> Flattener<'a, 't> {
         for k in 0..n0 {
             let mut i = k;
             for _level in 0..6 {
-                let adj: Vec<Vec<VarId>> = es.iter().map(|e| row(self, e, &unknown, dvar)).collect();
+                let adj: Vec<Vec<VarId>> =
+                    es.iter().map(|e| row(self, e, &unknown, dvar)).collect();
                 // Matches of variables that have since been differentiated are dropped.
                 owner.retain(|v, _| !dvar.contains_key(v));
                 let mut seen_v = FxHashSet::default();
@@ -1667,7 +1671,12 @@ impl<'a, 't> Flattener<'a, 't> {
                 return false;
             }
             let mut owner: Vec<Option<usize>> = vec![None; n];
-            fn aug(e: usize, rows: &[&Vec<usize>], owner: &mut [Option<usize>], seen: &mut [bool]) -> bool {
+            fn aug(
+                e: usize,
+                rows: &[&Vec<usize>],
+                owner: &mut [Option<usize>],
+                seen: &mut [bool],
+            ) -> bool {
                 for &v in rows[e] {
                     if seen[v] {
                         continue;

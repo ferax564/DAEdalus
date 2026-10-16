@@ -1386,9 +1386,7 @@ impl<'m> Simulation<'m> {
             if n_rel > 0 {
                 self.rt.rhs(tn, st.solver.x(), &mut st.xi);
                 self.rt.eval_zc();
-                if (0..n_rel)
-                    .any(|i| self.rt.r[m.zc_raw[i] as usize] != self.rt.r[m.layout.rel0 + i])
-                {
+                if (0..n_rel).any(|i| self.rt.rel_crossed(i)) {
                     return Ok(Some(tn));
                 }
             }
@@ -1546,7 +1544,7 @@ impl<'m> Simulation<'m> {
                     // Hysteresis: a relation that sits on its switching point (a stuck
                     // friction element, a value from a Newton solve) must move clearly past
                     // it before it counts as crossing again; otherwise events chatter.
-                    if raw != lat && !(g <= self.hysteresis(i)) {
+                    if raw != lat && self.rt.rel_crossed(i) && !(g <= self.hysteresis(i)) {
                         crossing.push(i);
                     }
                 }
@@ -1570,7 +1568,7 @@ impl<'m> Simulation<'m> {
                             let raw = self.rt.r[m.zc_raw[i] as usize];
                             let lat = self.rt.r[m.layout.rel0 + i];
                             let g = self.rt.r[m.zc_g[i] as usize].abs();
-                            if raw != lat && !(g <= self.hysteresis(i)) {
+                            if raw != lat && self.rt.rel_crossed(i) && !(g <= self.hysteresis(i)) {
                                 inner.push(i);
                             }
                         }
