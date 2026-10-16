@@ -49,6 +49,8 @@ fn groups<T: Copy>(items: Vec<(Ty, u32, T)>) -> Vec<Group<T>> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Mode {
     Instantiated,
+    /// In initialization mode (until [`Comp::exit_init`]).
+    Init,
     Event,
     Continuous,
     Step,
@@ -350,7 +352,9 @@ impl Comp {
         Ok(again)
     }
 
-    fn initialize(
+    /// Parameters and (start-value) inputs, then initialization mode; the outputs
+    /// at those inputs are written into `rt`.
+    fn enter_init(
         &mut self,
         rt: &mut Runtime,
         start: f64,
@@ -366,14 +370,41 @@ impl Comp {
         self.set_inputs(rt, true)?;
         let stop = (stop > start).then_some(stop);
         self.inst.enter_initialization(Some(tol), start, stop)?;
+        self.mode = Mode::Init;
+        self.t0 = start;
         self.set_inputs(rt, true)?;
-        self.inst.exit_initialization()?;
         self.get_outputs(rt)?;
+        Ok(())
+    }
+
+    /// Still in initialization mode: pass the inputs the model's initialization
+    /// solved for; returns whether the outputs changed with them.
+    fn init_update(&mut self, rt: &mut Runtime) -> Result<bool, String> {
+        if self.mode != Mode::Init || !self.set_inputs(rt, false)? {
+            return Ok(false);
+        }
+        self.get_outputs(rt)
+    }
+
+    /// Leave initialization mode with the current inputs; write the outputs and
+    /// states into `rt` and return whether any changed.
+    fn exit_init(&mut self, rt: &mut Runtime) -> Result<bool, String> {
+        if self.mode != Mode::Init {
+            return Ok(false);
+        }
+        self.set_inputs(rt, false)?;
+        self.inst.exit_initialization()?;
+        let mut changed = self.get_outputs(rt)?;
         match self.kind {
             FmiKind::ModelExchange => {
                 self.mode = Mode::Event;
                 if !self.x.is_empty() {
                     self.inst.get_states(&mut self.x)?;
+                    changed |= self
+                        .x_regs
+                        .iter()
+                        .zip(&self.x)
+                        .any(|(&r, x)| rt.r[r].to_bits() != x.to_bits());
                     self.write_states(rt);
                     self.inst.get_derivatives(&mut self.dx)?;
                     self.write_derivatives(rt);
@@ -389,11 +420,10 @@ impl Comp {
                     ));
                 }
                 self.h = h;
-                self.t0 = start;
                 self.steps = 0;
             }
         }
-        Ok(())
+        Ok(changed)
     }
 }
 
@@ -453,9 +483,27 @@ impl Hook for FmuHook {
 
     fn init(&mut self, rt: &mut Runtime, start: f64, stop: f64, tol: f64) -> Result<(), String> {
         for c in &mut self.comps {
-            c.initialize(rt, start, stop, tol)?;
+            c.enter_init(rt, start, stop, tol)?;
         }
         Ok(())
+    }
+
+    fn init_update(&mut self, rt: &mut Runtime) -> Result<bool, String> {
+        self.model_outputs(rt);
+        let mut changed = false;
+        for c in &mut self.comps {
+            changed |= c.init_update(rt)?;
+        }
+        Ok(changed)
+    }
+
+    fn exit_init(&mut self, rt: &mut Runtime) -> Result<bool, String> {
+        self.model_outputs(rt);
+        let mut changed = false;
+        for c in &mut self.comps {
+            changed |= c.exit_init(rt)?;
+        }
+        Ok(changed)
     }
 
     fn n_indicators(&self) -> usize {
@@ -622,7 +670,8 @@ impl Hook for FmuHook {
 impl Drop for FmuHook {
     fn drop(&mut self) {
         for c in &mut self.comps {
-            if c.mode != Mode::Instantiated {
+            // fmi*Terminate is not allowed in initialization mode.
+            if !matches!(c.mode, Mode::Instantiated | Mode::Init) {
                 let _ = c.inst.terminate();
             }
         }

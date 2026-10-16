@@ -83,9 +83,17 @@ pub trait Hook: Send {
     /// supplying the external values (outputs, state derivatives).
     fn ode(&mut self, rt: &mut Runtime);
     /// Before the model's initialization: parameters are evaluated and start values
-    /// set. Instantiate and initialize the components; write their initial outputs
-    /// and states into `rt`.
+    /// set. Put the components into initialization mode with those inputs and write
+    /// their outputs into `rt`.
     fn init(&mut self, rt: &mut Runtime, start: f64, stop: f64, tol: f64) -> Result<(), String>;
+    /// After the model's initial equations were solved, components still in
+    /// initialization mode: pass the solved inputs and write the outputs into `rt`;
+    /// returns whether any output changed (the model's initialization must be solved
+    /// again).
+    fn init_update(&mut self, rt: &mut Runtime) -> Result<bool, String>;
+    /// End the components' initialization with the solved inputs; write their outputs
+    /// and initial states into `rt`. Returns whether any of them changed.
+    fn exit_init(&mut self, rt: &mut Runtime) -> Result<bool, String>;
     /// Number of event indicators.
     fn n_indicators(&self) -> usize;
     /// Event indicators at the point of the last [`Hook::ode`].
