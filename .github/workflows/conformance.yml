@@ -40,8 +40,12 @@ jobs:
         id: scope
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
+            # The checkout is one commit deep. Fetch the base tip into FETCH_HEAD
+            # (an explicit refspec does not update origin/<base>) and diff the two
+            # trees. A three-dot diff needs a merge base, which this shallow
+            # history does not have.
             git fetch --depth=1 origin "${{ github.base_ref }}"
-            python3 tools/conformance_smoke.py "origin/${{ github.base_ref }}" smoke-models.txt
+            python3 tools/conformance_smoke.py FETCH_HEAD smoke-models.txt
             echo "args=--models smoke-models.txt" >> "$GITHUB_OUTPUT"
             echo "mode=smoke" >> "$GITHUB_OUTPUT"
           else

@@ -14,6 +14,9 @@ let worker: Worker;
 let nextId = 1;
 const pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
 let restarts = 0;
+/** Resolves when the current worker has the recorded sources. Ordinary calls wait on it
+ * so a retry after a crash cannot run against a worker that is still replaying. */
+let replayReady: Promise<void> = Promise.resolve();
 /** Called with the progress of a library bundle being loaded. */
 let onProgress: ((p: BundleProgress) => void) | null = null;
 
@@ -93,30 +96,46 @@ function recover(reason: string) {
     /* already gone */
   }
   restarts += 1;
-  if (restarts > 4) return;
+  if (restarts > 4) {
+    const failed = Promise.reject(err);
+    failed.catch(() => undefined);
+    replayReady = failed;
+    return;
+  }
   spawnWorker();
-  void replaySources();
+  replayReady = replaySources();
 }
 
-/** Put the recorded documents and library bundle back on a fresh worker. */
+/** Put the recorded documents and library bundle back on a fresh worker.
+ * Posts directly: `call` waits on this function's promise, so using it here would deadlock. */
 async function replaySources() {
   const docs: [string, string][] = [];
   for (const [uri, d] of sources.docs) if (d.text != null) docs.push([uri, d.text]);
-  try {
-    if (docs.length) await call("setDocuments", docs);
-    if (sources.bundle) await call("loadBundle", sources.bundle.base, sources.bundle.prefix);
-    if (engineState.url) await call("engine", engineState.url, currentEngineToken());
-  } catch {
-    /* a second death rejects these itself */
-  }
+  if (docs.length) await post("setDocuments", docs);
+  if (sources.bundle) await post("loadBundle", sources.bundle.base, sources.bundle.prefix);
+  if (engineState.url) await post("engine", engineState.url, currentEngineToken());
 }
 
-function call<T>(op: string, ...args: unknown[]): Promise<T> {
+function post<T>(op: string, ...args: unknown[]): Promise<T> {
   const id = nextId++;
   return new Promise<T>((resolve, reject) => {
     pending.set(id, { resolve: resolve as (v: unknown) => void, reject });
     worker.postMessage({ id, op, args });
   });
+}
+
+async function call<T>(op: string, ...args: unknown[]): Promise<T> {
+  for (;;) {
+    const ready = replayReady;
+    try {
+      await ready;
+    } catch (e) {
+      if (ready === replayReady) throw e;
+      continue;
+    }
+    if (ready === replayReady) break;
+  }
+  return post<T>(op, ...args);
 }
 
 spawnWorker();

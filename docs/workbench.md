@@ -120,6 +120,8 @@ editing stay in the page, and every document and library you load is sent to the
 so both always see the same sources. It gives the same numbers as `daedalus simulate`.
 The button shows the number of cores when it is connected; press it again to go back to
 the browser. The choice is remembered, and `?engine=URL` connects to another address.
+The hosted page's content security policy allows that connection (any `http:` or `https:`
+URL), including a `daedalus serve --port` other than 7878.
 
 The engine listens on 127.0.0.1 only (port 7878, `--port` to change it). A browser may
 call it only from this site or from localhost (`--allow-origin ORIGIN` adds another),
