@@ -8,6 +8,13 @@ import { PlotWindow, displayUnit, interp } from "./plot";
 import { bundledLibrary, bundledResources, readPicked, type Picked } from "./library";
 import { drawIcon, newCtx, SVG_NS, systemExtent, IDENTITY, el } from "./graphics";
 import type { Animation3D, AnimData } from "./anim3d";
+import { initAssistant } from "./assistant";
+import { initPerformance, profileRequested, updatePerformance } from "./performance";
+import * as experiments from "./experiments";
+import { StructureView, stateOverridesFor } from "./structure";
+import { DiagramEditor, DRAG_TYPE, editableUri } from "./diagram-edit";
+import { AnalysisPanel } from "./analysis";
+import { decorateMethodSelect, showRecommendation } from "./solver-hint";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -33,8 +40,8 @@ const src = {
 let tree: ClassEntry[] = [];
 const expanded = new Set<string>(["Daedalus", "Daedalus.Examples"]);
 let current: ClassInfo | null = null;
-let view: ViewKind | "text" | "doc" | "flat" = "diagram";
-let mode: "modeling" | "simulation" = "modeling";
+let view: ViewKind | "text" | "doc" | "flat" | "structure" = "diagram";
+let mode: "modeling" | "simulation" | "analysis" = "modeling";
 let summary: SimSummary | null = null;
 /** Model the variables in `summary` belong to. */
 let summaryPath = "";
@@ -59,9 +66,30 @@ $("msg-clear").onclick = () => ($("log").innerHTML = "");
 const diagram = new DiagramView($("view-graphic"), src, classes);
 const text = new TextView($("view-text"));
 const plot = new PlotWindow($("plot"));
+initPerformance(plot);
 
 diagram.onSelect = (c) => showInspector(c);
 diagram.onOpen = (p) => openClass(p);
+
+// Graphical editing: edits go to the source text in the worker, then every view refreshes.
+const editor = new DiagramEditor(diagram, {
+  current: () => current,
+  view: () => view,
+  classInfo: (p) => src.get(p),
+  log,
+  documentChanged: async (uri, t, open) => {
+    docs.set(uri, t);
+    for (const [k, v] of classes) if (v.source?.uri === uri) classes.delete(k);
+    expanded.add("MyModels");
+    await refreshTree();
+    if (open && open !== current?.path && (await src.get(open))) return openClass(open);
+    const info = current && (await src.get(current.path));
+    if (!info) return;
+    current = info;
+    if (view === "diagram" || view === "icon") await diagram.show(info, view, true);
+    else await showView();
+  },
+}, $("view-graphic"));
 
 let editTimer = 0;
 text.onChange = (t) => {
@@ -127,7 +155,7 @@ function setActive(container: HTMLElement, attr: string, value: string) {
 
 async function showView() {
   setActive($("view-tabs"), "data-view", view);
-  for (const id of ["view-graphic", "view-text", "view-doc", "view-flat"]) $(id).classList.add("hidden");
+  for (const id of ["view-graphic", "view-text", "view-doc", "view-flat", "view-structure"]) $(id).classList.add("hidden");
   if (!current) return;
   if (view === "icon" || view === "diagram") {
     $("view-graphic").classList.remove("hidden");
@@ -157,6 +185,9 @@ async function showView() {
     $("view-flat").classList.remove("hidden");
     $("view-flat").textContent = "Flattening…";
     $("view-flat").textContent = await api.flatten(current.path);
+  } else if (view === "structure") {
+    $("view-structure").classList.remove("hidden");
+    await structureView.show(current.path);
   }
 }
 
@@ -260,6 +291,9 @@ function renderTree() {
         row.appendChild(r);
       }
       row.onclick = () => openClass(e.path);
+      // drag onto an editable diagram to add a component
+      row.draggable = true;
+      row.ondragstart = (ev) => ev.dataTransfer?.setData(DRAG_TYPE, e.path);
       row.ondblclick = () => {
         if (expanded.has(e.path)) expanded.delete(e.path);
         else expanded.add(e.path);
@@ -335,8 +369,10 @@ window.addEventListener("popstate", (e) => {
     history.replaceState({ idx: navIdx }, "");
   }
   updateNav();
-  const h = decodeURIComponent(location.hash.slice(1));
-  if (h && h !== current?.path) openClass(h, false);
+  const sh = experiments.parseShare(location.hash);
+  const h = sh.model;
+  if (sh.run && h) void restoreRun(h, sh.params, sh.options, sh.plot);
+  else if (h && h !== current?.path) openClass(h, false);
 });
 
 async function openClass(path: string, push = true) {
@@ -376,10 +412,11 @@ async function openClass(path: string, push = true) {
     history.replaceState({ idx: navIdx }, "", hash);
   }
   updateNav();
-  if (view !== "text" && view !== "doc" && view !== "flat") view = info.kind !== "connector" && info.kind !== "package" && info.components.some((c) => c.type_kind !== "type" && !c.protected) ? "diagram" : "icon";
+  if (view !== "text" && view !== "doc" && view !== "flat" && view !== "structure") view = info.kind !== "connector" && info.kind !== "package" && (info.components.some((c) => c.type_kind !== "type" && !c.protected) || (editableUri(info.source?.uri) && ["model", "block", "class"].includes(info.kind))) ? "diagram" : "icon";
   renderTree();
   renderVariables();
   showInspector(null);
+  if (mode === "analysis") analysis.refresh();
   await showView();
 }
 
@@ -398,8 +435,13 @@ function settings(): SimSettings {
   const m = ($("set-method") as HTMLSelectElement).value;
   if (m) s.method = m;
   if (overrides.size) s.params = [...overrides.entries()];
+  const so = stateOverridesFor(current?.path);
+  if (so.length) s.stateOverrides = so;
+  if (profileRequested()) s.profile = true;
   return s;
 }
+
+const structureView = new StructureView($("view-structure"), { settings, log, simulate: () => simulate() });
 
 let cache: { time: Float64Array; cols: Map<string, Float64Array> } | null = null;
 
@@ -424,9 +466,11 @@ async function simulate() {
   btn.disabled = true;
   const t0 = performance.now();
   try {
-    const s = await api.simulate(name, settings());
+    const set = settings();
+    const s = await api.simulate(name, set);
     summary = s;
     summaryPath = name;
+    void updatePerformance(!!set.profile);
     if (!s.ok) {
       log(s.error ?? "simulation failed", "err");
       if (!s.vars?.length) return;
@@ -436,11 +480,12 @@ async function simulate() {
     if (s.stats) {
       const st = s.stats;
       log(
-        `${name}: ${st.states} states, ${st.solver.steps} steps (${st.solver.rejected} rejected), ${st.events} events; ` +
+        `${name}: ${st.states} states, ${st.method ? `${st.method}, ` : ""}${st.solver.steps} steps (${st.solver.rejected} rejected), ${st.events} events; ` +
           `${s.load_ms ? `parse library ${s.load_ms.toFixed(0)} ms, ` : ""}translate ${s.translate_ms.toFixed(0)} ms, simulate ${(st.init_ms + st.sim_ms).toFixed(0)} ms, total ${(performance.now() - t0).toFixed(0)} ms`,
         "ok",
       );
     }
+    showRecommendation($("solver-hint"), $("set-method") as HTMLSelectElement, s.stats, log);
     cache = { time: new Float64Array(), cols: new Map() };
     const plotted = plot.subplots.flatMap((sp) => sp.series.map((x) => x.name));
     const xNames = plot.subplots.map((sp) => sp.xName).filter((x): x is string => !!x);
@@ -456,6 +501,7 @@ async function simulate() {
     setMode("simulation");
     renderVariables();
     refreshXSelect();
+    experiments.recordSimulation(name, settings(), s, cache.time, cache.cols);
     await loadAnimation(s, name);
   } catch (e) {
     log(String(e), "err");
@@ -465,6 +511,7 @@ async function simulate() {
 }
 
 $("btn-sim").onclick = () => simulate();
+decorateMethodSelect($("set-method") as HTMLSelectElement);
 window.addEventListener("keydown", (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
     e.preventDefault();
@@ -627,6 +674,7 @@ async function togglePlot(name: string, v: VarSummary) {
   const x = sp.xName ? cache!.cols.get(sp.xName)! : cache!.time;
   plot.toggle({ name, unit: v.unit, x, y });
   renderVariables();
+  experiments.noteSeries(summaryPath, name, v.unit, cache!.time, y);
 }
 
 function refreshXSelect() {
@@ -644,7 +692,7 @@ $("plot-x").onchange = async () => {
   sp.xName = xName;
   sp.xUnit = xName ? summary?.vars.find((v) => v.name === xName)?.unit : undefined;
   if (xName) await fetchSeries([xName]);
-  for (const s of sp.series) s.x = xName ? cache!.cols.get(xName)! : cache!.time;
+  for (const s of sp.series) if (!s.run) s.x = xName ? cache!.cols.get(xName)! : cache!.time;
   plot.draw();
 };
 $("plot-new").onclick = () => plot.addSubplot();
@@ -662,6 +710,20 @@ $("export-csv").onclick = async () => {
   download(`${summary?.model ?? "result"}.csv`, await api.resultCsv(names), "text/csv");
 };
 $("export-mat").onclick = async () => download("dsres.mat", await api.resultMat(), "application/octet-stream");
+
+// ---------------------------------------------------------------- analysis
+const analysis = new AnalysisPanel($("center"), {
+  model: () => current?.path ?? null,
+  vars: () => (summary && current && summaryPath === current.path ? summary.vars : null),
+  settings: () => settings(),
+  plotted: () => plot.subplots.flatMap((sp) => sp.series.map((x) => x.name)),
+  simulate: () => simulate().then(() => setMode("analysis")),
+  applyParams: (ps) => {
+    for (const [n, v] of ps) overrides.set(n, v);
+    void simulate();
+  },
+  log,
+});
 
 // ---------------------------------------------------------------- 3-D animation
 let anim: Animation3D | null = null;
@@ -737,11 +799,12 @@ function setMode(m: typeof mode) {
   mode = m;
   setActive($("topbar"), "data-mode", m);
   $("browser-pane").classList.toggle("hidden", m !== "modeling");
-  $("vars-pane").classList.toggle("hidden", m !== "simulation");
+  $("vars-pane").classList.toggle("hidden", m === "modeling");
   $("model-pane").classList.toggle("hidden", m !== "modeling");
   $("plot-pane").classList.toggle("hidden", m !== "simulation");
+  analysis.setVisible(m === "analysis");
   if (m === "simulation") requestAnimationFrame(() => (simView === "plot" ? plot.draw() : anim?.resize()));
-  else showView();
+  else if (m === "modeling") showView();
 }
 $("topbar").querySelectorAll<HTMLButtonElement>("button[data-mode]").forEach((b) => (b.onclick = () => setMode(b.dataset.mode as typeof mode)));
 
@@ -820,11 +883,29 @@ async function loadMsl(): Promise<boolean> {
 const timings: { interactive?: number; mslBrowsable?: number } = {};
 
 async function start() {
-  const hash = decodeURIComponent(location.hash.slice(1));
+  // `#Model.Name`, or a shared run `#Model.Name?p.k=2&stop=3&plot=y` (experiments.ts)
+  const share = experiments.parseShare(location.hash);
+  const hash = share.model;
   // for automated checks
   const w = window as unknown as { daedalus: Record<string, unknown> };
-  w.daedalus = { api, simulate, openClass, plot, editor: text, timings, anim: () => anim, animData: () => animData, setSimView, togglePlot: (n: string) => togglePlot(n, summary!.vars.find((v) => v.name === n)!) };
+  w.daedalus = { api, simulate, openClass, plot, timings, analysis, setMode, togglePlot: (n: string) => togglePlot(n, summary!.vars.find((v) => v.name === n)!), editor, textView: text, anim: () => anim, animData: () => animData, setSimView };
   await load(bundledLibrary(), "Daedalus library", await bundledResources());
+  initAssistant({
+    currentClass: () => current?.path ?? null,
+    openClass,
+    afterEdit: async () => {
+      classes.clear();
+      await refreshTree();
+      if (current) await openClass(current.path);
+    },
+    afterSimulate: (model, s) => {
+      summary = s;
+      summaryPath = model;
+      cache = { time: new Float64Array(), cols: new Map() };
+      renderVariables();
+    },
+  });
+  await editor.restore();
   const msl = loadMsl();
   w.daedalus.msl = msl;
   if (hash && isMsl(hash)) {
@@ -845,6 +926,35 @@ async function start() {
   }
   await openClass(hash || "Daedalus.Examples.TorqueConverter.Launch", false);
   timings.interactive = performance.now();
+  if (share.run && hash) await restoreRun(hash, share.params, share.options, share.plot);
 }
 start();
 void interp;
+// ---------------------------------------------------------------- experiments
+/** Open `model` with these overrides and settings, simulate it and plot `vars`. */
+async function restoreRun(model: string, params: [string, number][], options: SimSettings, vars: string[]) {
+  if (current?.path !== model) await openClass(model, false);
+  if (current?.path !== model) return;
+  overrides.clear();
+  for (const [n, v] of params) overrides.set(n, v);
+  const field = (id: string, v: unknown) => (($(id) as HTMLInputElement).value = v === undefined ? "" : String(v));
+  field("set-stop", options.stop_time);
+  field("set-n", options.intervals);
+  field("set-tol", options.tolerance);
+  field("set-method", options.method);
+  await simulate();
+  for (const n of vars) {
+    const v = summary?.vars.find((x) => x.name === n);
+    if (v && !plot.has(n)) await togglePlot(n, v);
+  }
+}
+experiments.initExperiments({
+  plot,
+  model: () => current?.path ?? null,
+  summary: () => (summary ? { summary, model: summaryPath } : null),
+  settings,
+  log,
+  showPlot: () => setMode("simulation"),
+  restore: restoreRun,
+});
+((window as unknown as { daedalus?: Record<string, unknown> }).daedalus ??= {}).experiments = experiments;

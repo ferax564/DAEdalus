@@ -12,6 +12,11 @@
 **Simulation**
 - Tape code generation.
 - Solvers: BDF with dense and sparse LU, Dopri5, RK4 and Euler.
+- Solver suite ([solvers.md](solvers.md)): Radau IIA (order 5) and ESDIRK4(3)6L
+  with dense output, `auto` Dopri5/BDF switching with Hairer's stiffness test,
+  exact colored state Jacobians from tape tangents (`--jacobian fd` for
+  differences), `__Dymola_Algorithm` mapped to the closest method, and a
+  grouped method select with a stiff-solver recommendation in the workbench.
 - Events, `when`, `reinit` and `terminate`.
 - Results as Dymola `.mat` or CSV.
 
@@ -31,14 +36,44 @@
   the tape, implicit differentiation of algebraic loops) at the initial point or
   after simulating to a time; text, JSON or an OpenModelica-style
   `linearized_model`.
+- Performance analyzer and event log (`simulate --profile`, `--events`, the
+  workbench Performance tab): step sizes, rejected steps and the states that
+  limit the step; time and Newton iterations per block; events with their
+  relations, components and changed values; chattering detection; hints.
 - `fmu`: FMI 2.0 export, Model Exchange and Co-Simulation in one FMU (linux64),
   with a model-independent runtime library and the compiled model as a resource;
   validated with FMPy in CI.
+- `mcp`: a Model Context Protocol server (browse, edit, check, simulate,
+  linearize) and an in-app Claude assistant in the workbench with the same tools.
+- `structure`: variable roles, BLT blocks with their equations, incidence,
+  the dummy-derivative state sets and why each state was chosen; at a time
+  point the exact state Jacobian with its condition number, eigenvalues, time
+  constants, participation factors, stiffness ratio and a solver suggestion,
+  the Jacobians of the algebraic loops, and a check of the static state
+  choice along the trajectory. Workbench Structure view with the same.
+- State selection without editing the model: `--state NAME=prefer|avoid|...`
+  (globs allowed) on every command, and pin/forbid in the Structure view,
+  with "copy as modifier".
+- Analysis (`sensitivity`, `montecarlo` / `gsa`, `calibrate`, `optimize`, and
+  the workbench's Analysis mode):
+  - exact forward sensitivities (tape tangents) or central differences;
+  - Monte Carlo bands, Sobol and Morris indices;
+  - Levenberg–Marquardt calibration against CSV data;
+  - Nelder–Mead design optimization (see the README).
 - Browser workbench:
   - package browser, with the Modelica Standard Library 4.1.0 loaded on demand;
   - icon, diagram, text, documentation and flat-model views;
   - simulation setup and variable browser;
   - plot window;
+  - graphical editing: drag components from the browser, draw connections with
+    compatible-connector highlighting and orthogonal routing, move, rotate,
+    flip, delete, a parameter dialog, undo and redo, all written back to the
+    text without disturbing its formatting.
+- Experiments: `daedalus sweep` (grid or grouped parameter sweeps on all cores,
+  structural parameters translated again per value, summary table); in the
+  workbench, stored runs (IndexedDB) with overlay and diff, sweeps over a pool
+  of Web Workers with a summary table and a scalar-vs-parameter plot, and
+  shareable links that reopen and run a model with its overrides.
   - 3-D animation of MultiBody results and of every bundled example;
   - back and forward navigation between classes.
 - `export-casadi` and the `daedalus_casadi` package: optimal control, MPC and
@@ -53,7 +88,7 @@
 ### Modelica Standard Library coverage
 
 The MSL 4.x sweep is `daedalus test-library <MSL> -m Modelica`:
-**441 of 534** example models translate and simulate (up from 261, and 110
+**473 of 534** example models translate and simulate (up from 441, 261 and 110
 before that). Recently covered: `Modelica.Media` (IF97 water, R134a, ideal-gas
 mixtures, moist air, reference air) and most `Modelica.Fluid` examples, through
 compiled run-time functions with exact forward-mode partials, Dymola-style
@@ -89,8 +124,8 @@ failures, which are the next work items:
 
 ### Workbench
 
-- Graphical editing: drag components from the browser, draw connections, edit
-  parameters in a dialog, and write the result back to the text.
+- Graphical editing, next steps: editing inherited components and connections,
+  array connectors (`u[1]`), connector names in the diagram, align and space.
 
 ### FMI
 
