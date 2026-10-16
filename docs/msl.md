@@ -40,7 +40,7 @@ embedded or CasADi backends, so the last column lists those limits.
 | Complex numbers | ComplexBlocks 2 of 2 | none found |
 | `when`, `pre`, edges, `reinit`, zero-crossing events | Electrical.Digital 23 of 23 | `when` in functions is rejected; `when` equations are left out of the CasADi export with a warning |
 | Synchronous clocks (`sample`, `Clock`) | Clocked 74 of 77 | clocked equations are rejected by the CasADi export |
-| State machines (MLS chapter 17, `StateGraph`) | StateGraph 7 of 7 | see [State machines](state-machines.md) for the supported operators |
+| State machines (MLS chapter 17: `initialState`, `transition`, `activeState`, …) | not measured by the MSL examples; the tests are listed on [State machines](state-machines.md) | see [State machines](state-machines.md) for the supported operators and limits |
 | Streams in `Modelica.Fluid` | Fluid 15 of 23 | most start-up transients of the bigger systems still fail or differ |
 | `Modelica.Media` (IF97, R134a, ideal-gas and moist-air mixtures) | Media 21 of 21 | none found |
 | Tables: `CombiTable1D`, `CombiTimeTable`, `CombiTable2D` | Blocks 29 of 31 | 2-D tables are rejected by the embedded and CasADi backends; `usertab` C functions and MATLAB v7.3 files are not supported |
@@ -48,6 +48,9 @@ embedded or CasADi backends, so the last column lists those limits.
 | Functions with algorithms and `while` loops | counted in the rows above | a `break` or `return` under a run-time condition inside a `while` loop is not supported; `while` loops are rejected by the CasADi and embedded backends |
 | `delay()` | counted in the rows above | the simulator supports it; the embedded and CasADi backends reject it |
 | FMI 2.0 and 3.0 export, FMU import | see [FMI and SSP](fmi.md) | a model with FMU components cannot be exported as an FMU, and steady states are not computed for it |
+
+The seven `StateGraph` examples (a block library built from ordinary equations and events, in
+`Modelica.StateGraph`) match the reference, but they do not exercise the chapter 17 operators.
 
 Features with no row, such as `expandable` connectors and `homotopy()`, have not been measured
 against the MSL yet, so this table does not claim them.
