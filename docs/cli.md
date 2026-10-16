@@ -165,8 +165,11 @@ job runs the MSL examples against their reference results (see
 | `--units` | `check`: also print unit issues as warnings |
 | `--var NAME`, `--equation N`, `--init` | `debug`: what to explain |
 | `--inputs`, `--outputs`, `--reduce N`, `--lqr q,r`, `--bode`, `--step` | `linear-analysis` |
+| `--freq LO,HI`, `--tfinal T` | `linear-analysis`: frequency range in rad/s for Bode and Nyquist, and the step response horizon |
 | `--adjoint`, `--objective Q`, `--grad-method M` | `sensitivity`: adjoint gradient of one quantity |
 | `--fmi-lib FILE` | `fmu`: the FMI runtime library to bundle |
+| `--locals` | `import-fmu`: also expose the FMU's local variables |
+| `--summary FILE` | `sweep`: write the summary table as CSV |
 | `--at-time T` | `steady`: start from the state at time T |
 | `--free a,b`, `--target y=v` | `steady`: trim these inputs or parameters to hit these targets |
 | `--msl DIR` | `run`: an extra library root for `loadModel` |

@@ -88,8 +88,8 @@
 ### Modelica Standard Library coverage
 
 The MSL 4.x sweep is `daedalus test-library <MSL> -m Modelica`:
-**489 of 534** example models translate and simulate (up from 473, 441, 261 and 110
-before that). Recently covered: `Modelica.Media` (IF97 water, R134a, ideal-gas
+**512 of 534** example models run to the end and **488** match the reference results (up from
+445 matches at the start of the last round). Recently covered: `Modelica.Media` (IF97 water, R134a, ideal-gas
 mixtures, moist air, reference air) and most `Modelica.Fluid` examples, through
 compiled run-time functions with exact forward-mode partials, Dymola-style
 preferred-state selection and record constants from modifiers. The remaining
@@ -98,7 +98,6 @@ failures, which are the next work items:
 | Failures | Cause |
 | ---: | --- |
 | ~30 | Stiff or discontinuous runs that stop with "step size too small" or reach the wall-clock limit (Spice3 transistors, digital circuits, some Fluid start-ups such as `HeatingSystem`) |
-| 12 | External C functions (`Modelica.Math.Random`, `Streams`, FFT, `Utilities`) |
 | ~10 | Function bodies: `return` under a time-varying condition, missing defaulted inputs in nested calls, vector size checks |
 | ~10 | Subscripts on non-array components and non-constant subscripts in bindings |
 | 6 | Friction and thyristor events that chatter (clutches, RobotR3 bearing friction) |
@@ -137,5 +136,3 @@ function and MATLAB v7.3 (HDF5) files are not.
   `fmi2GetDirectionalDerivative` from the tape's forward-mode tangents, FMU state
   get/set, and time events for table breakpoints in Model Exchange (a jump in a
   time table without an event can stall an importer's integrator).
-- FMI 3.0 and FMU import.
-- Persisted experiments, and result comparison across runs.

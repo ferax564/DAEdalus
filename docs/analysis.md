@@ -38,6 +38,54 @@ each tuner. It plots the measured data against the model before and after the fi
 the fitted values with standard errors and correlations, and **Copy as modifier** gives
 the result as a Modelica modification.
 
+## The math in brief
+
+Write the model as $\dot{x} = f(t, x, p)$, $y = h(x, p)$, with parameters $p$.
+
+**Sensitivities** are the partial derivatives $S_{ij} = \partial y_i / \partial p_j$: how much an
+output moves when a parameter moves. The exact way is the forward sensitivity equation, which
+DAEdalus solves together with the model,
+
+$$
+\dot{S} = \frac{\partial f}{\partial x}\,S + \frac{\partial f}{\partial p}, \qquad S(0) = \frac{\partial x_0}{\partial p}.
+$$
+
+When the exact method fails, a central difference is used instead,
+$S_{ij} \approx \bigl(y_i(p + \delta e_j) - y_i(p - \delta e_j)\bigr) / (2\delta)$.
+
+**Adjoint gradients** are for one scalar $J = \int_0^T g(x, p)\,dt$ and many parameters. One
+backward solve of the adjoint equations gives every $\mathrm{d}J/\mathrm{d}p_j$ at once,
+
+$$
+\dot{\lambda} = -\Bigl(\frac{\partial f}{\partial x}\Bigr)^{\!T}\lambda - \Bigl(\frac{\partial g}{\partial x}\Bigr)^{\!T}, \qquad \lambda(T) = 0,
+$$
+
+$$
+\frac{\mathrm{d}J}{\mathrm{d}p} = \int_0^T \Bigl(\lambda^T \frac{\partial f}{\partial p} + \frac{\partial g}{\partial p}\Bigr)\,dt .
+$$
+
+The formula above is for parameters that enter the model equations; a parameter in the initial state adds one more term, $\lambda(0)^T\,\partial x_0/\partial p$. Its cost does not grow with the number of parameters, so it suits a model with hundreds of them.
+
+**Calibration** minimizes the weighted squared error between measurements $d_k$ and the model,
+
+$$
+\min_{p}\ \sum_k w_k \bigl(d_k - y_k(p)\bigr)^2 \qquad \text{subject to}\quad p_{\min} \le p \le p_{\max},
+$$
+
+by Levenberg–Marquardt steps $\bigl(J^T J + \mu I\bigr)\,\Delta p = -J^T r$, where $r$ holds the
+residuals and $J$ the sensitivities of the outputs. The `--tune name=lo:hi` bounds are the
+projection that keeps every step inside the box.
+
+**Design of experiments** runs the model at chosen factor settings, then fits a quadratic
+response surface. With factors $x$ coded to $[-1, 1]$ (`x = (p - center) / half-range`),
+
+$$
+\hat{y}(x) = \beta_0 + \sum_i \beta_i x_i + \sum_{i \le j} \beta_{ij} x_i x_j,
+$$
+
+and the reported $R^2$ tells how much of the variation of each quantity the surface explains.
+Three factors give 10 terms, as in the example below.
+
 ## Sensitivity
 
 ```sh

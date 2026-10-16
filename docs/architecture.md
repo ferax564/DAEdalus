@@ -2,12 +2,43 @@
 
 DAEdalus goes from Modelica source text to results in five stages:
 
-```
-.mo sources ──► frontend ──► flat model ──► backend ──► causal system ──► codegen ──► tape ──► solvers ──► results
-               (Rumoca     (scalar DAE)    (symbolic)                    (register             (BDF, Radau,    (.mat / CSV /
-                parser +                                                  bytecode)             RK4, events)    in memory)
-                own inst.)
-```
+<div class="diagram" role="img" aria-label="Pipeline from Modelica source to results">
+<svg viewBox="0 0 920 290" xmlns="http://www.w3.org/2000/svg">
+  <defs><marker id="arr-arch" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" style="fill: var(--muted)"/></marker></defs>
+  <g class="box"><rect x="10" y="20" width="200" height="92" rx="8"/></g>
+  <text class="t" x="24" y="48">.mo sources</text>
+  <text class="s" x="24" y="68">Modelica text and the</text>
+  <text class="s" x="24" y="84">packages it uses</text>
+  <rect class="box" x="240" y="20" width="200" height="92" rx="8"/>
+  <text class="t" x="254" y="48">Frontend</text>
+  <text class="s" x="254" y="68">parse, instantiate, flatten</text>
+  <text class="s" x="254" y="84">(Rumoca parser, own instancing)</text>
+  <rect class="box" x="470" y="20" width="200" height="92" rx="8"/>
+  <text class="t" x="484" y="48">Flat DAE</text>
+  <text class="s" x="484" y="68">scalar variables and</text>
+  <text class="s" x="484" y="84">equations, no structure yet</text>
+  <rect class="hot" x="700" y="20" width="200" height="92" rx="8"/>
+  <text class="t" x="714" y="48">Backend</text>
+  <text class="s" x="714" y="68">alias elimination, index reduction,</text>
+  <text class="s" x="714" y="84">BLT sorting, tearing, Jacobians</text>
+  <rect class="box" x="10" y="180" width="200" height="92" rx="8"/>
+  <text class="t" x="24" y="208">Codegen</text>
+  <text class="s" x="24" y="228">register tape (bytecode),</text>
+  <text class="s" x="24" y="244">or dependency-free C</text>
+  <rect class="box" x="240" y="180" width="200" height="92" rx="8"/>
+  <text class="t" x="254" y="208">Solvers</text>
+  <text class="s" x="254" y="228">BDF, Radau IIA, ESDIRK, Dopri5,</text>
+  <text class="s" x="254" y="244">Auto, events and reinit</text>
+  <rect class="box" x="470" y="180" width="200" height="92" rx="8"/>
+  <text class="t" x="484" y="208">Results</text>
+  <text class="s" x="484" y="228">Dymola-format .mat, CSV,</text>
+  <text class="s" x="484" y="244">or kept in memory</text>
+  <path class="arr" d="M210,66 H240 M440,66 H470 M670,66 H700" marker-end="url(#arr-arch)"/>
+  <path class="arr" d="M210,226 H240 M440,226 H470" marker-end="url(#arr-arch)"/>
+  <path class="arr" d="M800,112 V150 H110 V180" marker-end="url(#arr-arch)"/>
+  <text class="cap" x="460" y="282" text-anchor="middle">The same core runs in the browser (WebAssembly), on the command line and from Python.</text>
+</svg>
+</div>
 
 All of it lives in `daedalus-core`. The CLI (`daedalus-cli`), the browser
 workbench (`daedalus-wasm` plus `web/`) and the Python package (`daedalus-py`,
