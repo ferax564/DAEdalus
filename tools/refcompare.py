@@ -151,6 +151,20 @@ def list_models(ref, prefix, top="Modelica"):
     return sorted(out)
 
 
+def creation_tolerance(d):
+    """The relative tolerance the reference result was generated with (creation.txt:
+    the model's experiment annotation multiplied by 0.1), or None if not recorded."""
+    try:
+        with open(os.path.join(d, "creation.txt")) as f:
+            for line in f:
+                m = re.match(r"\s*Tolerance\s*=\s*([0-9.eE+-]+)", line)
+                if m:
+                    return float(m.group(1))
+    except OSError:
+        pass
+    return None
+
+
 def run_one(args, model):
     d = model_dir(args.ref, model)
     with open(os.path.join(d, "comparisonSignals.txt")) as f:
@@ -176,6 +190,9 @@ def run_one(args, model):
         ]
         if len(uniq) > 1:
             cmd += ["-n", str(grid_intervals(uniq))]
+        tol = creation_tolerance(d)
+        if tol is not None:
+            cmd += ["--tol", repr(tol)]
         t0 = time.time()
         try:
             p = subprocess.run(cmd, capture_output=True, text=True, timeout=args.timeout)
@@ -251,6 +268,7 @@ def main():
         "commit": source_commit(),
         "msl_version": args.msl_version or msl_version(args.msl),
         "tolerance": TOL,
+        "solver_tolerance": "from each reference's creation.txt (the experiment tolerance x 0.1)",
         "method": "csv-compare style tube: half-width tolerance*(time span) in time, tolerance*(signal range) in value",
         "reference": "MAP-LIB_ReferenceResults (Dymola-generated)",
         "filter": args.filter,
