@@ -38,7 +38,9 @@ pub fn literal(cell: &str) -> String {
     // An enumeration literal or other dotted name (`Modelica.Blocks.Types.Init.NoInit`).
     let ident = |s: &str| {
         !s.is_empty()
-            && s.chars().next().is_some_and(|ch| ch.is_alphabetic() || ch == '_')
+            && s.chars()
+                .next()
+                .is_some_and(|ch| ch.is_alphabetic() || ch == '_')
             && s.chars().all(|ch| ch.is_alphanumeric() || ch == '_')
     };
     if c.contains('.') && c.split('.').all(ident) {
@@ -116,7 +118,10 @@ pub fn parse_csv(text: &str) -> Result<Vec<ParamValue>> {
     for (i, l) in lines.iter().enumerate() {
         let cells = split_csv(l, delim);
         if cells.len() < 2 {
-            bail!("line {}: expected name{delim}value[{delim}unit], got '{l}'", i + 1);
+            bail!(
+                "line {}: expected name{delim}value[{delim}unit], got '{l}'",
+                i + 1
+            );
         }
         let name = cells[0].trim().to_string();
         if i == 0 {
@@ -159,7 +164,12 @@ fn attrs(tag: &str) -> Vec<(String, String)> {
             i += 1;
         }
         let ks = i;
-        while i < b.len() && b[i] != b'=' && !(b[i] as char).is_whitespace() && b[i] != b'/' && b[i] != b'>' {
+        while i < b.len()
+            && b[i] != b'='
+            && !(b[i] as char).is_whitespace()
+            && b[i] != b'/'
+            && b[i] != b'>'
+        {
             i += 1;
         }
         let key = &tag[ks..i];
@@ -205,7 +215,10 @@ pub fn parse_ssv(text: &str) -> Result<Vec<ParamValue>> {
         let end = rest.find('>').unwrap_or(rest.len());
         let tag = &rest[..end];
         rest = &rest[end.min(rest.len())..];
-        let name = tag.split(|c: char| c.is_whitespace() || c == '/').next().unwrap_or("");
+        let name = tag
+            .split(|c: char| c.is_whitespace() || c == '/')
+            .next()
+            .unwrap_or("");
         let local = name.rsplit(':').next().unwrap_or(name);
         if name.starts_with('/') {
             if local == "Parameter" {
@@ -218,7 +231,9 @@ pub fn parse_ssv(text: &str) -> Result<Vec<ParamValue>> {
         match local {
             "Parameter" => current = get("name"),
             "Real" | "Integer" | "Boolean" | "String" | "Enumeration" => {
-                let Some(pname) = current.clone() else { continue };
+                let Some(pname) = current.clone() else {
+                    continue;
+                };
                 let Some(v) = get("value") else {
                     bail!("parameter {pname}: {local} without a value");
                 };
@@ -392,7 +407,15 @@ impl ModTree {
                 }
             }
             let name_end = body
-                .find(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.' || c == '[' || c == ']' || c == ' ' || c == ','))
+                .find(|c: char| {
+                    !(c.is_alphanumeric()
+                        || c == '_'
+                        || c == '.'
+                        || c == '['
+                        || c == ']'
+                        || c == ' '
+                        || c == ',')
+                })
                 .unwrap_or(body.len());
             let name = body[..name_end].trim();
             let ok_name = !name.is_empty()
@@ -641,7 +664,11 @@ pub struct Checked {
 
 /// The unit declared for component `name` of class `scope`: its own `unit` modifier, or
 /// that of its type (following short type definitions like `type Mass = Real(unit="kg")`).
-fn declared_unit(tree: &ClassTree, scope: ClassId, comp: &rumoca_ir_ast::Component) -> Option<String> {
+fn declared_unit(
+    tree: &ClassTree,
+    scope: ClassId,
+    comp: &rumoca_ir_ast::Component,
+) -> Option<String> {
     fn unit_in(mods: &[rumoca_ir_ast::Expression]) -> Option<String> {
         for m in mods {
             if let rumoca_ir_ast::Expression::Modification { target, value, .. } = m
@@ -679,7 +706,12 @@ fn declared_unit(tree: &ClassTree, scope: ClassId, comp: &rumoca_ir_ast::Compone
 /// Check `params` against class `class` of `lib` (or against the type of component
 /// `component` of it): names it does not declare are reported, and values with a unit
 /// other than the declared one are converted when the units are known.
-pub fn check(lib: &Library, class: &str, component: Option<&str>, params: &[ParamValue]) -> Result<Checked> {
+pub fn check(
+    lib: &Library,
+    class: &str,
+    component: Option<&str>,
+    params: &[ParamValue],
+) -> Result<Checked> {
     let tree = lib.tree();
     let Some(mut id) = tree.find_path(class) else {
         bail!("class {class} not found");
@@ -711,7 +743,8 @@ pub fn check(lib: &Library, class: &str, component: Option<&str>, params: &[Para
                     if k + 1 == segs.len() {
                         found = Some((owner, comp));
                     } else {
-                        let parts: Vec<&str> = comp.type_name.name.iter().map(|t| &*t.text).collect();
+                        let parts: Vec<&str> =
+                            comp.type_name.name.iter().map(|t| &*t.text).collect();
                         match tree.lookup(owner, &parts, None) {
                             Some(t) => scope = t,
                             None => break,
@@ -731,10 +764,15 @@ pub fn check(lib: &Library, class: &str, component: Option<&str>, params: &[Para
                 continue;
             }
             Some((owner, comp)) => {
-                if !matches!(comp.variability, rumoca_core::Variability::Parameter(_) | rumoca_core::Variability::Constant(_)) {
-                    out.messages.push(format!("note: {} is not declared as a parameter", p.name));
+                if !matches!(
+                    comp.variability,
+                    rumoca_core::Variability::Parameter(_) | rumoca_core::Variability::Constant(_)
+                ) {
+                    out.messages
+                        .push(format!("note: {} is not declared as a parameter", p.name));
                 }
-                if let (Some(given), Some(decl)) = (p.unit.clone(), declared_unit(&tree, owner, comp))
+                if let (Some(given), Some(decl)) =
+                    (p.unit.clone(), declared_unit(&tree, owner, comp))
                     && given != decl
                 {
                     match p.value.parse::<f64>().ok().and_then(|x| convert(x, &given, &decl)) {

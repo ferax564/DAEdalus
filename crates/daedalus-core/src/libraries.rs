@@ -85,11 +85,13 @@ pub fn compare_versions(a: &str, b: &str) -> Ordering {
         let p = x.get(i).cloned().unwrap_or((0, String::new()));
         let q = y.get(i).cloned().unwrap_or((0, String::new()));
         // a pre-release suffix (`-rc.1`) sorts before the plain version
-        let o = p.0.cmp(&q.0).then_with(|| match (p.1.is_empty(), q.1.is_empty()) {
-            (true, false) => Ordering::Greater,
-            (false, true) => Ordering::Less,
-            _ => p.1.cmp(&q.1),
-        });
+        let o =
+            p.0.cmp(&q.0)
+                .then_with(|| match (p.1.is_empty(), q.1.is_empty()) {
+                    (true, false) => Ordering::Greater,
+                    (false, true) => Ordering::Less,
+                    _ => p.1.cmp(&q.1),
+                });
         if o != Ordering::Equal {
             return o;
         }
@@ -144,9 +146,13 @@ pub fn parse_spec(spec: &str, index: &Index) -> Result<Source> {
     let gh = url
         .strip_prefix("github.com/")
         .or_else(|| url.strip_prefix("codeload.github.com/"));
-    let looks_repo = gh.is_some() || (url.split('/').count() == 2 && !url.contains('.') && url.contains('/'));
+    let looks_repo =
+        gh.is_some() || (url.split('/').count() == 2 && !url.contains('.') && url.contains('/'));
     if looks_repo {
-        let path = gh.unwrap_or(url).trim_end_matches('/').trim_end_matches(".git");
+        let path = gh
+            .unwrap_or(url)
+            .trim_end_matches('/')
+            .trim_end_matches(".git");
         let parts: Vec<&str> = path.split('/').collect();
         if parts.len() < 2 {
             bail!("'{spec}': expected github.com/OWNER/REPO");
@@ -162,7 +168,10 @@ pub fn parse_spec(spec: &str, index: &Index) -> Result<Source> {
                 ["archive", r @ ..] | ["zip", r @ ..] => r.join("/"),
                 _ => String::new(),
             };
-            let r = r.trim_end_matches(".zip").trim_end_matches(".tar.gz").to_string();
+            let r = r
+                .trim_end_matches(".zip")
+                .trim_end_matches(".tar.gz")
+                .to_string();
             if !r.is_empty() {
                 git_ref = Some(r);
             }
@@ -194,7 +203,10 @@ pub fn parse_spec(spec: &str, index: &Index) -> Result<Source> {
             .map(|v| v.version.clone())
             .or_else(|| {
                 let v = git_ref.trim_start_matches('v');
-                v.chars().next().is_some_and(|c| c.is_ascii_digit()).then(|| v.to_string())
+                v.chars()
+                    .next()
+                    .is_some_and(|c| c.is_ascii_digit())
+                    .then(|| v.to_string())
             });
         return Ok(Source {
             name: known.map(|k| k.name.clone()),
@@ -251,9 +263,18 @@ impl Source {
     /// Zip archive URLs of the source, most likely first (a tag, then a branch).
     pub fn archive_urls(&self) -> Vec<String> {
         vec![
-            format!("https://codeload.github.com/{}/zip/refs/tags/{}", self.repo, self.git_ref),
-            format!("https://codeload.github.com/{}/zip/refs/heads/{}", self.repo, self.git_ref),
-            format!("https://github.com/{}/archive/{}.zip", self.repo, self.git_ref),
+            format!(
+                "https://codeload.github.com/{}/zip/refs/tags/{}",
+                self.repo, self.git_ref
+            ),
+            format!(
+                "https://codeload.github.com/{}/zip/refs/heads/{}",
+                self.repo, self.git_ref
+            ),
+            format!(
+                "https://github.com/{}/archive/{}.zip",
+                self.repo, self.git_ref
+            ),
         ]
     }
 
@@ -344,7 +365,11 @@ pub fn resolve(reqs: &[Requirement], avail: &[Available]) -> Resolution {
     }
     for name in names {
         let rs: Vec<&Requirement> = reqs.iter().filter(|r| r.name == name).collect();
-        let mut wanted: Vec<&str> = rs.iter().map(|r| r.version.as_str()).filter(|v| !v.is_empty()).collect();
+        let mut wanted: Vec<&str> = rs
+            .iter()
+            .map(|r| r.version.as_str())
+            .filter(|v| !v.is_empty())
+            .collect();
         wanted.sort_by(|a, b| compare_versions(b, a));
         wanted.dedup();
         let who = |v: &str| {
@@ -404,7 +429,10 @@ pub fn resolve(reqs: &[Requirement], avail: &[Available]) -> Resolution {
             out.missing.push(format!(
                 "{name}{} (required by {}) is not installed",
                 wanted.first().map(|v| format!(" {v}")).unwrap_or_default(),
-                rs.iter().map(|r| r.by.as_str()).collect::<Vec<_>>().join(", ")
+                rs.iter()
+                    .map(|r| r.by.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ));
             continue;
         }
@@ -445,7 +473,10 @@ pub fn resolve(reqs: &[Requirement], avail: &[Available]) -> Resolution {
                 out.conflicts.push(format!(
                     "{name} {} required by {}, but only {} installed",
                     wanted.first().copied().unwrap_or(""),
-                    rs.iter().map(|r| r.by.as_str()).collect::<Vec<_>>().join(", "),
+                    rs.iter()
+                        .map(|r| r.by.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", "),
                     have.join(", ")
                 ));
             }
@@ -506,7 +537,9 @@ pub fn default_dir() -> std::path::PathBuf {
     let home = std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
         .unwrap_or_else(|| ".".into());
-    std::path::PathBuf::from(home).join(".daedalus").join("libraries")
+    std::path::PathBuf::from(home)
+        .join(".daedalus")
+        .join("libraries")
 }
 
 /// The `uses` requirements stated by the top-level classes of `lib`'s parsed documents.
@@ -519,7 +552,10 @@ pub fn requirements(lib: &crate::frontend::Library) -> Vec<Requirement> {
         }
         for (name, def) in d.ast.classes.iter() {
             for (lib_name, version) in class_meta(def).uses {
-                if !out.iter().any(|r: &Requirement| r.by == *name && r.name == lib_name) {
+                if !out
+                    .iter()
+                    .any(|r: &Requirement| r.by == *name && r.name == lib_name)
+                {
                     out.push(Requirement {
                         by: name.clone(),
                         name: lib_name,

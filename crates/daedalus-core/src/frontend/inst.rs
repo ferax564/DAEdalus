@@ -739,6 +739,39 @@ impl<'a, 't> Flattener<'a, 't> {
         if comp.is_final {
             m.final_ = true;
         }
+        // The class modification of a constraining clause (`replaceable C c constrainedby
+        // C(n = n)`) applies to the declaration and to every redeclaration of it, below
+        // the declaration's own modifiers (MLS 7.3.2).
+        let mut cm = Mod::default();
+        for (key, v) in comp.modifications.iter() {
+            let Some(name) = key.strip_prefix(rumoca_core::CONSTRAINEDBY_MOD_PREFIX) else {
+                continue;
+            };
+            let each = comp.each_modifications.contains(key);
+            let final_ = comp.final_attributes.contains(key);
+            match v {
+                E::ClassModification { .. } | E::Binary { .. } => {
+                    self.add_mod_expr(&mut cm, v, each, final_, false, scope)
+                }
+                _ => {
+                    let path: Vec<String> = name.split('.').map(str::to_string).collect();
+                    let sub = Mod {
+                        value: Some(Scoped {
+                            expr: v,
+                            scope: scope.clone(),
+                            sel: Vec::new(),
+                        }),
+                        each,
+                        final_,
+                        ..Default::default()
+                    };
+                    cm.set_path(&path, sub);
+                }
+            }
+        }
+        if !cm.subs.is_empty() {
+            m = merge(&m, &cm);
+        }
         m
     }
 
@@ -1658,7 +1691,12 @@ impl<'a, 't> Flattener<'a, 't> {
                 // fields take the sizes of the selected record, not of the declaration's
                 // default (`OCV_SOC[:,2] = [SOCmin, ..; SOCmax, 1]`).
                 match self.translate_scoped(v, &mut Ctx::default()) {
-                    Ok(Val::Inst(src)) => self.collect_dim_hints(src, &cprefix),
+                    Ok(Val::Inst(src)) => {
+                        // The element is that record: its parameters take its values
+                        // now, for sizes declared from them (`resistor[cellData.nRC]`).
+                        self.collect_dim_hints(src, &cprefix);
+                        bound_src = Some(src);
+                    }
                     Ok(Val::Rec(fields)) => self.rec_dim_hints(&fields, &cprefix),
                     _ => {}
                 }
@@ -1889,6 +1927,25 @@ impl<'a, 't> Flattener<'a, 't> {
                     self.bind_var(cv, e, o);
                 }
                 (Comp::Inst(ci), Comp::Inst(si)) => self.alias_param_fields(ci, si),
+                // Arrays of records element by element (`cellData[Ns, Np]`), and arrays
+                // of parameters.
+                (Comp::Arr(cd, ce), Comp::Arr(sd, se)) if cd == sd => {
+                    for (c, s) in ce.iter().zip(se.iter()) {
+                        match (c, s) {
+                            (Comp::Inst(ci), Comp::Inst(si)) => self.alias_param_fields(*ci, *si),
+                            (Comp::Var(cv), Comp::Var(sv))
+                                if matches!(
+                                    self.model.vars[*cv as usize].kind,
+                                    VarKind::Parameter | VarKind::Constant
+                                ) =>
+                            {
+                                let e = self.model.arena.var(*sv);
+                                self.bind_var(*cv, e, o);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -1996,6 +2053,11 @@ impl<'a, 't> Flattener<'a, 't> {
                 let parts: Vec<Val> = match v {
                     Val::IA(_, ids) => ids.into_iter().map(Val::Inst).collect(),
                     Val::Tuple(t) => t,
+                    // A record array value held field-wise (`rc: Rec(R: A([2], ..))`):
+                    // element k takes element k of every field.
+                    Val::Rec(f) if el.len() > 1 => (0..el.len())
+                        .map(|k| slice_leading(Val::Rec(f.clone()), k, el.len()))
+                        .collect(),
                     other => vec![other],
                 };
                 for (k, x) in el.iter().enumerate() {
@@ -4067,6 +4129,20 @@ impl<'a, 't> Flattener<'a, 't> {
                 .map(|v| if let Val::Inst(i) = v { *i } else { 0 })
                 .collect();
             return Ok(Val::IA(dims, ids));
+        }
+        // Rows of instance arrays (`{{cd for j in 1:Np} for k in 1:Ns}`) stay instances.
+        if let Some(Val::IA(d0, _)) = vals.first()
+            && vals.iter().all(|v| matches!(v, Val::IA(d, _) if d == d0))
+        {
+            let mut d = dims;
+            d.extend(d0.iter().copied());
+            let mut ids = Vec::new();
+            for v in vals {
+                if let Val::IA(_, x) = v {
+                    ids.extend(x);
+                }
+            }
+            return Ok(Val::IA(d, ids));
         }
         if vals
             .iter()
@@ -7938,7 +8014,7 @@ impl<'a, 't> Flattener<'a, 't> {
                 ast::Statement::Assignment { comp, value } => {
                     let v = match self.translate(value, scope, ctx)? {
                         // `x := f(..)` with several outputs of `f` takes the first.
-                        Val::Tuple(mut t) if !t.is_empty() => t.swap_remove(0),
+                        Val::Tuple(t) if !t.is_empty() => t.into_iter().next().unwrap(),
                         v => v,
                     };
                     let guard = self.exit_guard(ctx);
@@ -8635,39 +8711,77 @@ impl<'a, 't> Flattener<'a, 't> {
                 let sel = match self.eval_subscripts(subs, &dims, scope, ctx) {
                     Ok(sel) => sel,
                     Err(e) => {
-                        // `x[i] := v` with an index known only at run time: every element
-                        // becomes `if i == k then v else x[k]`.
-                        if subs.len() != dims.len()
-                            || !subs
-                                .iter()
-                                .all(|s| matches!(s, ast::Subscript::Expression(_)))
-                        {
+                        // `x[i] := v`, `x[i, 1:n] := w` with an index known only at run
+                        // time: every selected element becomes `if i == k then v else x[k]`.
+                        if subs.len() != dims.len() {
                             return Err(e);
                         }
-                        let mut idx = Vec::with_capacity(subs.len());
+                        // Per dimension: a run-time index, or the constant positions taken.
+                        let mut rt: Vec<Option<ExprId>> = Vec::with_capacity(subs.len());
+                        let mut sets: Vec<Vec<usize>> = Vec::with_capacity(subs.len());
                         for (k, s) in subs.iter().enumerate() {
-                            let ast::Subscript::Expression(x) = s else {
-                                unreachable!()
-                            };
-                            let saved = ctx.end_value;
-                            ctx.end_value = Some(dims[k]);
-                            let i = self.translate(x, scope, ctx);
-                            ctx.end_value = saved;
-                            idx.push(i?.scalar()?);
-                        }
-                        let val = v.scalar()?;
-                        for (flat, e) in el.iter_mut().enumerate() {
-                            let mut rem = flat;
-                            let mut cond = Arena::ONE;
-                            for k in (0..dims.len()).rev() {
-                                let pos = rem % dims[k];
-                                rem /= dims[k];
-                                let a = &mut self.model.arena;
-                                let kc = a.constant((pos + 1) as f64);
-                                let c = a.cmp(Cmp::Eq, idx[k], kc);
-                                cond = a.f2(Fn2::And, cond, c);
+                            match s {
+                                ast::Subscript::Expression(x) => {
+                                    let saved = ctx.end_value;
+                                    ctx.end_value = Some(dims[k]);
+                                    let i = self.translate(x, scope, ctx);
+                                    ctx.end_value = saved;
+                                    match i? {
+                                        Val::A(_, xs) => {
+                                            let mut pos = Vec::with_capacity(xs.len());
+                                            for x in xs {
+                                                let Some(c) = self.eval_param_expr(x) else {
+                                                    return Err(e);
+                                                };
+                                                pos.push((c as usize).wrapping_sub(1));
+                                            }
+                                            rt.push(None);
+                                            sets.push(pos);
+                                        }
+                                        other => {
+                                            rt.push(Some(other.scalar()?));
+                                            sets.push(Vec::new());
+                                        }
+                                    }
+                                }
+                                _ => {
+                                    rt.push(None);
+                                    sets.push((0..dims[k]).collect());
+                                }
                             }
-                            *e = self.model.arena.if_(cond, val, *e);
+                        }
+                        let (_, vals) = v.elems()?;
+                        if vals.is_empty() {
+                            return Err(e);
+                        }
+                        for (flat, el_e) in el.iter_mut().enumerate() {
+                            let mut rem = flat;
+                            let mut pos = vec![0; dims.len()];
+                            for k in (0..dims.len()).rev() {
+                                pos[k] = rem % dims[k];
+                                rem /= dims[k];
+                            }
+                            let mut cond = Arena::ONE;
+                            let mut vi = 0usize;
+                            let mut taken = true;
+                            for k in 0..dims.len() {
+                                match rt[k] {
+                                    Some(i) => {
+                                        let a = &mut self.model.arena;
+                                        let kc = a.constant((pos[k] + 1) as f64);
+                                        let c = a.cmp(Cmp::Eq, i, kc);
+                                        cond = a.f2(Fn2::And, cond, c);
+                                    }
+                                    None => match sets[k].iter().position(|&p| p == pos[k]) {
+                                        Some(j) => vi = vi * sets[k].len() + j,
+                                        None => taken = false,
+                                    },
+                                }
+                            }
+                            if taken {
+                                let val = *vals.get(vi).unwrap_or(&vals[0]);
+                                *el_e = self.model.arena.if_(cond, val, *el_e);
+                            }
                         }
                         return Ok(Val::A(dims, el));
                     }

@@ -28,7 +28,9 @@ pub const USAGE: &str = "\
 
 /// The directory libraries are installed into (`--dir`, else the default).
 fn lib_dir(explicit: Option<&str>) -> PathBuf {
-    explicit.map(PathBuf::from).unwrap_or_else(libraries::default_dir)
+    explicit
+        .map(PathBuf::from)
+        .unwrap_or_else(libraries::default_dir)
 }
 
 /// Resolve the `uses` annotations of what `lib` holds against the installed libraries,
@@ -149,7 +151,11 @@ pub fn open_zip(path: &str) -> Result<(Vec<String>, Option<String>)> {
 }
 
 /// Load sources (files, directories, zips) and `-L` libraries the way `run` does.
-fn load(sources: &[String], libs: &[String], model: Option<&str>) -> Result<(Library, Option<String>)> {
+fn load(
+    sources: &[String],
+    libs: &[String],
+    model: Option<&str>,
+) -> Result<(Library, Option<String>)> {
     let mut lib = Library::new();
     let mut model = model.map(String::from);
     let mut all: Vec<String> = libs.to_vec();
@@ -240,7 +246,9 @@ impl Args {
 pub fn diff(args: &[String]) -> Result<ExitCode> {
     let a = Args::parse(args, &["--text"])?;
     if a.pos.len() != 2 {
-        bail!("usage: daedalus diff OLD NEW [-m Class] [--new-class Name] [--text] [--format report|unified|json]");
+        bail!(
+            "usage: daedalus diff OLD NEW [-m Class] [--new-class Name] [--text] [--format report|unified|json]"
+        );
     }
     let class = a.get(&["-m", "--model"]);
     let new_class = a.get(&["--new-class"]);
@@ -292,7 +300,9 @@ pub fn params_from(args: &[String]) -> Result<ExitCode> {
     let a = Args::parse(args, &["--apply", "--no-check"])?;
     let is_data = |p: &str| {
         let l = p.to_ascii_lowercase();
-        [".csv", ".ssv", ".tsv", ".txt", ".xml"].iter().any(|e| l.ends_with(e))
+        [".csv", ".ssv", ".tsv", ".txt", ".xml"]
+            .iter()
+            .any(|e| l.ends_with(e))
     };
     let data: Vec<&String> = a.pos.iter().filter(|p| is_data(p)).collect();
     let sources: Vec<String> = a.pos.iter().filter(|p| !is_data(p)).cloned().collect();
@@ -323,7 +333,9 @@ pub fn params_from(args: &[String]) -> Result<ExitCode> {
         print!("{}", daedalus_core::params::record(r, &params));
         return Ok(ExitCode::SUCCESS);
     }
-    let target = comp.or(model.map(|m| m.rsplit('.').next().unwrap_or(m))).unwrap_or("data");
+    let target = comp
+        .or(model.map(|m| m.rsplit('.').next().unwrap_or(m)))
+        .unwrap_or("data");
     if a.flag("--apply") {
         let (lib, m) = lib_model.ok_or_else(|| anyhow!("--apply needs the model (-m)"))?;
         let c = comp.ok_or_else(|| anyhow!("--apply needs the component (-c)"))?;
@@ -388,11 +400,11 @@ pub fn lib(args: &[String]) -> Result<ExitCode> {
             }
         }
         "install" | "add" => {
-            let spec = a
-                .pos
-                .get(1)
-                .ok_or_else(|| anyhow!("usage: daedalus lib install NAME[@VERSION] | URL[@REF] | FILE.zip"))?;
-            let (bytes, packages, version) = if spec.ends_with(".zip") && Path::new(spec).is_file() {
+            let spec = a.pos.get(1).ok_or_else(|| {
+                anyhow!("usage: daedalus lib install NAME[@VERSION] | URL[@REF] | FILE.zip")
+            })?;
+            let (bytes, packages, version) = if spec.ends_with(".zip") && Path::new(spec).is_file()
+            {
                 (
                     std::fs::read(spec)?,
                     a.all(&["--package"]),
@@ -456,7 +468,11 @@ pub fn lib(args: &[String]) -> Result<ExitCode> {
             }
             let res = libraries::resolve(&reqs, &libraries::scan_installed(&dir));
             for s in &res.selected {
-                println!("  uses {} {} (installed)", s.name, s.version.as_deref().unwrap_or(""));
+                println!(
+                    "  uses {} {} (installed)",
+                    s.name,
+                    s.version.as_deref().unwrap_or("")
+                );
             }
             for m in &res.missing {
                 println!("  note: {m}");
@@ -466,7 +482,10 @@ pub fn lib(args: &[String]) -> Result<ExitCode> {
             }
         }
         "remove" | "uninstall" => {
-            let spec = a.pos.get(1).ok_or_else(|| anyhow!("usage: daedalus lib remove NAME[@VERSION]"))?;
+            let spec = a
+                .pos
+                .get(1)
+                .ok_or_else(|| anyhow!("usage: daedalus lib remove NAME[@VERSION]"))?;
             let (name, ver) = match spec.split_once('@') {
                 Some((n, v)) => (n, Some(v)),
                 None => (spec.as_str(), None),
@@ -566,7 +585,9 @@ pub fn package(args: &[String]) -> Result<ExitCode> {
         let mut out = Vec::new();
         let mut stack = vec![p.to_path_buf()];
         while let Some(d) = stack.pop() {
-            let Ok(rd) = std::fs::read_dir(&d) else { continue };
+            let Ok(rd) = std::fs::read_dir(&d) else {
+                continue;
+            };
             for e in rd.flatten() {
                 let q = e.path();
                 if q.is_dir() {
@@ -580,8 +601,11 @@ pub fn package(args: &[String]) -> Result<ExitCode> {
         out
     };
     let plan = archive::plan_package(&lib, model, &exclude, &list)?;
-    let docs: std::collections::HashMap<&str, &str> =
-        lib.docs.iter().map(|d| (d.uri.as_str(), &*d.text)).collect();
+    let docs: std::collections::HashMap<&str, &str> = lib
+        .docs
+        .iter()
+        .map(|d| (d.uri.as_str(), &*d.text))
+        .collect();
     let text = |uri: &str| -> Option<String> {
         docs.get(uri)
             .map(|t| t.to_string())
