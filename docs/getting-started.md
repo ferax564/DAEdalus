@@ -40,8 +40,8 @@ Linux (x86_64), macOS (Apple Silicon and Intel) and Windows (x86_64). An archive
 `library/Daedalus` example library:
 
 ```sh
-tar xzf daedalus-v0.1.0-x86_64-unknown-linux-gnu.tar.gz
-cd daedalus-v0.1.0-x86_64-unknown-linux-gnu
+tar xzf daedalus-v0.2.0-x86_64-unknown-linux-gnu.tar.gz
+cd daedalus-v0.2.0-x86_64-unknown-linux-gnu
 ./daedalus simulate library/Daedalus -m Daedalus.Examples.LandingGear.SinkRates -o sink.mat
 ```
 
