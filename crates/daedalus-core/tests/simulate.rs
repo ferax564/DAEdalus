@@ -174,3 +174,19 @@ fn function_arguments_and_partial_application() {
         1e-9
     ));
 }
+
+#[test]
+fn redeclared_model_modifiers_and_branch_asserts() {
+    let r = run("redeclare_mods.mo", "RM.Top", 1.0, Method::Bdf);
+    assert!(close(
+        r.final_value("pipe1.flowModel.y").unwrap(),
+        20.0,
+        1e-12
+    ));
+    assert!(close(
+        r.final_value("hx.pipe.flowModel.y").unwrap(),
+        60.0,
+        1e-12
+    ));
+    assert!(close(r.final_value("props.h").unwrap(), -200.0, 1e-9));
+}

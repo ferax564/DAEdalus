@@ -261,6 +261,9 @@ pub struct Flattener<'a, 't> {
     pub insts: Vec<Instance<'a>>,
     /// Modifiers of a redeclared class `redeclare function f = g(a = ..)` per instance.
     class_mods: FxHashMap<(InstId, String), Vec<(String, Scoped<'a>)>>,
+    /// Modifiers of a redeclared model `redeclare model M = N(p = ..)` per instance,
+    /// applied to the components declared with type `M`.
+    class_mod_trees: FxHashMap<(InstId, String), Mod<'a>>,
     /// Number of connect equations per connector (for `cardinality`), keyed by its
     /// first leaf variable.
     conn_count: FxHashMap<VarId, usize>,
@@ -360,6 +363,7 @@ impl<'a, 't> Flattener<'a, 't> {
             },
             insts: Vec::new(),
             class_mods: FxHashMap::default(),
+            class_mod_trees: FxHashMap::default(),
             conn_count: FxHashMap::default(),
             counting_connects: false,
             stream_vars: FxHashSet::default(),
@@ -758,6 +762,92 @@ impl<'a, 't> Flattener<'a, 't> {
         out
     }
 
+    /// The modifiers a component of a redeclared class `name` receives from
+    /// `redeclare model name = cls(..)`: those written there, over the ones `cls` carries
+    /// when it is itself a class redeclared with modifiers in an enclosing instance
+    /// (`redeclare model HeatTransfer = HeatTransfer_1` with `HeatTransfer_1` redeclared
+    /// as `LocalPipeFlowHeatTransfer(alpha0 = 1000)` one level up).
+    fn redeclare_tree(
+        &self,
+        sub: Option<&Mod<'a>>,
+        cls: &ast::ComponentReference,
+        scope: &Scope,
+    ) -> Option<Mod<'a>> {
+        let own = sub.filter(|s| !s.subs.is_empty()).map(|s| {
+            let mut t = s.clone();
+            t.retype = None;
+            t.value = None;
+            t
+        });
+        let mut chained = None;
+        if cls.parts.len() == 1 {
+            let n = cls.parts[0].ident.text.to_string();
+            let mut cur = scope.inst;
+            while let Some(i) = cur {
+                if let Some(t) = self.class_mod_trees.get(&(i, n.clone())) {
+                    chained = Some(t.clone());
+                    break;
+                }
+                cur = self.insts[i as usize].parent;
+            }
+        }
+        match (own, chained) {
+            (Some(a), Some(b)) => Some(merge(&a, &b)),
+            (a, b) => a.or(b),
+        }
+    }
+
+    /// Modifications of a type `parts` (resolving to `tc`) made by the package that
+    /// inherits the type's declaring package (`extends PartialMedium(SpecificEnthalpy(
+    /// start = h_default))` in `R134a_ph`), outermost first.
+    fn package_type_mods(&mut self, env: &Rc<Env>, parts: &[&str], tc: ClassId) -> Mod<'a> {
+        let mut out = Mod::default();
+        if !matches!(self.tree.class_type(tc), ClassType::Type) {
+            return out;
+        }
+        let Some(via) = self.class_via(env, parts, tc) else {
+            return out;
+        };
+        let name = parts[parts.len() - 1];
+        let mut stack = vec![via];
+        let mut seen = FxHashSet::default();
+        while let Some(c) = stack.pop() {
+            if !seen.insert(c) || seen.len() > 64 {
+                continue;
+            }
+            let Some(def) = self.tree.def(c) else {
+                continue;
+            };
+            if def.extends.iter().flat_map(|x| &x.modifications).any(|x| {
+                matches!(&x.expr, E::ClassModification { target, .. }
+                    if target.parts.len() == 1 && &*target.parts[0].ident.text == name)
+            }) {
+                let scope = Scope {
+                    inst: None,
+                    env: self.inherited_env(via, c, env.overrides.clone()),
+                };
+                for ext in &def.extends {
+                    let mut m = Mod::default();
+                    for em in &ext.modifications {
+                        if let E::ClassModification { target, .. } = &em.expr
+                            && target.parts.len() == 1
+                            && &*target.parts[0].ident.text == name
+                        {
+                            self.add_mod_expr(&mut m, &em.expr, em.each, em.final_, false, &scope);
+                        }
+                    }
+                    if let Some(sub) = m.sub(name) {
+                        out = merge(&out, sub);
+                    }
+                }
+            }
+            let mut bases = self.tree.bases(c);
+            bases.reverse();
+            stack.extend(bases);
+        }
+        out
+    }
+
     // ------------------------------------------------------------------
     // Pass 1: instance tree
     // ------------------------------------------------------------------
@@ -931,7 +1021,7 @@ impl<'a, 't> Flattener<'a, 't> {
             self.expandable_insts.insert(self.insts.len() as InstId);
         }
         let id = self.insts.len() as InstId;
-        for (name, _, _) in &m.redeclares {
+        for (name, cls, sc) in &m.redeclares {
             if let Some(sub) = m.sub(name) {
                 let vals: Vec<(String, Scoped<'a>)> = sub
                     .subs
@@ -941,6 +1031,9 @@ impl<'a, 't> Flattener<'a, 't> {
                 if !vals.is_empty() {
                     self.class_mods.insert((id, name.clone()), vals);
                 }
+            }
+            if let Some(t) = self.redeclare_tree(m.sub(name), cls, sc) {
+                self.class_mod_trees.insert((id, name.clone()), t);
             }
         }
         self.insts.push(Instance {
@@ -1042,7 +1135,7 @@ impl<'a, 't> Flattener<'a, 't> {
             }
             let merged = merge(m, &em);
             // Modifiers of `redeclare function f = g(a = ..)` in the extends clause.
-            for (name, _, _) in &em.redeclares {
+            for (name, cls, sc) in &em.redeclares {
                 if let Some(sub) = merged.sub(name) {
                     let vals: Vec<(String, Scoped<'a>)> = sub
                         .subs
@@ -1052,6 +1145,11 @@ impl<'a, 't> Flattener<'a, 't> {
                     if !vals.is_empty() {
                         self.class_mods.entry((inst, name.clone())).or_insert(vals);
                     }
+                }
+                if let Some(t) = self.redeclare_tree(merged.sub(name), cls, sc) {
+                    self.class_mod_trees
+                        .entry((inst, name.clone()))
+                        .or_insert(t);
                 }
             }
             // Redeclares in extends apply to the instance environment for inherited elements.
@@ -1199,6 +1297,30 @@ impl<'a, 't> Flattener<'a, 't> {
                 ),
             }
         };
+        // A type redeclared with modifiers (`redeclare model FlowModel = NF(dp_nominal = ..)`):
+        // those modifiers apply below the component's own.
+        let m = match tclass {
+            Some(tc)
+                if m.retype.is_none()
+                    && tparts.len() == 1
+                    && env.overrides.get(tparts[0]) == Some(&tc) =>
+            {
+                let mut cur = Some(inst);
+                let mut found = None;
+                while let Some(i) = cur {
+                    if let Some(t) = self.class_mod_trees.get(&(i, tparts[0].to_string())) {
+                        found = Some(t.clone());
+                        break;
+                    }
+                    cur = self.insts[i as usize].parent;
+                }
+                match found {
+                    Some(cm) => merge(&m, &cm),
+                    None => m,
+                }
+            }
+            _ => m,
+        };
         // Dimensions
         let mut dims = Vec::new();
         // A field of a record bound as a whole takes the bound field's size, also when its
@@ -1299,7 +1421,16 @@ impl<'a, 't> Flattener<'a, 't> {
         if let Some(b) = base {
             // Scalar (or array of scalar) variables.
             let mut tm = match tclass {
-                Some(tc) => self.type_attr_mods(tc),
+                Some(tc) => {
+                    let tm = self.type_attr_mods(tc);
+                    match m.retype {
+                        None => {
+                            let pm = self.package_type_mods(&env, &tparts, tc);
+                            merge(&pm, &tm)
+                        }
+                        Some(_) => tm,
+                    }
+                }
                 None => Mod::default(),
             };
             tm = merge(&m, &tm);
@@ -2124,6 +2255,8 @@ impl<'a, 't> Flattener<'a, 't> {
         for set in sets.values_mut() {
             set.sort_by_key(|p| (p.var, p.inside));
         }
+        let mut set_list: Vec<Vec<ConnPoint>> = sets.values().cloned().collect();
+        set_list.sort_by_key(|s| s.first().map(|p| (p.var, p.inside)));
         let set_of = |this: &mut Self, p: ConnPoint| -> Vec<ConnPoint> {
             if this.conn_parent.contains_key(&p) {
                 let r = this.find(p);
@@ -2133,56 +2266,96 @@ impl<'a, 't> Flattener<'a, 't> {
             }
         };
         let eps = 1e-10;
-        // `stream var of connector at point q`, `outflow weight of q into the set`, value.
         let mut done: FxHashSet<VarId> = FxHashSet::default();
         let mut outside_done: FxHashSet<VarId> = FxHashSet::default();
         let mut k = 0;
-        while k < self.in_stream.len() {
-            let (s, ph) = self.in_stream.get_index(k).map(|(a, b)| (*a, *b)).unwrap();
-            k += 1;
-            if !done.insert(s) {
-                continue;
-            }
-            let Some(f) = self.stream_flow(s) else {
-                let a = self.model.arena.var(ph);
-                let b = self.model.arena.var(s);
-                self.model.equations.push(Equation {
-                    lhs: a,
-                    rhs: b,
-                    origin,
-                });
-                continue;
-            };
-            let me = ConnPoint {
-                var: f,
-                inside: true,
-            };
-            let set = set_of(self, me);
-            let rhs = self.stream_mix(s, &set, Some(me), eps);
-            let a = self.model.arena.var(ph);
-            self.model.equations.push(Equation {
-                lhs: a,
-                rhs,
-                origin,
-            });
-            // Outside connectors of this set get their stream variable defined here.
-            for q in set.clone() {
-                if q.inside || !outside_done.insert(q.var) {
+        let mut swept = false;
+        loop {
+            while k < self.in_stream.len() {
+                let (s, ph) = self.in_stream.get_index(k).map(|(a, b)| (*a, *b)).unwrap();
+                k += 1;
+                if !done.insert(s) {
                     continue;
                 }
-                let Some(&qo) = self.leaf_owner.get(&q.var) else {
+                let Some(f) = self.stream_flow(s) else {
+                    let a = self.model.arena.var(ph);
+                    let b = self.model.arena.var(s);
+                    self.model.equations.push(Equation {
+                        lhs: a,
+                        rhs: b,
+                        origin,
+                    });
                     continue;
                 };
-                let Some(sq) = self.stream_peer(s, qo) else {
-                    continue;
+                let me = ConnPoint {
+                    var: f,
+                    inside: true,
                 };
-                let rhs = self.stream_mix(s, &set, Some(q), eps);
-                let a = self.model.arena.var(sq);
+                let set = set_of(self, me);
+                let rhs = self.stream_mix(s, &set, Some(me), eps);
+                let a = self.model.arena.var(ph);
                 self.model.equations.push(Equation {
                     lhs: a,
                     rhs,
                     origin,
                 });
+                // Outside connectors of this set get their stream variable defined here.
+                for q in set.clone() {
+                    if q.inside {
+                        continue;
+                    }
+                    let Some(&qo) = self.leaf_owner.get(&q.var) else {
+                        continue;
+                    };
+                    let Some(sq) = self.stream_peer(s, qo) else {
+                        continue;
+                    };
+                    if !outside_done.insert(sq) {
+                        continue;
+                    }
+                    let rhs = self.stream_mix(s, &set, Some(q), eps);
+                    let a = self.model.arena.var(sq);
+                    self.model.equations.push(Equation {
+                        lhs: a,
+                        rhs,
+                        origin,
+                    });
+                }
+            }
+            if swept {
+                break;
+            }
+            swept = true;
+            // Outside connectors of sets in which no inside connector asks for
+            // `inStream` (e.g. ports joined only to each other, as in
+            // `TeeJunctionIdeal`) still get their stream variables from the mixing
+            // rule (MLS 15.2). The `inStream` values this needs are handled by the
+            // next round of the loop above.
+            for set in &set_list {
+                for q in set.iter().copied().filter(|q| !q.inside) {
+                    let Some(&qo) = self.leaf_owner.get(&q.var) else {
+                        continue;
+                    };
+                    let mut streams: Vec<VarId> = self
+                        .stream_vars
+                        .iter()
+                        .copied()
+                        .filter(|v| self.leaf_owner.get(v) == Some(&qo))
+                        .collect();
+                    streams.sort_unstable();
+                    for sq in streams {
+                        if !outside_done.insert(sq) {
+                            continue;
+                        }
+                        let rhs = self.stream_mix(sq, set, Some(q), eps);
+                        let a = self.model.arena.var(sq);
+                        self.model.equations.push(Equation {
+                            lhs: a,
+                            rhs,
+                            origin,
+                        });
+                    }
+                }
             }
         }
     }
@@ -2495,18 +2668,42 @@ impl<'a, 't> Flattener<'a, 't> {
                     }
                 } else {
                     // Time-varying condition: equal equation counts in all branches.
+                    // Asserts of a branch only hold while that branch is active.
+                    let guard_asserts = |this: &mut Self, from: usize, active: ExprId| {
+                        for k in from..this.model.asserts.len() {
+                            let c = this.model.asserts[k].0;
+                            this.model.asserts[k].0 = this.model.arena.if_(active, c, Arena::ONE);
+                        }
+                    };
                     let mut branches: Vec<Vec<Equation>> = Vec::new();
-                    for b in cond_blocks {
+                    let mut none_before: Option<ExprId> = None;
+                    for (bi, b) in cond_blocks.iter().enumerate() {
                         let mut v = Vec::new();
+                        let na = self.model.asserts.len();
                         for e in &b.eqs {
                             self.translate_equation(e, scope, ctx, &mut v, initial)?;
                         }
+                        let c = conds[bi];
+                        let active = match none_before {
+                            Some(p) => self.model.arena.f2(Fn2::And, p, c),
+                            None => c,
+                        };
+                        guard_asserts(self, na, active);
+                        let nc = self.model.arena.not(c);
+                        none_before = Some(match none_before {
+                            Some(p) => self.model.arena.f2(Fn2::And, p, nc),
+                            None => nc,
+                        });
                         branches.push(v);
                     }
                     let mut ev = Vec::new();
                     if let Some(eb) = else_block {
+                        let na = self.model.asserts.len();
                         for e in eb {
                             self.translate_equation(e, scope, ctx, &mut ev, initial)?;
+                        }
+                        if let Some(nb) = none_before {
+                            guard_asserts(self, na, nb);
                         }
                     }
                     let n = ev.len();
@@ -5962,9 +6159,11 @@ impl<'a, 't> Flattener<'a, 't> {
                 // that package's constants and redeclarations.
                 let via = self.class_via(&env, &parts, cls);
                 let lexical = self.tree.node(cls).parent;
-                let penv = via.map(|v| {
-                    let owner = lexical.unwrap_or(ROOT);
-                    self.inherited_env(v, owner, env.overrides.clone())
+                let penv = self.nested_env(&env, &parts, cls).or_else(|| {
+                    via.map(|v| {
+                        let owner = lexical.unwrap_or(ROOT);
+                        self.inherited_env(v, owner, env.overrides.clone())
+                    })
                 });
                 // A function of scalars applied to arrays: element by element.
                 if let Some(v) = self.vectorized_call(cls, &argv, &nargv, &penv, &env.overrides)? {
@@ -5991,6 +6190,36 @@ impl<'a, 't> Flattener<'a, 't> {
             }
             _ => bail!("'{}' is not a function", name),
         }
+    }
+
+    /// The scope of a local function `cls`, named by the single identifier `parts` and
+    /// declared in an enclosing function (`function f_nonlinear` inside `T_ph`), when that
+    /// function was reached through a package that only inherits it (`Medium.T_ph`):
+    /// `cls` then sees that package's constants and redeclarations, as its enclosing
+    /// function does.
+    fn nested_env(&mut self, env: &Rc<Env>, parts: &[&str], cls: ClassId) -> Option<Rc<Env>> {
+        if parts.len() != 1 {
+            return None;
+        }
+        let mut cur = Some(env.clone());
+        while let Some(e) = cur {
+            if e.overrides.contains_key(parts[0]) {
+                return None;
+            }
+            if self.tree.node(e.class).children.get(parts[0]) == Some(&cls) {
+                if !matches!(self.tree.class_type(e.class), ClassType::Function) {
+                    return None;
+                }
+                let via = e.parent.as_ref()?.class;
+                let lexical = self.tree.node(e.class).parent;
+                if Some(via) == lexical || self.tree.class_type(via) != ClassType::Package {
+                    return None;
+                }
+                return Some(self.inherited_env(via, e.class, env.overrides.clone()));
+            }
+            cur = e.parent.clone();
+        }
+        None
     }
 
     /// `function f(a = 1)`: a function value with some inputs bound. A functional input
@@ -6040,9 +6269,11 @@ impl<'a, 't> Flattener<'a, 't> {
             .ok_or_else(|| anyhow!("function '{name}' not found"))?;
         let via = self.class_via(&env, &parts, cls);
         let lexical = self.tree.node(cls).parent;
-        let penv = via.map(|v| {
-            let owner = lexical.unwrap_or(ROOT);
-            self.inherited_env(v, owner, env.overrides.clone())
+        let penv = self.nested_env(&env, &parts, cls).or_else(|| {
+            via.map(|v| {
+                let owner = lexical.unwrap_or(ROOT);
+                self.inherited_env(v, owner, env.overrides.clone())
+            })
         });
         Ok(Val::Func(Rc::new(FuncVal {
             cls,
@@ -6652,6 +6883,14 @@ impl<'a, 't> Flattener<'a, 't> {
                 let ins: Vec<Val> = inputs.iter().map(|n| ctx.locals[0][n].clone()).collect();
                 return self
                     .lapack_solve(ins)
+                    .with_context(|| format!("in function '{fname}'"));
+            }
+            if matches!(cname.as_str(), "dgelsy" | "dgelsy_vec")
+                && matches!(short.as_str(), "dgelsy" | "dgelsy_vec")
+            {
+                let ins: Vec<Val> = inputs.iter().map(|n| ctx.locals[0][n].clone()).collect();
+                return self
+                    .lapack_lstsq(ins)
                     .with_context(|| format!("in function '{fname}'"));
             }
             if !is_native_external(&cname) {
@@ -7570,6 +7809,52 @@ impl<'a, 't> Flattener<'a, 't> {
         Ok(vec![xv, Val::S(Arena::ZERO)])
     }
 
+    /// `(X, info, rank) = dgelsy(A, B, rcond)` (and `dgelsy_vec` with a vector `b`): the
+    /// minimum-norm least-squares solution, for `A` and `B` known at translation time.
+    fn lapack_lstsq(&mut self, ins: Vec<Val>) -> Result<Vec<Val>> {
+        let (da, a) = ins.first().ok_or_else(|| anyhow!("missing A"))?.elems()?;
+        let (db, b) = ins.get(1).ok_or_else(|| anyhow!("missing B"))?.elems()?;
+        if da.len() != 2 {
+            bail!("A must be a matrix");
+        }
+        let (m, n) = (da[0], da[1]);
+        let nrhs = if db.len() == 2 { db[1] } else { 1 };
+        if db.first() != Some(&m) {
+            bail!("B must have {m} rows");
+        }
+        let rcond = match ins.get(2) {
+            Some(v) => self
+                .eval_param_expr(v.scalar()?)
+                .ok_or_else(|| anyhow!("rcond must be known"))?,
+            None => 0.0,
+        };
+        let num = |this: &mut Self, es: &[ExprId]| -> Result<Vec<f64>> {
+            es.iter()
+                .map(|&e| {
+                    this.eval_param_expr(e).ok_or_else(|| {
+                        anyhow!("least squares needs A and B known at translation time")
+                    })
+                })
+                .collect()
+        };
+        let av = num(self, &a)?;
+        let bv = num(self, &b)?;
+        let (x, rank) = crate::linalg::lstsq(&av, m, n, &bv, nrhs, rcond);
+        let rows = m.max(n);
+        let ar = &mut self.model.arena;
+        let mut flat = vec![Arena::ZERO; rows * nrhs];
+        for (i, v) in x.iter().enumerate() {
+            flat[i] = ar.constant(*v);
+        }
+        let dims = if db.len() == 2 {
+            vec![rows, nrhs]
+        } else {
+            vec![rows]
+        };
+        let rank = ar.constant(rank as f64);
+        Ok(vec![Val::A(dims, flat), Val::S(Arena::ZERO), Val::S(rank)])
+    }
+
     fn intrinsic(&mut self, name: &str, ins: Vec<Val>) -> Result<Vec<Val>> {
         match name {
             // interpolate(table[:,:], x, col) -> y   (linear, hold extrapolation)
@@ -7613,7 +7898,11 @@ impl<'a, 't> Flattener<'a, 't> {
             match s {
                 ast::Statement::Empty => {}
                 ast::Statement::Assignment { comp, value } => {
-                    let v = self.translate(value, scope, ctx)?;
+                    let v = match self.translate(value, scope, ctx)? {
+                        // `x := f(..)` with several outputs of `f` takes the first.
+                        Val::Tuple(mut t) if !t.is_empty() => t.swap_remove(0),
+                        v => v,
+                    };
                     let guard = self.exit_guard(ctx);
                     let before = guard.map(|_| ctx.locals.clone());
                     self.assign_local(comp, v, scope, ctx)?;
