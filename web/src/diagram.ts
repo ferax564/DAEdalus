@@ -331,7 +331,7 @@ export class DiagramView {
     const conn = owner.components.find((c) => c.name === connName);
     if (!conn?.type_path) {
       const c = applyM(m, 0, 0);
-      return { p: c, color: "#555" };
+      return { p: c, color: diagramInk() };
     }
     const ct = await this.src.get(conn.type_path);
     const pl = conn.placement as AnnRecord | null;
@@ -343,7 +343,7 @@ export class DiagramView {
     const full = pm ? mul(m, pm) : m;
     const first = ct?.icon.graphics.find((g) => g.lineColor || g.fillColor || g.color);
     const col = (first?.lineColor ?? first?.color ?? first?.fillColor) as number[] | undefined;
-    return { p: applyM(full, center[0], center[1]), color: col ? diagramInk(col) : "#555" };
+    return { p: applyM(full, center[0], center[1]), color: diagramInk(col) };
   }
 
   private async drawAutoConnection(g: SVGGElement, cls: ClassInfo, mats: Map<string, Mat>, from: string, to: string) {

@@ -165,7 +165,8 @@ the **Animation** view after a simulation. See [3-D animation](animation.md).
 
 The workbench follows the system's light or dark theme. In dark mode the diagram sheet
 is dark, with a grid in both themes. Near-black default strokes and text follow the
-sheet so they stay visible. Explicit library colours are left as drawn.
+sheet so they stay visible, and stay dark when they sit on a light fill. Explicit
+library colours are left as drawn.
 
 <div class="pair">
 <figure><img src="img/wb/dark_diagram.webp" alt="Dark diagram view"></figure>
