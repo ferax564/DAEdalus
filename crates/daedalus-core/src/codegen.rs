@@ -2179,6 +2179,13 @@ impl<'m> Runtime<'m> {
                     jm[p * n + p] += mu;
                 }
                 if !crate::linalg::lu_factor(jm, n, piv) {
+                    // No direction at all (the residuals do not depend on the tears here).
+                    // When they already vanish, the tears are not determined by them: keep
+                    // the values they have (the start values `x(start = 0)` of an
+                    // initialization variable that the equations leave free).
+                    if norm <= 1e-12 * scale {
+                        return;
+                    }
                     // perturb the tears slightly and retry
                     for &t in &b.tears {
                         let x = &mut self.r[t as usize];
