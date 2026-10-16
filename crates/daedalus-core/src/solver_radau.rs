@@ -76,11 +76,12 @@ fn eigen() -> (f64, f64, f64) {
 
 pub struct Radau5 {
     pub rtol: f64,
-    pub atol: f64,
+    /// Absolute tolerance of each state (`tolerance * |nominal|`).
+    pub atol: Vec<f64>,
     pub max_step: f64,
     /// Tolerances as RADAU5 uses them internally (`0.1 rtol^(2/3)`).
     rtol_i: f64,
-    atol_i: f64,
+    atol_i: Vec<f64>,
     fnewt: f64,
     n: usize,
     t: f64,
@@ -125,13 +126,13 @@ impl Radau5 {
     pub fn new(
         n: usize,
         rtol: f64,
-        atol: f64,
+        atol: Vec<f64>,
         max_step: f64,
         pattern: &[Vec<u32>],
         mode: JacobianMode,
     ) -> Self {
         let rtol_i = 0.1 * rtol.powf(2.0 / 3.0);
-        let atol_i = rtol_i * atol / rtol;
+        let atol_i: Vec<f64> = atol.iter().map(|a| rtol_i * a / rtol).collect();
         let fnewt = (10.0 * f64::EPSILON / rtol_i).max(0.03f64.min(rtol_i.sqrt()));
         let jac = StateJac::new(n, pattern, mode);
         let e1 = RealSystem::new(&jac);
@@ -184,8 +185,8 @@ impl Radau5 {
     }
 
     fn set_scal(&mut self) {
-        for (s, x) in self.scal.iter_mut().zip(&self.x) {
-            *s = self.atol_i + self.rtol_i * x.abs();
+        for ((s, x), a) in self.scal.iter_mut().zip(&self.x).zip(&self.atol_i) {
+            *s = a + self.rtol_i * x.abs();
         }
     }
 
@@ -376,7 +377,8 @@ impl Radau5 {
             self.tmp2
                 .iter()
                 .zip(&self.tmp)
-                .map(|(e, u)| e / (self.atol + self.rtol * u.abs())),
+                .zip(&self.atol)
+                .map(|((e, u), a)| e / (a + self.rtol * u.abs())),
             n,
         );
         if est.is_finite() { est } else { 1e10 }
@@ -427,7 +429,7 @@ impl Integrator for Radau5 {
                 &f0,
                 3.0,
                 self.rtol,
-                self.atol,
+                &self.atol,
                 span.min(self.max_step),
             );
             self.stats.rhs_evals += 1;
@@ -447,7 +449,7 @@ impl Integrator for Radau5 {
             if self.need_jac {
                 let x = self.x.clone();
                 self.jac
-                    .compute(rt, self.t, &x, self.atol, self.rtol, &mut self.stats);
+                    .compute(rt, self.t, &x, &self.atol, self.rtol, &mut self.stats);
                 self.need_jac = false;
                 self.caljac = true;
                 self.lu_h = f64::NAN;

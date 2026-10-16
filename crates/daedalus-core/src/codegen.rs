@@ -178,6 +178,12 @@ pub struct Model {
     pub asserts_prog: Vec<Ins>,
     pub asserts: Vec<(Slot, String)>,
     pub states: Vec<Slot>,
+    /// Evaluates the `nominal` attributes of the states (from the parameters).
+    #[serde(default)]
+    pub nominals: Vec<Ins>,
+    /// Slot holding the nominal value of each state, if it has one.
+    #[serde(default)]
+    pub state_nominals: Vec<Option<Slot>>,
     pub derivs: Vec<Slot>,
     pub discretes: Vec<Slot>,
     /// `(v, p)`: after initialization `pre(v)` takes the value of `p`.
@@ -1020,6 +1026,19 @@ pub fn compile(mut sys: System) -> Model {
             asserts.push((em.emit(*c, &mut memo, &mut asserts_prog), m.clone()));
         }
     }
+    // Nominal values of the states (scale the solver's absolute tolerance).
+    let mut nominals = Vec::new();
+    let state_nominals: Vec<Option<Slot>> = {
+        let mut memo = FxHashMap::default();
+        sys.states
+            .iter()
+            .map(|&x| {
+                sys.vars[x as usize]
+                    .nominal
+                    .map(|e| em.emit(e, &mut memo, &mut nominals))
+            })
+            .collect()
+    };
     let mut layout = layout;
     layout.n_regs = em.next as usize;
     let consts = em.const_list.clone();
@@ -1060,6 +1079,8 @@ pub fn compile(mut sys: System) -> Model {
         asserts_prog,
         asserts,
         states: sys.states.clone(),
+        nominals,
+        state_nominals,
         derivs: sys.state_derivs.clone(),
         discretes: sys.discretes.clone(),
         pre_init: sys.pre_init.clone(),

@@ -1111,7 +1111,19 @@ impl<'m> Simulation<'m> {
             max_step = dt;
         }
         let rtol = o.tolerance;
-        let atol = o.tolerance;
+        // Absolute tolerance per state from its nominal value, as Dymola and
+        // OpenModelica do: a state of size 1e-4 (`nominal = 1e-4`) is integrated to
+        // 1e-4 * tolerance, not to the tolerance itself.
+        let atol: Vec<f64> = {
+            self.rt.run(&m.nominals);
+            m.state_nominals
+                .iter()
+                .map(|s| {
+                    let v = s.map_or(1.0, |s| self.rt.r[s as usize].abs());
+                    o.tolerance * if v.is_finite() && v > 0.0 { v } else { 1.0 }
+                })
+                .collect()
+        };
         self.stats.method = o.method.name().to_string();
         // FMU components: the tape does not see through them (their derivatives and
         // outputs are set from outside), so the state Jacobian is dense and by
@@ -1125,22 +1137,22 @@ impl<'m> Simulation<'m> {
         };
         let solver: Box<dyn Integrator> = match o.method {
             Method::Bdf => {
-                let b = Bdf::new(n, rtol, atol, max_step, pattern).with_jacobian(jacobian);
+                let b = Bdf::new(n, rtol, atol.clone(), max_step, pattern).with_jacobian(jacobian);
                 self.stats.jacobian_colors = b.n_colors();
                 Box::new(b)
             }
             Method::Radau => {
-                let r = Radau5::new(n, rtol, atol, max_step, pattern, jacobian);
+                let r = Radau5::new(n, rtol, atol.clone(), max_step, pattern, jacobian);
                 self.stats.jacobian_colors = r.n_colors();
                 Box::new(r)
             }
             Method::Esdirk => {
-                let e = Esdirk::new(n, rtol, atol, max_step, pattern, jacobian);
+                let e = Esdirk::new(n, rtol, atol.clone(), max_step, pattern, jacobian);
                 self.stats.jacobian_colors = e.n_colors();
                 Box::new(e)
             }
             Method::Auto => {
-                let b = Bdf::new(n, rtol, atol, max_step, pattern).with_jacobian(jacobian);
+                let b = Bdf::new(n, rtol, atol.clone(), max_step, pattern).with_jacobian(jacobian);
                 self.stats.jacobian_colors = b.n_colors();
                 Box::new(AutoSwitch::new(Dopri5::new(n, rtol, atol, max_step), b))
             }
