@@ -1,8 +1,8 @@
 # Text editor
 
-The workbench's Text view is a Modelica editor backed by the compiler's own name lookup
-(`crates/daedalus-core/src/ide.rs`, running in the worker). So go-to-definition,
-completion and rename follow the same rules the compiler does.
+The workbench's Text view is a Modelica editor. It uses the compiler's own rules for finding names,
+so "go to definition", autocomplete and rename behave the way the compiler reads the code. The
+logic lives in `crates/daedalus-core/src/ide.rs` and runs in the browser worker.
 
 ![Member completion after converter. in StallTest, with the description of the selected entry](img/editor/complete.webp)
 
