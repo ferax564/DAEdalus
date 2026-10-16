@@ -1,6 +1,7 @@
 @import "./tokens.css";
 /* One highlight colour for every text selection: editor, documentation, messages, inputs.
-   Modelica syntax colours live on the same tokens. The diagram stays a light sheet. */
+   Modelica syntax colours live on the same tokens. The diagram sheet uses --canvas,
+   white in the light theme and dark in the dark theme, with a --canvas-grid. */
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
 body {
@@ -128,7 +129,15 @@ button:disabled { opacity: 0.55; cursor: default; pointer-events: none; }
 .view { position: absolute; inset: 0; overflow: auto; }
 .view.doc { padding: 12px 18px; }
 .view.flat { margin: 0; padding: 10px; font: 12px/1.45 var(--mono); white-space: pre; }
-svg.diagram { width: 100%; height: 100%; display: block; background: var(--canvas); color: var(--canvas-ink); cursor: grab; }
+svg.diagram {
+  width: 100%; height: 100%; display: block; cursor: grab;
+  background-color: var(--canvas);
+  background-image:
+    linear-gradient(to right, var(--canvas-grid) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--canvas-grid) 1px, transparent 1px);
+  background-size: 24px 24px;
+  color: var(--canvas-ink);
+}
 svg.diagram .frame { fill: none; stroke: var(--canvas-frame); stroke-dasharray: 4 3; vector-effect: non-scaling-stroke; }
 svg.diagram .component .hit { fill: transparent; stroke: none; }
 svg.diagram .component:hover .hit { fill: color-mix(in srgb, var(--accent) 12%, transparent); stroke: color-mix(in srgb, var(--accent) 55%, transparent); vector-effect: non-scaling-stroke; }

@@ -43,6 +43,31 @@ function color(v: AnnValue | undefined, d: string): string {
   if (Array.isArray(v) && v.length >= 3) return `rgb(${num(v[0])},${num(v[1])},${num(v[2])})`;
   return d;
 }
+
+/** True for the default near-black Modelica ink, not a tinted library colour. */
+export function isNearBlackInk(rgb: [number, number, number]): boolean {
+  const max = Math.max(rgb[0], rgb[1], rgb[2]);
+  const min = Math.min(rgb[0], rgb[1], rgb[2]);
+  return max <= 48 && max - min <= 16;
+}
+
+/** A fill light enough that near-black ink must stay dark to remain readable. */
+export function isLightFill(rgb: [number, number, number]): boolean {
+  return 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2] >= 160;
+}
+
+/**
+ * Stroke and text colour. Missing or near-black ink uses `--canvas-ink` so it stays
+ * visible on the sheet. The same ink keeps its dark colour when it sits on a light fill.
+ * Explicit non-black colours stay as authored.
+ */
+export function diagramInk(v: AnnValue | undefined, onLightFill = false): string {
+  if (Array.isArray(v) && v.length >= 3) {
+    const rgb: [number, number, number] = [num(v[0]), num(v[1]), num(v[2])];
+    if (!isNearBlackInk(rgb) || onLightFill) return `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
+  } else if (onLightFill) return "rgb(0,0,0)";
+  return "var(--canvas-ink)";
+}
 const enumLit = (v: AnnValue | undefined, d: string): string => (typeof v === "string" ? v.split(".").pop()! : d);
 
 /** Extent of a coordinate system ({{-100,-100},{100,100}} by default). */
@@ -87,6 +112,51 @@ const matAttr = (m: Mat) => `matrix(${m.map(fmt).join(" ")})`;
 function rgbOf(c: AnnValue | undefined): [number, number, number] {
   return Array.isArray(c) && c.length >= 3 ? [num(c[0]), num(c[1]), num(c[2])] : [0, 0, 0];
 }
+
+/** Fills that paint the whole primitive, so later ink can sit on them. */
+const COVERING_FILL = new Set(["Solid", "HorizontalCylinder", "VerticalCylinder", "Sphere"]);
+
+function coveringLightFill(g: AnnRecord): boolean {
+  if (!COVERING_FILL.has(enumLit(g.fillPattern, "None"))) return false;
+  return isLightFill(rgbOf(g.fillColor));
+}
+
+interface Box {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+}
+
+function aabb(pts: [number, number][]): Box | null {
+  if (pts.length === 0) return null;
+  let minX = pts[0][0];
+  let maxX = pts[0][0];
+  let minY = pts[0][1];
+  let maxY = pts[0][1];
+  for (const [x, y] of pts) {
+    minX = Math.min(minX, x);
+    maxX = Math.max(maxX, x);
+    minY = Math.min(minY, y);
+    maxY = Math.max(maxY, y);
+  }
+  return { minX, minY, maxX, maxY };
+}
+
+function centerInside(box: Box, fills: Box[]): boolean {
+  const x = (box.minX + box.maxX) / 2;
+  const y = (box.minY + box.maxY) / 2;
+  return fills.some((f) => x >= f.minX && x <= f.maxX && y >= f.minY && y <= f.maxY);
+}
+
+/** Bounding box of a primitive in the parent coordinate system. */
+function graphicBox(g: AnnRecord, mm: Mat): Box | null {
+  if (g["@"] === "Line" || g["@"] === "Polygon") return aabb(points(g.points).map(([x, y]) => apply(mm, x, y)));
+  const e = points(g.extent);
+  if (e.length !== 2) return null;
+  const [a, b] = e;
+  return aabb([apply(mm, a[0], a[1]), apply(mm, b[0], a[1]), apply(mm, b[0], b[1]), apply(mm, a[0], b[1])]);
+}
 const mix = (c: [number, number, number], w: number, t: [number, number, number] = [255, 255, 255]) =>
   `rgb(${c.map((v, i) => Math.round(v * (1 - w) + t[i] * w)).join(",")})`;
 
@@ -123,11 +193,11 @@ function fillOf(ctx: RenderCtx, g: AnnRecord): string {
   return `url(#${id})`;
 }
 
-function strokeAttrs(g: AnnRecord, key: "color" | "lineColor"): Record<string, string | number> {
+function strokeAttrs(g: AnnRecord, key: "color" | "lineColor", onLightFill = false): Record<string, string | number> {
   const pattern = enumLit(key === "color" ? g.pattern : g.pattern ?? g.borderPattern, "Solid");
   const thick = num(key === "color" ? g.thickness : g.lineThickness, 0.25);
   const a: Record<string, string | number> = {
-    stroke: pattern === "None" ? "none" : color(g[key], "black"),
+    stroke: pattern === "None" ? "none" : diagramInk(g[key], onLightFill),
     "stroke-width": Math.max(1, thick * 4),
     "vector-effect": "non-scaling-stroke",
     "stroke-linejoin": "round",
@@ -181,15 +251,18 @@ function arrowHead(parent: SVGGElement, tip: [number, number], from: [number, nu
 
 /** Draw a list of graphic primitives into `parent` with transform `m` (Modelica -> diagram coords). */
 export function drawGraphics(parent: SVGGElement, graphics: AnnRecord[], m: Mat, ctx: RenderCtx) {
+  const lightFills: Box[] = [];
   for (const g of graphics) {
     if (g.visible === false) continue;
     if (typeof g.visible === "string" && ctx.cond(g.visible) === false) continue;
     const mm = mul(m, itemMatrix(g));
     const kind = g["@"];
+    const box = graphicBox(g, mm);
+    const onLight = coveringLightFill(g) || (!!box && centerInside(box, lightFills));
     if (kind === "Line") {
       const pts = points(g.points);
       if (pts.length < 2) continue;
-      const sa = strokeAttrs(g, "color");
+      const sa = strokeAttrs(g, "color", onLight);
       parent.appendChild(el("path", { d: pathOf(pts, mm, enumLit(g.smooth, "None") === "Bezier", false), fill: "none", ...sa }));
       const arrows = Array.isArray(g.arrow) ? g.arrow.map((a) => enumLit(a, "None")) : ["None", "None"];
       const size = num(g.arrowSize, 3) * Math.hypot(mm[0], mm[1]);
@@ -199,7 +272,8 @@ export function drawGraphics(parent: SVGGElement, graphics: AnnRecord[], m: Mat,
     } else if (kind === "Polygon") {
       const pts = points(g.points);
       if (pts.length < 2) continue;
-      parent.appendChild(el("path", { d: pathOf(pts, mm, enumLit(g.smooth, "None") === "Bezier", true), fill: fillOf(ctx, g), ...strokeAttrs(g, "lineColor") }));
+      parent.appendChild(el("path", { d: pathOf(pts, mm, enumLit(g.smooth, "None") === "Bezier", true), fill: fillOf(ctx, g), ...strokeAttrs(g, "lineColor", onLight) }));
+      if (coveringLightFill(g) && box) lightFills.push(box);
     } else if (kind === "Rectangle" || kind === "Ellipse" || kind === "Bitmap") {
       const e = points(g.extent);
       if (e.length !== 2) continue;
@@ -234,7 +308,8 @@ export function drawGraphics(parent: SVGGElement, graphics: AnnRecord[], m: Mat,
         shape.setAttribute("vector-effect", "non-scaling-stroke");
       } else {
         shape.setAttribute("fill", fillOf(ctx, g));
-        for (const [k, v] of Object.entries(strokeAttrs(g, "lineColor"))) shape.setAttribute(k, String(v));
+        for (const [k, v] of Object.entries(strokeAttrs(g, "lineColor", onLight))) shape.setAttribute(k, String(v));
+        if (coveringLightFill(g) && box) lightFills.push(box);
       }
       grp.appendChild(shape);
       parent.appendChild(grp);
@@ -273,7 +348,7 @@ export function drawGraphics(parent: SVGGElement, graphics: AnnRecord[], m: Mat,
         "font-size": fs,
         "text-anchor": align === "Left" ? "start" : align === "Right" ? "end" : "middle",
         "dominant-baseline": "central",
-        fill: color(g.textColor ?? g.lineColor, "black"),
+        fill: diagramInk(g.textColor ?? g.lineColor, onLight),
         transform: `scale(1,-1) translate(${cx},${-cy})${deg ? ` rotate(${-deg})` : ""}`,
         "font-family": typeof g.fontName === "string" && g.fontName ? g.fontName : "inherit",
       });
