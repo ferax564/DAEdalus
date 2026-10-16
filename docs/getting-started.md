@@ -4,6 +4,9 @@ There are three ways to run DAEdalus. The live workbench needs nothing installed
 release binaries give you the command line; building from source gives you everything,
 including the workbench on your own machine.
 
+In plain terms: a release binary is a ready-built program that you download and run. Building
+from source means compiling the code yourself, which needs the Rust toolchain.
+
 ## 1. The live workbench
 
 Open [daedalus.apps.ezkeel.com](https://daedalus.apps.ezkeel.com/#Daedalus.Examples.TorqueConverter.StallTest). The page

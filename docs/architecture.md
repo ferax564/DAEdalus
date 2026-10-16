@@ -1,6 +1,8 @@
 # Architecture
 
-DAEdalus goes from Modelica source text to results in five stages:
+DAEdalus goes from Modelica source text to results in five stages. In plain terms: the first
+stage reads the text and turns it into one long list of equations, and the later stages
+simplify and order that list so that a solver can run it.
 
 <div class="diagram" role="img" aria-label="Pipeline from Modelica source to results">
 <svg viewBox="0 0 920 290" xmlns="http://www.w3.org/2000/svg">
@@ -68,7 +70,8 @@ AST. Everything after parsing is DAEdalus code.
 name lookup: enclosing scopes, imports, inherited members and redeclared
 classes.
 
-**Instantiation (`inst.rs`)** runs in two passes.
+**Instantiation (`inst.rs`)** turns each class into its parts: every component gets its own
+copies of the variables and equations. It runs in two passes.
 1. The first pass builds the instance tree: components, array dimensions,
    modifiers, `each` and `final`, conditional components, and replaceable
    redeclarations.
