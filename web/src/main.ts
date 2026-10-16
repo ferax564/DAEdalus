@@ -19,6 +19,10 @@ import { LinearView } from "./linear";
 import { PlotTools } from "./plottools";
 import { Dashboard, layoutFromHash } from "./dashboard";
 import type { LiveChunk } from "./rpc";
+import { renderDoc } from "./docview";
+import { DiffView } from "./diffview";
+import { librarySources, openLibraries, openPackage, reportConflicts, restoreInstalled, savePackage, type LibHost } from "./libmgr";
+import { importParams } from "./paramsui";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -44,7 +48,7 @@ const src = {
 let tree: ClassEntry[] = [];
 const expanded = new Set<string>(["Daedalus", "Daedalus.Examples"]);
 let current: ClassInfo | null = null;
-let view: ViewKind | "text" | "doc" | "flat" | "structure" | "linear" = "diagram";
+let view: ViewKind | "text" | "doc" | "flat" | "structure" | "linear" | "diff" = "diagram";
 let mode: "modeling" | "simulation" | "analysis" = "modeling";
 let summary: SimSummary | null = null;
 /** Model the variables in `summary` belong to. */
@@ -55,6 +59,8 @@ const overrides = new Map<string, number>();
 const docs = new Map<string, string>();
 /** Non-Modelica files loaded with the libraries (shape meshes), keyed by relative path. */
 const resources = new Map<string, ArrayBuffer>();
+/** Each document's text as it was loaded, before edits in the text view: what the Diff view compares with. */
+const baseline = new Map<string, string>();
 
 // ---------------------------------------------------------------- messages
 function log(msg: string, cls = "") {
@@ -101,6 +107,8 @@ const editor = new DiagramEditor(diagram, {
   classInfo: (p) => src.get(p),
   log,
   documentChanged: async (uri, t, open) => {
+    // the Diff view compares against the text before the first edit
+    if (!baseline.has(uri)) baseline.set(uri, docs.get(uri) ?? "");
     docs.set(uri, t);
     for (const [k, v] of classes) if (v.source?.uri === uri) classes.delete(k);
     expanded.add("MyModels");
@@ -118,6 +126,7 @@ let editTimer = 0;
 text.onChange = (t) => {
   if (!current?.source) return;
   const uri = current.source.uri;
+  if (!baseline.has(uri) && docs.has(uri)) baseline.set(uri, docs.get(uri)!);
   docs.set(uri, t);
   clearTimeout(editTimer);
   editTimer = window.setTimeout(async () => {
@@ -140,7 +149,7 @@ function setActive(container: HTMLElement, attr: string, value: string) {
 
 async function showView() {
   setActive($("view-tabs"), "data-view", view);
-  for (const id of ["view-graphic", "view-text", "view-doc", "view-flat", "view-structure", "view-linear"]) $(id).classList.add("hidden");
+  for (const id of ["view-graphic", "view-text", "view-doc", "view-flat", "view-structure", "view-linear", "view-diff"]) $(id).classList.add("hidden");
   if (!current) return;
   if (view === "icon" || view === "diagram") {
     $("view-graphic").classList.remove("hidden");
@@ -161,8 +170,7 @@ async function showView() {
     }
   } else if (view === "doc") {
     $("view-doc").classList.remove("hidden");
-    const d = current.documentation;
-    $("view-doc").innerHTML = `<h2>${escapeHtml(current.path)}</h2><p class="muted">${escapeHtml(current.description)}</p>` + (d ?? "<p class='muted'>No documentation.</p>");
+    await renderDoc($("view-doc"), current, docHost);
   } else if (view === "linear") {
     $("view-linear").classList.remove("hidden");
     await linear.show(current.path);
@@ -173,8 +181,119 @@ async function showView() {
   } else if (view === "structure") {
     $("view-structure").classList.remove("hidden");
     await structureView.show(current.path);
+  } else if (view === "diff") {
+    $("view-diff").classList.remove("hidden");
+    await diffView.show(current);
   }
 }
+
+// ---------------------------------------------------------------- documentation, diff, edits
+/** Replace a document's text: the workbench reparses it and redraws the open class. */
+async function applyEdit(uri: string, t: string) {
+  if (!baseline.has(uri)) baseline.set(uri, docs.get(uri) ?? (await api.documentText(uri)) ?? "");
+  docs.set(uri, t);
+  const errs = await api.setDocuments([[uri, t]]);
+  classes.clear();
+  if (errs[uri]) for (const e of errs[uri].slice(0, 5)) log(e, "err");
+  await refreshTree();
+  if (current) {
+    const info = await src.get(current.path);
+    if (info) current = info;
+    showInspector(null);
+    await showView();
+  }
+}
+
+const blobUrls = new Map<string, string>();
+/** Directory of a library's top-level package (`library/Daedalus`), from its package.mo. */
+async function libraryDir(root: string): Promise<string | null> {
+  const info = await src.get(root);
+  const uri = info?.source?.uri;
+  return uri && /(^|\/)package\.mo$/.test(uri) ? uri.replace(/\/?package\.mo$/, "") : null;
+}
+
+const docHost = {
+  open: (p: string) => void openClass(p),
+  async resourceUrl(cls: string, path: string): Promise<string | null> {
+    const root = cls.split(".")[0];
+    const dir = await libraryDir(root);
+    // packages below the top level that are directories hold their own resources
+    let base = dir;
+    if (dir) {
+      const segs = cls.split(".");
+      for (let i = 1; i < segs.length; i++) {
+        const sub = await src.get(segs.slice(0, i + 1).join("."));
+        const u = sub?.source?.uri;
+        if (u && u === `${base}/${segs[i]}/package.mo`) base = `${base}/${segs[i]}`;
+        else break;
+      }
+    }
+    const key = base ? `${base}/${path}` : null;
+    if (key) {
+      const hit = blobUrls.get(key);
+      if (hit) return hit;
+      let buf = resources.get(key);
+      if (!buf) {
+        const b = await api.resource(key);
+        if (b) {
+          buf = b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer;
+          resources.set(key, buf);
+        }
+      }
+      if (buf) {
+        const ext = path.split(".").pop()!.toLowerCase();
+        const type = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", svg: "image/svg+xml", webp: "image/webp", bmp: "image/bmp", pdf: "application/pdf" }[ext] ?? "application/octet-stream";
+        const url = URL.createObjectURL(new Blob([buf], { type }));
+        blobUrls.set(key, url);
+        return url;
+      }
+    }
+    // not stored locally: the library's sources on jsDelivr's GitHub CDN, when online
+    const s = librarySources.get(root);
+    if (s && navigator.onLine) return `https://cdn.jsdelivr.net/gh/${s.repo}@${s.ref}/${root}/${path.split("/").map(encodeURIComponent).join("/")}`;
+    return null;
+  },
+  async saveMetadata(cls: string, entries: [string, string][]) {
+    const e = await api.setMetadata(cls, entries);
+    await applyEdit(e.uri, e.text);
+    log(`Metadata of ${cls} saved (${entries.length} entries)`, "ok");
+  },
+};
+
+const diffView = new DiffView($("view-diff"), src, classes, {
+  async currentText(uri) {
+    return docs.get(uri) ?? (await api.documentText(uri)) ?? "";
+  },
+  async baselineText(uri) {
+    return baseline.get(uri) ?? docs.get(uri) ?? (await api.documentText(uri));
+  },
+  pickFile: () =>
+    new Promise((resolve) => {
+      const i = document.createElement("input");
+      i.type = "file";
+      i.accept = ".mo";
+      i.onchange = async () => {
+        const f = i.files?.[0];
+        resolve(f ? { name: f.name, text: await f.text() } : null);
+      };
+      i.addEventListener("cancel", () => resolve(null));
+      i.click();
+    }),
+});
+
+const libHost: LibHost = {
+  log,
+  refresh: async () => {
+    classes.clear();
+    await refreshTree();
+  },
+  async pullResources(paths: string[]) {
+    for (const p of paths) {
+      const b = await api.resource(p);
+      if (b) resources.set(p, b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer);
+    }
+  },
+};
 
 $("view-tabs").addEventListener("click", (e) => {
   const v = (e.target as HTMLElement).getAttribute("data-view");
@@ -222,9 +341,14 @@ async function showInspector(c: ComponentInfo | null) {
     <div class="muted">${escapeHtml(c.type_name)}</div>
     <p>${escapeHtml(c.description)}</p>
     <table>${rows.join("") || "<tr><td class='muted'>No parameters</td></tr>"}</table>
-    ${c.type_path ? `<p><button id="open-type">Open ${escapeHtml(c.type_path.split(".").pop()!)}</button></p>` : ""}`;
+    <p>${c.type_path ? `<button id="open-type">Open ${escapeHtml(c.type_path.split(".").pop()!)}</button> ` : ""}<button id="import-params" title="Set parameters of ${escapeHtml(c.name)} from a CSV (name,value[,unit]) or SSP .ssv file">Import parameters…</button></p>`;
   const b = document.getElementById("open-type");
   if (b) b.onclick = () => openClass(c.type_path!);
+  const ip = document.getElementById("import-params");
+  if (ip && current) {
+    const model = current.path;
+    ip.onclick = () => importParams(model, c, { applyOps: async (ops) => !!(await editor.apply(ops)), log });
+  }
 }
 
 // ---------------------------------------------------------------- package browser
@@ -397,7 +521,7 @@ async function openClass(path: string, push = true) {
     history.replaceState({ idx: navIdx }, "", hash);
   }
   updateNav();
-  if (view !== "text" && view !== "doc" && view !== "flat" && view !== "structure" && view !== "linear") view = info.kind !== "connector" && info.kind !== "package" && (info.components.some((c) => c.type_kind !== "type" && !c.protected) || (editableUri(info.source?.uri) && ["model", "block", "class"].includes(info.kind))) ? "diagram" : "icon";
+  if (view !== "text" && view !== "doc" && view !== "flat" && view !== "structure" && view !== "linear" && view !== "diff") view = info.kind !== "connector" && info.kind !== "package" && (info.components.some((c) => c.type_kind !== "type" && !c.protected) || (editableUri(info.source?.uri) && ["model", "block", "class"].includes(info.kind))) ? "diagram" : "icon";
   renderTree();
   renderVariables();
   showInspector(null);
@@ -1156,7 +1280,12 @@ $("dash-btn").classList.toggle("active", dashOn);
 
 // ---------------------------------------------------------------- loading sources
 async function load(files: [string, string][], label: string, res: [string, ArrayBuffer][] = []) {
-  for (const [p, b] of res) resources.set(p, b);
+  for (const [p, b] of res) {
+    resources.set(p, b);
+    // the worker keeps a copy for model packages (Save .zip)
+    void api.setResource(p, b.slice(0));
+  }
+  for (const [p, t] of files) baseline.set(p, t);
   if (!files.length) {
     if (res.length) log(`Loaded ${res.length} shape files (${label})`, "ok");
     return;
@@ -1173,7 +1302,26 @@ async function load(files: [string, string][], label: string, res: [string, Arra
   for (const [uri, e] of Object.entries(errs).slice(0, 5)) log(`${uri}: ${e[0]}`, "err");
   await refreshTree();
 }
-const loadPicked = (p: Picked, label: string) => load(p.mo, label, p.resources);
+async function loadPicked(p: Picked, label: string) {
+  for (const z of p.zips) {
+    try {
+      const model = await openPackage(z, libHost);
+      if (model) await openClass(model);
+    } catch (e) {
+      log(`${z.name}: ${e instanceof Error ? e.message : e}`, "err");
+    }
+  }
+  if (p.mo.length || p.resources.length) await load(p.mo, label, p.resources);
+}
+$("btn-libs").onclick = () => openLibraries(libHost);
+$("btn-save-zip").onclick = async () => {
+  if (!current) return log("Open a model first.", "warn");
+  try {
+    await savePackage(current.path, libHost);
+  } catch (e) {
+    log(`Save .zip: ${e instanceof Error ? e.message : e}`, "err");
+  }
+};
 $("open-files").onchange = async (e) => loadPicked(await readPicked((e.target as HTMLInputElement).files!), "files");
 $("open-dir").onchange = async (e) => loadPicked(await readPicked((e.target as HTMLInputElement).files!), "folder");
 document.body.addEventListener("dragover", (e) => e.preventDefault());
@@ -1247,7 +1395,7 @@ async function start() {
   }
   // for automated checks
   const w = window as unknown as { daedalus: Record<string, unknown> };
-  w.daedalus = { api, simulate, openClass, plot, timings, analysis, setMode, togglePlot: (n: string) => togglePlot(n, summary!.vars.find((v) => v.name === n)!), editor, anim: () => anim, animData: () => animData, setSimView, tools, dashboard, diagram, simDiagram, overrides, live: () => liveData, liveStats, mode: () => mode, linear, setView: (v: typeof view) => { view = v; return showView(); } };
+  w.daedalus = { api, simulate, openClass, plot, timings, analysis, setMode, togglePlot: (n: string) => togglePlot(n, summary!.vars.find((v) => v.name === n)!), editor, anim: () => anim, animData: () => animData, setSimView, tools, dashboard, diagram, simDiagram, overrides, live: () => liveData, liveStats, mode: () => mode, linear, applyEdit, baseline, setView: (v: typeof view) => { view = v; return showView(); } };
   await load(bundledLibrary(), "Daedalus library", await bundledResources());
   initAssistant({
     currentClass: () => current?.path ?? null,
@@ -1267,6 +1415,8 @@ async function start() {
   await editor.restore();
   const msl = loadMsl();
   w.daedalus.msl = msl;
+  // libraries installed on earlier visits, once the MSL they use is registered
+  w.daedalus.libs = msl.then(() => restoreInstalled(libHost)).then(() => reportConflicts(libHost));
   if (hash && isMsl(hash)) {
     log(`${hash} opens once the Modelica Standard Library is loaded…`);
     await msl;

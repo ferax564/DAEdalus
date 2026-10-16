@@ -62,7 +62,106 @@ export interface ClassInfo {
   components: ComponentInfo[];
   connections: ConnectionInfo[];
   documentation: string | null;
+  /** `Documentation(revisions=...)`. */
+  revisions: string | null;
+  /** `__Daedalus_metadata(key="value", ...)` pairs. */
+  metadata: [string, string][];
+  /** `version` annotation (a library's top-level package). */
+  version: string | null;
+  /** `uses(Lib(version="..."))` pairs. */
+  uses: [string, string][];
   experiment: AnnRecord | null;
+}
+
+/** One line of a text diff (see crates/daedalus-core/src/diff.rs). */
+export interface DiffLine {
+  op: " " | "+" | "-";
+  old: number | null;
+  new: number | null;
+  text: string;
+}
+
+export interface ComponentChange {
+  name: string;
+  change: "added" | "removed" | "modified";
+  old_type: string | null;
+  new_type: string | null;
+  parameter: boolean;
+  moved: boolean;
+  old_placement: AnnRecord | null;
+  new_placement: AnnRecord | null;
+  details: string[];
+}
+
+export interface ConnectionChange {
+  from: string;
+  to: string;
+  change: "added" | "removed" | "rerouted";
+  old_line: AnnRecord | null;
+  new_line: AnnRecord | null;
+}
+
+/** Structural and text diff of one class between two versions. */
+export interface ClassDiff {
+  old_class: string;
+  new_class: string;
+  extends: [string, string][];
+  components: ComponentChange[];
+  connections: ConnectionChange[];
+  equations: { change: "added" | "removed"; initial: boolean; text: string }[];
+  other: string[];
+  text: DiffLine[];
+}
+
+/** A parameter value imported from CSV or SSV. */
+export interface ParamValue {
+  name: string;
+  value: string;
+  unit: string | null;
+}
+
+/** A library available to `uses` resolution. */
+export interface LibAvailable {
+  name: string;
+  version: string | null;
+  origin: string;
+  loaded: boolean;
+}
+
+export interface LibReport {
+  loaded: LibAvailable[];
+  requirements: { by: string; name: string; version: string }[];
+  resolution: { selected: LibAvailable[]; missing: string[]; conflicts: string[]; notes: string[] };
+}
+
+/** The bundled index of open libraries (library/packages.json). */
+export interface LibIndex {
+  libraries: {
+    name: string;
+    description: string;
+    repo: string;
+    license: string;
+    packages: string[];
+    versions: { version: string; ref: string; uses?: Record<string, string> }[];
+  }[];
+}
+
+export interface LibSource {
+  name: string | null;
+  version: string | null;
+  repo: string;
+  git_ref: string;
+  packages: string[];
+}
+
+/** The manifest of a model package (daedalus-package.json). */
+export interface PackageManifest {
+  format: number;
+  model: string;
+  files: string[];
+  resources: string[];
+  uses: Record<string, string>;
+  missing: string[];
 }
 
 export interface VarSummary {

@@ -51,6 +51,9 @@ pub struct Workspace {
     lin_model: Option<(String, daedalus_core::codegen::Model)>,
     /// The run being advanced in slices (live plotting, dashboards).
     live: Option<LiveRun>,
+    /// Non-Modelica files of the loaded libraries and packages (meshes, tables, images),
+    /// by path: what `modelica://` resource URIs resolve to.
+    resources: std::collections::BTreeMap<String, Vec<u8>>,
 }
 
 /// Options of [`Workspace::linear_analysis`]: the linearization point and parameter
@@ -62,6 +65,10 @@ struct LinearRequest {
     params: Vec<(String, f64)>,
     #[serde(flatten)]
     analysis: daedalus_core::lti::LinearOptions,
+}
+
+fn err_json(e: impl std::fmt::Display) -> String {
+    to_json(&serde_json::json!({"error": e.to_string()}))
 }
 
 fn to_json<T: Serialize>(v: &T) -> String {
@@ -936,3 +943,274 @@ impl Workspace {
         to_json(&edit::parameters(&self.lib, path))
     }
 }
+
+/// Library management, documentation, parameter import, diff and model packages.
+#[wasm_bindgen]
+impl Workspace {
+    /// Store a resource file (a mesh, table or image of a library) by path.
+    #[wasm_bindgen(js_name = setResource)]
+    pub fn set_resource(&mut self, path: &str, bytes: &[u8]) {
+        self.resources.insert(path.to_string(), bytes.to_vec());
+    }
+
+    /// A stored resource file.
+    pub fn resource(&self, path: &str) -> Option<Vec<u8>> {
+        self.resources.get(path).cloned()
+    }
+
+    /// JSON: structural and text diff of a class between two source texts
+    /// (`daedalus_core::diff::ClassDiff`), or `{"error": ...}`.
+    #[wasm_bindgen(js_name = diffSources)]
+    pub fn diff_sources(&self, old_text: &str, new_text: &str, old_class: &str, new_class: &str) -> String {
+        let o = (!old_class.is_empty()).then_some(old_class);
+        let n = (!new_class.is_empty()).then_some(new_class);
+        match daedalus_core::diff::diff_sources(old_text, new_text, o, n.or(o)) {
+            Ok(d) => to_json(&d),
+            Err(e) => err_json(format!("{e:#}")),
+        }
+    }
+
+    /// JSON `{uri, text}`: the document of `class` with its `__Daedalus_metadata`
+    /// annotation set to `entries` (a JSON list of [key, value]).
+    #[wasm_bindgen(js_name = setMetadata)]
+    pub fn set_metadata(&mut self, class: &str, entries: &str) -> String {
+        self.ensure(class, Some(false));
+        let kv: Vec<(String, String)> = match serde_json::from_str(entries) {
+            Ok(v) => v,
+            Err(e) => return err_json(e),
+        };
+        match daedalus_core::edit::set_metadata(&self.lib, class, &kv) {
+            Ok((uri, text)) => to_json(&serde_json::json!({"uri": uri, "text": text})),
+            Err(e) => err_json(format!("{e:#}")),
+        }
+    }
+
+    /// JSON: the parameter values of a CSV or SSV text, or `{"error": ...}`.
+    #[wasm_bindgen(js_name = paramsParse)]
+    pub fn params_parse(&self, text: &str, file_name: &str) -> String {
+        match daedalus_core::params::parse(text, file_name) {
+            Ok(p) => to_json(&p),
+            Err(e) => err_json(format!("{e:#}")),
+        }
+    }
+
+    /// JSON `{params, messages, modifier, record}`: the values checked against component
+    /// `component` of `class` (or the class itself when empty), converted to the
+    /// declared units, as a modifier and as a record named `record`.
+    #[wasm_bindgen(js_name = paramsFor)]
+    pub fn params_for(&mut self, class: &str, component: &str, params: &str, record: &str) -> String {
+        self.ensure(class, Some(true));
+        let p: Vec<daedalus_core::params::ParamValue> = match serde_json::from_str(params) {
+            Ok(v) => v,
+            Err(e) => return err_json(e),
+        };
+        let comp = (!component.is_empty()).then_some(component);
+        let checked = match daedalus_core::params::check(&self.lib, class, comp, &p) {
+            Ok(c) => c,
+            Err(e) => return err_json(format!("{e:#}")),
+        };
+        let target = comp.unwrap_or_else(|| class.rsplit('.').next().unwrap_or(class));
+        to_json(&serde_json::json!({
+            "params": checked.params,
+            "messages": checked.messages,
+            "modifier": daedalus_core::params::modifier(target, &checked.params),
+            "record": daedalus_core::params::record(if record.is_empty() { "Parameters" } else { record }, &checked.params),
+        }))
+    }
+
+    /// JSON `{uri, text}`: the document of `class` with `params` (JSON list of
+    /// ParamValue) merged into the modifier of its component `component`.
+    #[wasm_bindgen(js_name = applyParams)]
+    pub fn apply_params(&mut self, class: &str, component: &str, params: &str) -> String {
+        self.ensure(class, Some(false));
+        let p: Vec<daedalus_core::params::ParamValue> = match serde_json::from_str(params) {
+            Ok(v) => v,
+            Err(e) => return err_json(e),
+        };
+        let tree = daedalus_core::params::ModTree::from_params(&p);
+        match daedalus_core::edit::apply_modifier(&self.lib, class, component, &tree) {
+            Ok((uri, text)) => to_json(&serde_json::json!({"uri": uri, "text": text})),
+            Err(e) => err_json(format!("{e:#}")),
+        }
+    }
+
+    /// The bundled index of open libraries (JSON).
+    #[wasm_bindgen(js_name = libraryIndex)]
+    pub fn library_index(&self) -> String {
+        daedalus_core::libraries::INDEX_JSON.to_string()
+    }
+
+    /// JSON: an install specification resolved against the index, with its archive and
+    /// CDN URLs, or `{"error": ...}`.
+    #[wasm_bindgen(js_name = parseSpec)]
+    pub fn parse_spec(&self, spec: &str) -> String {
+        let idx = daedalus_core::libraries::builtin_index();
+        match daedalus_core::libraries::parse_spec(spec, &idx) {
+            Ok(s) => {
+                let (listing, base) = s.cdn_urls();
+                to_json(&serde_json::json!({
+                    "source": s, "archives": s.archive_urls(), "cdn_listing": listing, "cdn_base": base
+                }))
+            }
+            Err(e) => err_json(format!("{e:#}")),
+        }
+    }
+
+    /// JSON `{loaded, requirements, resolution}`: the libraries loaded with their
+    /// versions, the `uses` they state, and how those resolve (conflicts, missing).
+    #[wasm_bindgen(js_name = libraryReport)]
+    pub fn library_report(&mut self) -> String {
+        use daedalus_core::libraries as L;
+        let loaded = L::loaded(&self.lib);
+        let mut reqs = L::requirements(&self.lib);
+        for f in &self.lib.lazy {
+            if f.class.contains('.') || f.loaded {
+                continue;
+            }
+            if let Some(t) = f.read() {
+                for (n, v) in L::package_meta(&t).1.uses {
+                    reqs.push(L::Requirement { by: f.class.clone(), name: n, version: v });
+                }
+            }
+        }
+        let res = L::resolve(&reqs, &loaded);
+        to_json(&serde_json::json!({"loaded": loaded, "requirements": reqs, "resolution": res}))
+    }
+
+    /// Install the library packages of a library zip (a GitHub source archive): their
+    /// files are registered for on-demand parsing under `libs/<Name> <version>/` and
+    /// their resources stored. `packages` (JSON list) restricts which are taken.
+    /// Returns JSON `[{name, version, files, resources, uri}]` or `{"error": ...}`.
+    #[wasm_bindgen(js_name = installLibraryZip)]
+    pub fn install_library_zip(&mut self, bytes: &[u8], packages: &str, version: &str) -> String {
+        let packages: Vec<String> = serde_json::from_str(packages).unwrap_or_default();
+        let files = match daedalus_core::archive::read_zip(bytes) {
+            Ok(f) => f,
+            Err(e) => return err_json(format!("{e:#}")),
+        };
+        let names: Vec<&str> = files.iter().map(|(n, _)| n.as_str()).collect();
+        let libs: Vec<(String, String)> = daedalus_core::archive::find_libraries(&names)
+            .into_iter()
+            .filter(|(n, _)| packages.is_empty() || packages.iter().any(|p| p == n))
+            .collect();
+        if libs.is_empty() {
+            return err_json("no Modelica library (a directory with package.mo) in the archive");
+        }
+        let present: std::collections::HashSet<String> = daedalus_core::libraries::loaded(&self.lib)
+            .into_iter()
+            .map(|a| a.name)
+            .collect();
+        self.ensured.clear();
+        let mut out = Vec::new();
+        for (name, prefix) in libs {
+            let single = prefix.ends_with(".mo");
+            let main = if single { prefix.clone() } else { format!("{prefix}package.mo") };
+            let text = files
+                .iter()
+                .find(|(n, _)| *n == main)
+                .map(|(_, d)| String::from_utf8_lossy(d).into_owned())
+                .unwrap_or_default();
+            let (top, meta) = daedalus_core::libraries::package_meta(&text);
+            let name = if name.is_empty() { top.unwrap_or_default() } else { name };
+            if present.contains(&name) {
+                out.push(serde_json::json!({"name": name, "skipped": "already loaded"}));
+                continue;
+            }
+            let ver = meta.version.clone().unwrap_or_else(|| version.to_string());
+            let base = format!("libs/{name} {ver}/");
+            let (mut nfiles, mut nres) = (0, 0);
+            if single {
+                self.lib.set_document(&format!("{base}{name}.mo"), &text);
+                nfiles = 1;
+            } else {
+                for (n, d) in &files {
+                    let Some(rel) = n.strip_prefix(prefix.as_str()) else { continue };
+                    let rel = format!("{name}/{rel}");
+                    if rel.ends_with(".mo") || rel.ends_with("package.order") {
+                        self.add_library_file(&base, &rel, &String::from_utf8_lossy(d));
+                        nfiles += 1;
+                    } else {
+                        self.resources.insert(format!("{base}{rel}"), d.clone());
+                        nres += 1;
+                    }
+                }
+            }
+            out.push(serde_json::json!({
+                "name": name, "version": ver, "files": nfiles, "resources": nres,
+                "uses": meta.uses, "base": base
+            }));
+        }
+        to_json(&out)
+    }
+
+    /// The library packages of a list of archive paths (JSON list): `[[name, prefix]]`.
+    #[wasm_bindgen(js_name = findLibraries)]
+    pub fn find_libraries(&self, paths: &str) -> String {
+        let p: Vec<String> = serde_json::from_str(paths).unwrap_or_default();
+        let refs: Vec<&str> = p.iter().map(String::as_str).collect();
+        to_json(&daedalus_core::archive::find_libraries(&refs))
+    }
+
+    /// A zip of text files given as JSON `[[path, text]]`.
+    #[wasm_bindgen(js_name = zipTexts)]
+    pub fn zip_texts(&self, files: &str) -> Vec<u8> {
+        let f: Vec<(String, String)> = serde_json::from_str(files).unwrap_or_default();
+        let f: Vec<(String, Vec<u8>)> = f.into_iter().map(|(p, t)| (p, t.into_bytes())).collect();
+        daedalus_core::archive::write_zip(&f).unwrap_or_default()
+    }
+
+    /// The model package of `model` (a zip with the files it needs and the resources
+    /// they reference; the MSL is referred to, not included). Errors are thrown.
+    #[wasm_bindgen(js_name = exportPackage)]
+    pub fn export_package(&mut self, model: &str) -> Result<Vec<u8>, JsError> {
+        let res = &self.resources;
+        let list = |key: &str| -> Vec<String> {
+            let dir = format!("{key}/");
+            res.keys()
+                .filter(|k| k.as_str() == key || k.starts_with(&dir))
+                .cloned()
+                .collect()
+        };
+        let plan = daedalus_core::archive::plan_package(
+            &self.lib,
+            model,
+            daedalus_core::archive::STANDARD_LIBRARIES,
+            &list,
+        )
+        .map_err(|e| JsError::new(&format!("{e:#}")))?;
+        let lib = &self.lib;
+        let text = |uri: &str| -> Option<String> {
+            lib.docs
+                .iter()
+                .find(|d| d.uri == uri)
+                .map(|d| d.text.to_string())
+                .or_else(|| lib.lazy_text(uri).map(|t| t.to_string()))
+        };
+        let read = |key: &str| res.get(key).cloned();
+        daedalus_core::archive::write_package(&plan, &text, &read)
+            .map_err(|e| JsError::new(&format!("{e:#}")))
+    }
+
+    /// Open a model package (or a zip of Modelica files): its files are registered
+    /// under `prefix` (libraries already loaded are skipped) and its resources stored.
+    /// JSON `{manifest, files, resources: [paths], skipped}` or `{"error": ...}`.
+    #[wasm_bindgen(js_name = openPackage)]
+    pub fn open_package(&mut self, bytes: &[u8], prefix: &str) -> String {
+        let pkg = match daedalus_core::archive::read_package(bytes) {
+            Ok(p) => p,
+            Err(e) => return err_json(format!("{e:#}")),
+        };
+        self.ensured.clear();
+        let (n, skipped) = daedalus_core::archive::register_package(&mut self.lib, &pkg, prefix);
+        let mut res = Vec::new();
+        for (p, d) in &pkg.resources {
+            let key = format!("{prefix}{p}");
+            self.resources.insert(key.clone(), d.clone());
+            res.push(key);
+        }
+        to_json(&serde_json::json!({
+            "manifest": pkg.manifest, "files": n, "resources": res, "skipped": skipped
+        }))
+    }
+}
+

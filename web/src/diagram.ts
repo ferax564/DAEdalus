@@ -162,7 +162,7 @@ export class DiagramView {
     return ext;
   }
 
-  private drawConnection(g: SVGGElement, line: AnnRecord | null, from: string, to: string) {
+  private drawConnection(g: SVGGElement, line: AnnRecord | null, from = "", to = "") {
     if (!line) return;
     const pts = points(line.points);
     if (pts.length < 2) return;
@@ -365,6 +365,24 @@ export class DiagramView {
       }),
     );
     this.connectionHit(g, pts as [number, number][], from, to);
+  }
+
+  /** A group drawn over the class, in Modelica coordinates (for diff highlights). */
+  addOverlay(): SVGGElement {
+    const g = el("g", { class: "overlay" });
+    this.root.appendChild(g);
+    return g;
+  }
+
+  /** The drawn component `name`, if any. */
+  componentElement(name: string): SVGGElement | null {
+    return this.root.querySelector<SVGGElement>(`.component[data-name="${CSS.escape(name)}"]`);
+  }
+
+  /** The drawn connection between `a` and `b`, in either direction. */
+  connectionElement(a: string, b: string): SVGElement | null {
+    const q = (x: string, y: string) => `.connection[data-from="${CSS.escape(x)}"][data-to="${CSS.escape(y)}"]`;
+    return this.root.querySelector<SVGElement>(`${q(a, b)}, ${q(b, a)}`);
   }
 
   clearSelection() {

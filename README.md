@@ -284,6 +284,58 @@ ones before simulating. The overrides are kept per model for the session, used
 by **Simulate**, and **Copy as modifier** gives the equivalent
 `x(stateSelect = StateSelect.prefer)` modifications.
 
+## Libraries, packages, diff and parameter data
+
+```sh
+# Libraries: the index of open libraries (library/packages.json), install by name,
+# GitHub URL or a downloaded zip, into $DAEDALUS_LIBRARIES (default ~/.daedalus/libraries)
+./target/release/daedalus lib index
+./target/release/daedalus lib install Buildings@12.1.0
+./target/release/daedalus lib install https://github.com/owner/MyLib@v1.2.0
+./target/release/daedalus lib install ~/Downloads/OpenIPSL-3.0.1.zip
+./target/release/daedalus lib list
+./target/release/daedalus lib resolve model.mo     # uses(...) -> installed versions, conflicts
+
+# A model with the files and resources (modelica:// URIs) it needs, as a zip; the
+# MSL is referred to in the manifest, not copied. A .zip source is opened again.
+./target/release/daedalus package library/Daedalus -m Daedalus.Examples.TorqueConverter.Launch -o Launch.zip
+./target/release/daedalus simulate Launch.zip -o launch.mat
+
+# Structural diff of a class (components, parameters, modifiers, placements,
+# connections, equations); --text adds the unified text diff, --format json
+./target/release/daedalus diff old/Plant.mo new/Plant.mo -m Demo.Plant --text
+
+# Parameter data (CSV name,value[,unit] or SSP .ssv) as a modifier; values are checked
+# against the component's type and converted to its units (mm -> m, bar -> Pa, ...)
+./target/release/daedalus params-from library/Daedalus -m Daedalus.Examples.TorqueConverter.StallTest -c engine engine.csv
+#   engine(J = 0.25, tau_drag = 25, w_start = 104.71975511966)
+# --record Name prints a record instead; --apply writes the modifier into the source
+```
+
+Every command resolves the `uses(...)` annotations of what it loads against the
+installed libraries (exact version, else the newest of the same major version) and
+warns about conflicting requirements. `lib install` downloads with `curl` from
+GitHub; where that is blocked, download the release zip and install the file.
+
+In the workbench:
+- **Libraries** lists the libraries loaded with their versions, `uses` conflicts and
+  missing libraries, and installs a library of the index, a GitHub URL or a picked zip.
+  Browsers cannot read GitHub's archives (no CORS headers), so the files come from
+  jsDelivr's GitHub CDN. Installed libraries are kept in IndexedDB for the next visit.
+- **Save .zip** writes the open model as a package; **Open** takes such a zip (or a
+  library zip) back.
+- **Diff** compares the open class with the version as loaded or a picked file: a
+  summary, the text diff, and the diagram with added, changed, moved (dashed old
+  place) and removed components and connections highlighted.
+- **Documentation** renders `info` and `revisions` HTML sanitized (no scripts, event
+  handlers or `javascript:` links), with `modelica://` class links that navigate and
+  images from library resources. Documentation that does not start with a tag is
+  Markdown with `$...$`/`$$...$$` LaTeX (marked and KaTeX, bundled, so offline).
+  The `__Daedalus_metadata(key="value", ...)` annotation is shown and edited there.
+- **Import parameters…** in the component inspector reads a CSV or SSV file, shows the
+  checked values as a modifier and a record, and applies them to the declaration
+  with the diagram editor's modifier edit (undo and redo work as for diagram edits).
+
 ## Python
 
 The `daedalus` Python package (`crates/daedalus-py`, PyO3 + maturin, one abi3

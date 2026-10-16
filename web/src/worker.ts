@@ -286,6 +286,60 @@ self.onmessage = async (ev: MessageEvent<Req>) => {
       case "resultCsv":
         result = w.resultCsv(args[0] as string);
         break;
+      case "setResource":
+        w.setResource(args[0] as string, new Uint8Array(args[1] as ArrayBuffer));
+        break;
+      case "resource": {
+        const b = w.resource(args[0] as string);
+        if (b) transfer.push(b.buffer);
+        result = b ?? null;
+        break;
+      }
+      case "diffSources":
+        result = JSON.parse(w.diffSources(args[0] as string, args[1] as string, args[2] as string, args[3] as string));
+        break;
+      case "setMetadata":
+        result = JSON.parse(w.setMetadata(args[0] as string, JSON.stringify(args[1])));
+        break;
+      case "paramsParse":
+        result = JSON.parse(w.paramsParse(args[0] as string, args[1] as string));
+        break;
+      case "paramsFor":
+        result = JSON.parse(w.paramsFor(args[0] as string, args[1] as string, JSON.stringify(args[2]), args[3] as string));
+        break;
+      case "applyParams":
+        result = JSON.parse(w.applyParams(args[0] as string, args[1] as string, JSON.stringify(args[2])));
+        break;
+      case "libraryIndex":
+        result = w.libraryIndex();
+        break;
+      case "parseSpec":
+        result = JSON.parse(w.parseSpec(args[0] as string));
+        break;
+      case "libraryReport":
+        result = JSON.parse(w.libraryReport());
+        break;
+      case "installLibraryZip":
+        result = JSON.parse(w.installLibraryZip(args[0] as Uint8Array, JSON.stringify(args[1]), args[2] as string));
+        break;
+      case "findLibraries":
+        result = JSON.parse(w.findLibraries(JSON.stringify(args[0])));
+        break;
+      case "zipTexts": {
+        const b = w.zipTexts(JSON.stringify(args[0]));
+        transfer.push(b.buffer);
+        result = b;
+        break;
+      }
+      case "exportPackage": {
+        const b = w.exportPackage(args[0] as string);
+        transfer.push(b.buffer);
+        result = b;
+        break;
+      }
+      case "openPackage":
+        result = JSON.parse(w.openPackage(args[0] as Uint8Array, args[1] as string));
+        break;
       case "structure":
         result = JSON.parse(w.structure(args[0] as string, JSON.stringify(args[1] ?? {})));
         break;
