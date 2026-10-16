@@ -503,7 +503,7 @@ fn prefer_state_change(w: &mut Work) {
         let a: Vec<u32> = u.iter().copied().filter(|&v| is_alg(w, v)).collect();
         if a.is_empty() {
             // a constraint between states: index reduction proper handles it
-            return;
+            continue;
         }
         touches_state.push(u.iter().any(|&v| w.der_of[v as usize].is_some()));
         alg_eqs.push(k);
