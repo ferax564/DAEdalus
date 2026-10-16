@@ -5,9 +5,11 @@ use daedalus_core::frontend::Library;
 use daedalus_core::sim::{Method, SimOptions};
 mod analysis;
 mod fmu;
+mod fmu_import;
+mod manage;
 mod mcp;
-mod sweep;
 mod mos;
+mod sweep;
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -20,7 +22,10 @@ USAGE:
   daedalus <command> [sources...] -m <Model> [options]
 
 COMMANDS:
-  check       translate the model and print statistics
+  check       translate the model and print statistics (--units: also check
+              units and print the unit issues as warnings)
+  units       check units: print every variable's declared or inferred unit
+              and the unit inconsistencies (--json for JSON)
   flatten     print the flat model
   dump        print the sorted, causalised equation system
   simulate    simulate and write results
@@ -29,13 +34,28 @@ COMMANDS:
   linearize   linearize around the initial point (or --at T): the state-space
               matrices A, B, C, D of der(x) = A x + B u, y = C x + D u for the
               states x, top-level inputs u and outputs y
+  linear-analysis  linearize (like linearize) and analyze chosen input ->
+              output pairs: poles, transmission zeros, DC gain, Bode and
+              Nyquist data with gain/phase margins, step and impulse
+              responses, PID suggestions (SIMC, Ziegler-Nichols), balanced
+              truncation (--reduce N) and LQR (--lqr Q,R); text summary on
+              stdout, data to -o file.json | file.csv
   steady      find a steady state (der(x) = 0) from the initial state, or from
               the state reached at --at-time; with --free/--target, trim: also
               solve for inputs or parameters so that variables hit targets
   run         run a Dymola / OpenModelica script: daedalus run script.mos
               [--msl DIR] (see docs/scripting.md)
-  fmu         export an FMI 2.0 FMU (Model Exchange and Co-Simulation) to -o
-              (default <Model>.fmu); needs the runtime libdaedalus_fmi.so
+  fmu         export an FMI 2.0 FMU (or FMI 3.0 with --fmi-version 3; Model
+              Exchange and Co-Simulation) to -o (default <Model>.fmu); needs the
+              runtime libdaedalus_fmi.so
+  import-fmu  daedalus import-fmu X.fmu [-o X.mo]: write a Modelica wrapper
+              block for an FMI 2.0 / 3.0 FMU, usable as a component
+              (--fmi-type me|cs, --class NAME, --within PACKAGE, --locals)
+  import-ssp  daedalus import-ssp X.ssp [-o X.mo]: the SSP system as a
+              Modelica model, with its FMUs unpacked next to it
+  export-ssp  write a model composed of FMU components as an .ssp (-o);
+              `simulate` also runs an .fmu or .ssp directly (Co-Simulation
+              components step at --comm-step, default span/500)
   mcp         serve the libraries to an AI assistant over the Model Context
               Protocol (stdio): browse, edit, check, simulate, linearize.
               `daedalus mcp [sources...] [-L DIR] [--workspace DIR]`
@@ -48,10 +68,24 @@ COMMANDS:
               state selection and why; with the state Jacobian at the start
               (or --at T): sparsity, condition, eigenvalues, time constants,
               participation factors, stiffness, algebraic-loop Jacobians
+{MANAGE}
+  debug       equation and initialization debugger: --var NAME (repeatable)
+              traces a variable from its equation as written (component,
+              file:line) through alias substitution, index reduction, state
+              selection, solving and tearing; --equation N does the same for
+              equation N of `structure`; --init (the default) reports the
+              initial system, the start values used (fixed, defaulted or guess,
+              and the modifier that set them) and, on failure, the failing
+              block's residuals and largest Newton updates; a structurally
+              singular model gets its over- and underdetermined subsets;
+              unconnected connectors are listed; --format text | json
 
 SOURCES:
-  .mo files or directories (loaded recursively). The bundled Daedalus library
-  is found via --lib or the DAEDALUS_LIB environment variable.
+  .mo files or directories (loaded recursively), or model packages (.zip). The
+  bundled Daedalus library is found via --lib or the DAEDALUS_LIB environment
+  variable. Libraries named in uses(...) annotations are taken from the
+  installed libraries (daedalus lib install; $DAEDALUS_LIBRARIES or
+  ~/.daedalus/libraries) unless given with -L.
 
 OPTIONS:
   -m, --model NAME        model to translate (full dotted name)
@@ -63,7 +97,7 @@ OPTIONS:
   --method M              bdf | radau | esdirk | auto | dopri5 | rk4 | euler
                           (default: the experiment's __Dymola_Algorithm, else
                           bdf; auto switches between dopri5 and bdf)
-  --step H                fixed step size
+  --step H                fixed step size (linear-analysis: --step is a flag)
   --store-events E        rows at events: all | none | N (default: about
                           50 million values, at least the output points)
   -p, --param NAME=VALUE  parameter override (repeatable)
@@ -79,6 +113,16 @@ OPTIONS:
   --jacobian J            linearize: exact | fd (central differences);
                           simulate: state Jacobian of bdf/radau/esdirk/auto,
                           exact (default) | fd (forward differences)
+  --inputs a,b            linear-analysis: inputs to analyze (default: all
+                          top-level Real inputs)
+  --outputs y,z           linear-analysis: outputs (default: all top-level
+                          Real outputs; any continuous variable or state)
+  --bode                  linear-analysis: write Bode/Nyquist data
+  --step                  linear-analysis: write step and impulse responses
+  --freq LO,HI            linear-analysis: frequency range in rad/s
+  --tfinal T              linear-analysis: step response horizon
+  --reduce N              linear-analysis: balanced truncation to N states
+  --lqr Q,R               linear-analysis: LQR gain for Q = q*I, R = r*I
   --at-time T             steady: simulate to time T first (default: start)
   --free a,b              steady: inputs or parameters to solve for (trim)
   --target y=v            steady: target value of a variable (repeatable or
@@ -86,6 +130,15 @@ OPTIONS:
   --fmi-lib FILE          fmu: the FMI runtime library (default: next to this
                           executable, or $DAEDALUS_FMI_LIB)
   --timeout S             per-model time limit for test-library (default 60)
+  --fmi-version V         fmu: 2 (default) or 3
+  --fmi-type T            import-fmu, import-ssp, simulate X.fmu/.ssp: me | cs
+                          (default: Model Exchange for an FMU if it has it,
+                          Co-Simulation for SSP components)
+  --comm-step H           Co-Simulation communication step size
+  --class NAME            import-fmu: name of the wrapper block
+  --within PACKAGE        import-fmu: within clause of the wrapper
+  --locals                import-fmu: also expose the FMU's local variables as
+                          outputs (always on for `simulate X.fmu`)
   --state NAME=TIER       stateSelect override, TIER = always | prefer | default
                           | avoid | never; NAME may be a glob (arm.*.phi)
                           (repeatable; check, dump, simulate, linearize,
@@ -97,6 +150,9 @@ OPTIONS:
                           chattering) and print its summary; with a .json file
                           also write the full profile there
   --events                simulate: print the event log (implies profiling)
+  --units                 check: run the unit checker too
+  --json                  units: JSON output (same as --format json)
+  --all                   units: list variables without a unit too
 
 SWEEP OPTIONS:
   -s, --sweep NAME=VALUES  swept parameter (repeatable); VALUES is a list
@@ -118,7 +174,12 @@ ANALYSIS COMMANDS (text summary on stdout; -o FILE.json or FILE.csv writes data)
   sensitivity  local sensitivities dy/dp along the trajectory:
                  --params a,b --outputs x,y [--sens-method auto|exact|fd]
                  [--rel-step H]; exact = forward sensitivity equations with
-                 tape tangents (no events), fd = central differences
+                 tape tangents (no events), fd = central differences.
+                 With --adjoint --objective QOI: the gradient of one scalar
+                 (final, integral, mean, at, max, min of a variable) for many
+                 parameters by a backward adjoint solve with reverse-mode tape
+                 passes [--grad-method auto|adjoint|forward|fd] [--substeps N];
+                 auto falls back to forward sensitivities at events
   montecarlo   Monte Carlo statistics (mean, std, 5/50/95 % bands) over
                  --dist p=lo:hi | p=normal:MEAN:STD | p=lognormal:MEAN:STD
                  (repeatable) --outputs x,y [--qoi 'max(x)'] [-N SAMPLES]
@@ -131,14 +192,45 @@ ANALYSIS COMMANDS (text summary on stdout; -o FILE.json or FILE.csv writes data)
                  --data meas.csv --tune p=lo:hi[:start] (repeatable)
                  [--map column=var] [--weight column=W] [--window T0:T1]
                  [--max-iter N] [--sens-method auto|exact|fd]; prints the fit,
-                 standard errors and a Modelica modifier
+                 standard errors and a Modelica modifier; --optimizer lbfgsb
+                 minimizes the cost with adjoint gradients instead
   optimize     minimize scalar quantities over bounded parameters (Nelder-Mead):
                  --tune p=lo:hi --minimize QOI | --maximize QOI |
-                 --target QOI=VALUE (repeatable)
+                 --target QOI=VALUE (repeatable); --algorithm lbfgsb uses
+                 bound-constrained L-BFGS with adjoint gradients
+                 [--grad-method auto|adjoint|forward|fd]
+  doe          design of experiments: --factor p=lo:hi[:levels] (repeatable)
+                 --design ccd|bbd|full|frac|lhs --qoi 'max(x)' (repeatable)
+                 [--alpha face|rotatable|orthogonal|A] [--center N]
+                 [--generators D=ABC,E=AB] [--resolution R] [-N SAMPLES]
+                 [--seed S] [--pareto min,max] [--jobs N]; runs in parallel
+                 and fits quadratic response surfaces (R^2, coefficients),
+                 main effects, interactions and the Pareto front of 2 QoIs
 ";
+
+fn usage() -> String {
+    USAGE.replace("{MANAGE}", manage::USAGE)
+}
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    type Sub = fn(&[String]) -> anyhow::Result<ExitCode>;
+    let sub: Option<Sub> = match args.first().map(String::as_str) {
+        Some("diff") => Some(manage::diff),
+        Some("params-from") => Some(manage::params_from),
+        Some("lib") => Some(manage::lib),
+        Some("package") => Some(manage::package),
+        _ => None,
+    };
+    if let Some(f) = sub {
+        return match f(&args[1..]) {
+            Ok(code) => code,
+            Err(e) => {
+                eprintln!("error: {e:#}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     if args.first().is_some_and(|a| a == "run") {
         return match mos::run_cli(&args[1..]) {
             Ok(code) => code,
@@ -160,7 +252,7 @@ fn main() -> ExitCode {
 fn run() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() || args[0] == "-h" || args[0] == "--help" {
-        print!("{USAGE}");
+        print!("{}", usage());
         return Ok(());
     }
     let cmd = args[0].clone();
@@ -197,7 +289,15 @@ fn run() -> anyhow::Result<()> {
     let mut print_events = false;
     let mut set_jac = false;
     let mut free: Vec<String> = Vec::new();
+    let mut debug_vars: Vec<String> = Vec::new();
+    let mut debug_eqs: Vec<usize> = Vec::new();
+    let mut debug_init = false;
     let mut targets: Vec<(String, f64)> = Vec::new();
+    let mut check_units = false;
+    let mut list_all = false;
+    let mut lti = daedalus_core::lti::LinearOptions::default();
+    let mut fmi_version: u32 = 2;
+    let mut import = fmu_import::ImportOptions::default();
     let mut i = 1;
     let next = |i: &mut usize| -> anyhow::Result<String> {
         *i += 1;
@@ -238,6 +338,8 @@ fn run() -> anyhow::Result<()> {
                 "none" => so.store_events = false,
                 n => so.max_event_rows = n.parse()?,
             },
+            // linear-analysis: a flag (write step responses); otherwise the fixed step size
+            "--step" if cmd == "linear-analysis" => lti.step = true,
             "--step" => so.fixed_step = next(&mut i)?.parse()?,
             "-p" | "--param" => {
                 let kv = next(&mut i)?;
@@ -279,6 +381,24 @@ fn run() -> anyhow::Result<()> {
                     targets.push((k.trim().to_string(), v.trim().parse()?));
                 }
             }
+            "--fmi-version" => {
+                fmi_version = match next(&mut i)?.as_str() {
+                    "2" | "2.0" => 2,
+                    "3" | "3.0" => 3,
+                    v => anyhow::bail!("unknown FMI version '{v}' (2 | 3)"),
+                }
+            }
+            "--fmi-type" => {
+                let t = next(&mut i)?;
+                import.kind = Some(
+                    daedalus_core::external_component::FmiKind::parse(&t)
+                        .ok_or_else(|| anyhow::anyhow!("unknown FMI type '{t}' (me | cs)"))?,
+                )
+            }
+            "--comm-step" => import.step = Some(next(&mut i)?.parse()?),
+            "--class" => import.class = Some(next(&mut i)?),
+            "--within" => import.within = Some(next(&mut i)?),
+            "--locals" => import.locals = true,
             "--format" => {
                 format = next(&mut i)?;
                 set_format = true
@@ -297,6 +417,32 @@ fn run() -> anyhow::Result<()> {
                 profile = Some(file);
             }
             "--events" => print_events = true,
+            "--units" => check_units = true,
+            "--json" => format = "json".into(),
+            "--all" => list_all = true,
+            "--inputs" => lti.inputs = csv_list(&next(&mut i)?),
+            "--outputs" => lti.outputs = csv_list(&next(&mut i)?),
+            "--bode" => lti.bode = true,
+            "--reduce" => lti.reduce = Some(next(&mut i)?.parse()?),
+            "--tfinal" => lti.t_final = Some(next(&mut i)?.parse()?),
+            "--freq" => {
+                let v = next(&mut i)?;
+                let (lo, hi) = v
+                    .split_once(',')
+                    .ok_or_else(|| anyhow::anyhow!("expected --freq LO,HI"))?;
+                lti.w_min = Some(lo.trim().parse()?);
+                lti.w_max = Some(hi.trim().parse()?);
+            }
+            "--lqr" => {
+                let v = next(&mut i)?;
+                let (q, r) = v
+                    .split_once(',')
+                    .ok_or_else(|| anyhow::anyhow!("expected --lqr Q,R"))?;
+                lti.lqr = Some((q.trim().parse()?, r.trim().parse()?));
+            }
+            "--var" => debug_vars.push(next(&mut i)?),
+            "--equation" => debug_eqs.push(next(&mut i)?.parse()?),
+            "--init" => debug_init = true,
             "--jacobian" => {
                 let j = next(&mut i)?;
                 so.jacobian = daedalus_core::sim::JacobianMode::parse(&j)
@@ -310,12 +456,35 @@ fn run() -> anyhow::Result<()> {
                     j => anyhow::bail!("unknown jacobian method '{j}' (exact | fd)"),
                 }
             }
-            _ if a.starts_with('-') => anyhow::bail!("unknown option {a}\n\n{USAGE}"),
+            _ if a.starts_with('-') => anyhow::bail!("unknown option {a}\n\n{}", usage()),
             _ => sources.push(a.to_string()),
         }
         i += 1;
     }
-    let model = model.ok_or_else(|| anyhow::anyhow!("no model given (-m)"))?;
+    if cmd == "import-fmu" || cmd == "import-ssp" {
+        let [src] = sources.as_slice() else {
+            anyhow::bail!("{cmd} takes one file");
+        };
+        return if cmd == "import-fmu" {
+            fmu_import::import_fmu(Path::new(src), output.as_deref(), &import)
+        } else {
+            fmu_import::import_ssp(Path::new(src), output.as_deref(), &import)
+        };
+    }
+    // Model packages: extracted, and their model is the default
+    let mut opened = Vec::new();
+    for s in std::mem::take(&mut sources) {
+        if s.ends_with(".zip") {
+            let (paths, m) = manage::open_zip(&s)?;
+            opened.extend(paths);
+            if model.is_none() {
+                model = m;
+            }
+        } else {
+            opened.push(s);
+        }
+    }
+    sources = opened;
     let mut lib = Library::new();
     if let Ok(dir) = std::env::var("DAEDALUS_LIB") {
         libs.push(dir);
@@ -324,8 +493,26 @@ fn run() -> anyhow::Result<()> {
     // One model needs only part of a library: parse just the files it can reach
     // (test-library lists every model, so it parses everything).
     let lazy = cmd != "test-library";
+    // `.fmu` and `.ssp` sources become generated Modelica models (kept alive here).
+    let mut generated = Vec::new();
     for s in libs.iter().chain(sources.iter()) {
         let p = Path::new(s);
+        let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if p.is_file() && (ext.eq_ignore_ascii_case("fmu") || ext.eq_ignore_ascii_case("ssp")) {
+            let g = if ext.eq_ignore_ascii_case("fmu") {
+                fmu_import::fmu_source(p, &import)?
+            } else {
+                fmu_import::ssp_source(p, &import)?
+            };
+            for e in lib.set_document(&g.uri, &g.text) {
+                eprintln!("{e}");
+            }
+            if model.is_none() {
+                model = Some(g.model.clone());
+            }
+            generated.push(g);
+            continue;
+        }
         if p.is_dir() {
             if lazy {
                 lib.add_dir_lazy(p)?;
@@ -344,6 +531,8 @@ fn run() -> anyhow::Result<()> {
             }
         }
     }
+    manage::auto_uses(&mut lib);
+    let model = model.ok_or_else(|| anyhow::anyhow!("no model given (-m)"))?;
     if lazy && lib.has_pending() {
         let before = lib.docs.len();
         lib.load_for(&model);
@@ -366,6 +555,12 @@ fn run() -> anyhow::Result<()> {
     }
     let t_parse = t0.elapsed();
     match cmd.as_str() {
+        "units" => {
+            let flat = with_all_files(&mut lib, |l| l.flatten(&model))?;
+            let r = daedalus_core::units::check(&flat);
+            print_units(&flat, &r, &format, list_all)?;
+            Ok(())
+        }
         "flatten" => {
             let f = with_all_files(&mut lib, |l| l.flatten(&model))?;
             print!("{}", f.dump());
@@ -375,6 +570,12 @@ fn run() -> anyhow::Result<()> {
             let t1 = Instant::now();
             let flat = with_all_files(&mut lib, |l| l.flatten(&model))?;
             let t_flat = t1.elapsed();
+            let unit_report = check_units.then(|| daedalus_core::units::check(&flat));
+            if let Some(r) = &unit_report {
+                for w in &r.issues {
+                    eprintln!("warning: {}", w.message);
+                }
+            }
             let sys = daedalus_core::backend::compile(flat, &opts)?;
             for w in &sys.warnings {
                 eprintln!("warning: {w}");
@@ -424,6 +625,16 @@ fn run() -> anyhow::Result<()> {
                     "  tape: {} instructions, {} registers",
                     m.tape_len, m.layout.n_regs
                 );
+                if let Some(r) = &unit_report {
+                    println!(
+                        "  units: {} issues, {} declared, {} inferred, {} unknown ({:.1} ms)",
+                        r.issues.len(),
+                        r.declared,
+                        r.inferred.len(),
+                        r.unknown,
+                        r.ms
+                    );
+                }
             }
             Ok(())
         }
@@ -462,6 +673,7 @@ fn run() -> anyhow::Result<()> {
             o.max_event_rows = so.max_event_rows;
             o.params = so.params.clone();
             let o_method = o.method;
+            let o_dbg = o.clone();
             o.profile = profile.is_some() || print_events;
             let (r, prof) = daedalus_core::sim::simulate_profiled(&m, o);
             if let Some(p) = &prof {
@@ -482,6 +694,19 @@ fn run() -> anyhow::Result<()> {
                     if let (Some(out), Some(p)) = (&output, &e.partial) {
                         write_result(p, out, vars.as_deref())?;
                         eprintln!("partial results written to {out}");
+                    }
+                    // Explain the failure: the initialization report, or the nonlinear
+                    // block that failed during the run.
+                    let mut o2 = o_dbg.clone();
+                    o2.profile = false;
+                    if e.partial.is_none() {
+                        let rep =
+                            daedalus_core::debug::init_report(&lib, &model, &opts, Some(o2), &[]);
+                        eprint!("{}", rep.to_text());
+                    } else if let Some(f) =
+                        daedalus_core::debug::simulation_failure(&lib, &model, &opts, o2)
+                    {
+                        eprint!("{}", f.to_text());
                     }
                     anyhow::bail!(e.message);
                 }
@@ -650,6 +875,153 @@ fn run() -> anyhow::Result<()> {
             }
             Ok(())
         }
+        "linear-analysis" => {
+            let m = with_all_files(&mut lib, |l| daedalus_core::translate(l, &model, &opts))?;
+            for w in &m.warnings {
+                eprintln!("warning: {w}");
+            }
+            let mut o = SimOptions::from_model(&m);
+            if set_start {
+                o.start_time = so.start_time;
+            }
+            if set_tol {
+                o.tolerance = so.tolerance;
+            }
+            if set_method {
+                o.method = so.method;
+            }
+            o.params = so.params.clone();
+            let lin = daedalus_core::linearize::linearize_with_outputs(
+                &m,
+                o,
+                lin_at,
+                jac_method,
+                &lti.outputs,
+            )
+            .map_err(|e| anyhow::anyhow!(e))?;
+            if lin.inputs.is_empty() {
+                anyhow::bail!(
+                    "{model} has no top-level Real inputs: linear analysis needs `input Real` variables"
+                );
+            }
+            let csv = output.as_deref().is_some_and(|p| p.ends_with(".csv"));
+            let mut lo = lti.clone();
+            if output.is_some() && !lo.bode && !lo.step {
+                // a data file without --bode/--step gets both
+                lo.bode = true;
+                lo.step = true;
+            }
+            let res = daedalus_core::lti::analyze(&lin, &lo).map_err(|e| anyhow::anyhow!(e))?;
+            print!("{}", res.report());
+            if let Some(path) = &output {
+                if csv {
+                    let mut written = Vec::new();
+                    if lo.bode {
+                        std::fs::write(path, res.bode_csv())?;
+                        written.push(path.clone());
+                    }
+                    if lo.step {
+                        let p = if lo.bode {
+                            format!("{}_step.csv", path.trim_end_matches(".csv"))
+                        } else {
+                            path.clone()
+                        };
+                        std::fs::write(&p, res.step_csv())?;
+                        written.push(p);
+                    }
+                    eprintln!("wrote {}", written.join(", "));
+                } else {
+                    std::fs::write(path, serde_json::to_string_pretty(&res)? + "\n")?;
+                    eprintln!("wrote {path}");
+                }
+            }
+            Ok(())
+        }
+        "debug" => {
+            let json = format.as_str() == "json";
+            let mut out = String::new();
+            let mut values = Vec::new();
+            if !debug_vars.is_empty() || !debug_eqs.is_empty() {
+                let d = with_all_files(&mut lib, |l| {
+                    daedalus_core::debug::Debugger::new(l, &model, &opts).map_err(|f| {
+                        let mut msg = f.error.clone();
+                        if let Some(sd) = &f.structural {
+                            msg.push('\n');
+                            msg.push_str(&sd.to_text());
+                        }
+                        anyhow::anyhow!(msg)
+                    })
+                })?;
+                for v in &debug_vars {
+                    let t = d.trace_var(v).map_err(|e| anyhow::anyhow!(e))?;
+                    if json {
+                        values.push(serde_json::to_value(&t)?);
+                    } else {
+                        out.push_str(&t.to_text());
+                        out.push('\n');
+                    }
+                }
+                for &e in &debug_eqs {
+                    let t = d.trace_eq(e).map_err(|e| anyhow::anyhow!(e))?;
+                    if json {
+                        values.push(serde_json::to_value(&t)?);
+                    } else {
+                        out.push_str(&t.to_text());
+                        out.push('\n');
+                    }
+                }
+            }
+            if debug_init || (debug_vars.is_empty() && debug_eqs.is_empty()) {
+                // Load the whole library when the lazily loaded part does not flatten.
+                let _ = with_all_files(&mut lib, |l| l.flatten(&model).map(|_| ()));
+                let so2 = if set_start || set_stop || set_tol || set_method {
+                    let m =
+                        with_all_files(&mut lib, |l| daedalus_core::translate(l, &model, &opts))
+                            .ok();
+                    m.map(|m| {
+                        let mut o = SimOptions::from_model(&m);
+                        if set_start {
+                            o.start_time = so.start_time;
+                        }
+                        if set_stop {
+                            o.stop_time = so.stop_time;
+                        }
+                        if set_tol {
+                            o.tolerance = so.tolerance;
+                        }
+                        if set_method {
+                            o.method = so.method;
+                        }
+                        o
+                    })
+                } else {
+                    None
+                };
+                let rep = daedalus_core::debug::init_report(&lib, &model, &opts, so2, &so.params);
+                if json {
+                    values.push(serde_json::to_value(&rep)?);
+                } else {
+                    out.push_str(&rep.to_text());
+                }
+            }
+            let text = if json {
+                serde_json::to_string_pretty(&if values.len() == 1 {
+                    values.pop().unwrap()
+                } else {
+                    serde_json::Value::Array(values)
+                })? + "\n"
+            } else {
+                out
+            };
+            match &output {
+                Some(path) => {
+                    std::fs::write(path, text)?;
+                    eprintln!("wrote {path}");
+                }
+                None => print!("{text}"),
+            }
+            Ok(())
+        }
         "steady" => {
             let m = with_all_files(&mut lib, |l| daedalus_core::translate(l, &model, &opts))?;
             for w in &m.warnings {
@@ -696,9 +1068,22 @@ fn run() -> anyhow::Result<()> {
             let out = output
                 .clone()
                 .unwrap_or_else(|| format!("{}.fmu", m.name.replace('.', "_")));
-            fmu::export(&m, std::path::Path::new(&out), fmi_lib.as_deref())?;
+            fmu::export(
+                &m,
+                std::path::Path::new(&out),
+                fmi_lib.as_deref(),
+                fmi_version,
+            )?;
             eprintln!("wrote {out}");
             Ok(())
+        }
+        "export-ssp" => {
+            let out = output
+                .clone()
+                .unwrap_or_else(|| format!("{}.ssp", model.rsplit('.').next().unwrap_or(&model)));
+            with_all_files(&mut lib, |l| {
+                fmu_import::export_ssp(l, &model, std::path::Path::new(&out))
+            })
         }
         "sweep" => {
             let m = with_all_files(&mut lib, |l| daedalus_core::translate(l, &model, &opts))?;
@@ -859,6 +1244,90 @@ fn write_result(
         res.write_csv(&mut w, vars)?;
     } else {
         res.write_mat(&mut w)?;
+    }
+    Ok(())
+}
+
+/// `daedalus units`: the unit of every variable and the unit issues.
+fn print_units(
+    flat: &daedalus_core::flat::FlatModel,
+    r: &daedalus_core::units::UnitReport,
+    format: &str,
+    all: bool,
+) -> anyhow::Result<()> {
+    use daedalus_core::flat::VarType;
+    let units = daedalus_core::units::resolved_units(flat, r);
+    let inferred: std::collections::HashSet<u32> = r.inferred.iter().map(|i| i.var).collect();
+    let rows: Vec<(usize, &str, &str)> = flat
+        .vars
+        .iter()
+        .enumerate()
+        .filter(|(_, v)| v.ty == VarType::Real && !v.name.starts_with('$'))
+        .filter_map(|(i, v)| {
+            let u = units.get(&(i as u32)).map(|s| s.as_str()).unwrap_or("");
+            let src = if !v.unit.is_empty() {
+                "declared"
+            } else if inferred.contains(&(i as u32)) {
+                "inferred"
+            } else {
+                "unknown"
+            };
+            (all || !u.is_empty()).then_some((i, u, src))
+        })
+        .collect();
+    if format == "json" {
+        let vars: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|&(i, u, src)| {
+                let v = &flat.vars[i];
+                serde_json::json!({"name": v.name, "unit": u, "source": src, "displayUnit": v.display_unit})
+            })
+            .collect();
+        let out = serde_json::json!({
+            "model": flat.name,
+            "variables": vars,
+            "issues": r.issues,
+            "unparsed": r.unparsed,
+            "stats": {"declared": r.declared, "inferred": r.inferred.len(), "unknown": r.unknown,
+                      "equations": r.equations, "passes": r.passes, "ms": r.ms},
+        });
+        println!("{}", serde_json::to_string_pretty(&out)?);
+        return Ok(());
+    }
+    println!("model {}", flat.name);
+    let w = rows
+        .iter()
+        .map(|&(i, ..)| flat.vars[i].name.len())
+        .max()
+        .unwrap_or(0);
+    for &(i, u, src) in &rows {
+        let v = &flat.vars[i];
+        let du = if v.display_unit.is_empty() {
+            String::new()
+        } else {
+            format!(" (display {})", v.display_unit)
+        };
+        println!(
+            "  {:w$}  {:14} {src}{du}",
+            v.name,
+            if u.is_empty() { "?" } else { u }
+        );
+    }
+    if !r.unparsed.is_empty() {
+        println!("unparsed unit strings: {}", r.unparsed.join(", "));
+    }
+    println!(
+        "{} unit issues; {} declared, {} inferred, {} unknown; {} equations, {} passes, {:.1} ms",
+        r.issues.len(),
+        r.declared,
+        r.inferred.len(),
+        r.unknown,
+        r.equations,
+        r.passes,
+        r.ms
+    );
+    for i in &r.issues {
+        println!("warning: {}", i.message);
     }
     Ok(())
 }
@@ -1043,4 +1512,11 @@ fn with_all_files<T>(
         return f(lib);
     }
     r
+}
+
+fn csv_list(s: &str) -> Vec<String> {
+    s.split(',')
+        .map(|x| x.trim().to_string())
+        .filter(|x| !x.is_empty())
+        .collect()
 }

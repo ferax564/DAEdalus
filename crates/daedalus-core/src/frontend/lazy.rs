@@ -38,7 +38,8 @@ pub struct LazyFile {
 }
 
 impl LazyFile {
-    fn read(&self) -> Option<Arc<str>> {
+    /// The file's text: kept in memory, or read from disk.
+    pub fn read(&self) -> Option<Arc<str>> {
         match &self.text {
             Some(t) => Some(t.clone()),
             None => std::fs::read_to_string(&self.path).ok().map(Arc::from),
@@ -868,6 +869,45 @@ impl Library {
         self.load_closure(path, full, false)
     }
 
+    /// Document uris of the registered files `model` can need, parsed or not, without
+    /// parsing anything (what a model package must carry).
+    pub fn closure_uris(&mut self, model: &str) -> Vec<String> {
+        let mut cl = Closure {
+            lazy: &self.lazy,
+            index: &self.lazy_index,
+            cache: &mut self.lazy_cache,
+            texts: FxHashMap::default(),
+            done: FxHashSet::default(),
+            queue: Vec::new(),
+        };
+        if let Some(l) = cl.walk_from_root(model, "", 0) {
+            cl.need(l, true);
+        }
+        cl.run();
+        let mut used: Vec<usize> = cl.done.iter().map(|&((f, _), _)| f).collect();
+        used.sort_unstable();
+        used.dedup();
+        used.into_iter()
+            .map(|f| self.lazy[f].path.to_string_lossy().to_string())
+            .collect()
+    }
+
+    /// Register a file from memory like [`Library::add_lazy_text`], sharing its text and
+    /// without outlining it for the browser.
+    pub fn add_lazy_shared(&mut self, uri: &str, class: &str, text: Arc<str>) {
+        if self.lazy_index.contains_key(class) {
+            return;
+        }
+        self.lazy_index.insert(class.to_string(), self.lazy.len());
+        self.lazy.push(LazyFile {
+            path: PathBuf::from(uri),
+            class: class.to_string(),
+            loaded: false,
+            text: Some(text),
+            outline: Vec::new(),
+        });
+    }
+
     /// Whether a registered class is a package (by the scan), if it is a registered class.
     pub fn lazy_is_package(&mut self, path: &str) -> Option<bool> {
         let mut cl = Closure {
@@ -1073,6 +1113,7 @@ pub(super) mod cache {
                 text: Arc::from(text),
                 ast,
                 errors: Vec::new(),
+                error_spans: Vec::new(),
             };
         }
         let d = parse_document(uri, text);

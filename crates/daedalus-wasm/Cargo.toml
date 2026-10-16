@@ -12,4 +12,5 @@ crate-type = ["cdylib", "rlib"]
 daedalus-core = { path = "../daedalus-core" }
 wasm-bindgen = "=0.2.129"
 serde = { workspace = true }
+anyhow = { workspace = true }
 serde_json = { workspace = true }

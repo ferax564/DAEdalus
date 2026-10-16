@@ -1,14 +1,24 @@
-//! `daedalus sensitivity | montecarlo | gsa | calibrate | optimize`: the analyses of
-//! `daedalus_core::{sensitivity, uq, calibrate, optimize}` on the command line.
+//! `daedalus sensitivity | montecarlo | gsa | calibrate | optimize | doe`: the analyses
+//! of `daedalus_core::{sensitivity, adjoint, uq, calibrate, optimize, doe}` on the
+//! command line.
 
-use daedalus_core::calibrate::{CalibSpec, Calibration, DataMap, Tuner};
+use daedalus_core::adjoint::{GradJob, GradMethod, GradSpec};
+use daedalus_core::calibrate::{CalibOptimizer, CalibSpec, Calibration, DataMap, Tuner};
 use daedalus_core::codegen::Model;
-use daedalus_core::optimize::{ObjTerm, OptSpec, Optimization};
+use daedalus_core::doe::{Design, DoeJob, DoeSpec, Factor};
+use daedalus_core::optimize::{Algorithm, ObjTerm, OptSpec, Optimization};
 use daedalus_core::sensitivity::{SensJob, SensMethod, SensOptions};
 use daedalus_core::sim::SimOptions;
 use daedalus_core::uq::{Dist, GsaJob, GsaMode, GsaSpec, ParamDist, Sampling, run_job};
 
-pub const COMMANDS: &[&str] = &["sensitivity", "montecarlo", "gsa", "calibrate", "optimize"];
+pub const COMMANDS: &[&str] = &[
+    "sensitivity",
+    "montecarlo",
+    "gsa",
+    "calibrate",
+    "optimize",
+    "doe",
+];
 
 /// Options of the analysis commands (taken out of the argument list before the
 /// common options are parsed).
@@ -32,6 +42,21 @@ pub struct Args {
     window: Option<(f64, f64)>,
     max_iter: Option<usize>,
     objective: Vec<ObjTerm>,
+    // gradients
+    adjoint: bool,
+    grad_objective: Option<String>,
+    grad_method: Option<GradMethod>,
+    substeps: Option<usize>,
+    algorithm: Option<Algorithm>,
+    optimizer: Option<CalibOptimizer>,
+    // design of experiments
+    factors: Vec<String>,
+    design: Option<Design>,
+    alpha: Option<String>,
+    center: Option<usize>,
+    generators: Vec<String>,
+    resolution: Option<usize>,
+    pareto: Vec<String>,
 }
 
 fn list(s: &str) -> Vec<String> {
@@ -90,6 +115,40 @@ pub fn take_args(args: Vec<String>) -> anyhow::Result<(Vec<String>, Args)> {
                 a.window = Some((t0.parse()?, t1.parse()?));
             }
             "--max-iter" => a.max_iter = Some(val()?.parse()?),
+            "--adjoint" => a.adjoint = true,
+            "--objective" => a.grad_objective = Some(val()?),
+            "--grad-method" | "--gradient" => {
+                let v = val()?;
+                a.grad_method = Some(GradMethod::parse(&v).ok_or_else(|| {
+                    anyhow::anyhow!("unknown gradient method '{v}' (auto | adjoint | forward | fd)")
+                })?);
+            }
+            "--substeps" => a.substeps = Some(val()?.parse()?),
+            "--algorithm" => {
+                let v = val()?;
+                a.algorithm = Some(Algorithm::parse(&v).ok_or_else(|| {
+                    anyhow::anyhow!("unknown algorithm '{v}' (nelder-mead | lbfgsb)")
+                })?);
+            }
+            "--optimizer" => {
+                let v = val()?;
+                a.optimizer = Some(
+                    CalibOptimizer::parse(&v)
+                        .ok_or_else(|| anyhow::anyhow!("unknown optimizer '{v}' (lm | lbfgsb)"))?,
+                );
+            }
+            "--factor" | "-f" => a.factors.push(val()?),
+            "--design" => {
+                let v = val()?;
+                a.design = Some(Design::parse(&v).ok_or_else(|| {
+                    anyhow::anyhow!("unknown design '{v}' (full | frac | ccd | bbd | lhs)")
+                })?);
+            }
+            "--alpha" => a.alpha = Some(val()?),
+            "--center" => a.center = Some(val()?.parse()?),
+            "--generators" => a.generators.extend(list(&val()?)),
+            "--resolution" => a.resolution = Some(val()?.parse()?),
+            "--pareto" => a.pareto.extend(list(&val()?)),
             "--minimize" | "--maximize" => {
                 let w = if x == "--minimize" { 1.0 } else { -1.0 };
                 a.objective.push(ObjTerm {
@@ -144,6 +203,31 @@ pub fn run(
 ) -> anyhow::Result<()> {
     let err = |e: String| anyhow::anyhow!(e);
     let (text, json, csv): (String, serde_json::Value, Option<String>) = match cmd {
+        "sensitivity" if a.adjoint || a.grad_objective.is_some() => {
+            if a.params.is_empty() {
+                anyhow::bail!("give the parameters with --params a,b");
+            }
+            let q = a.grad_objective.clone().ok_or_else(|| {
+                anyhow::anyhow!("give the scalar objective with --objective 'integral(x)'")
+            })?;
+            let method = a.grad_method.unwrap_or(GradMethod::Auto);
+            let mut spec = GradSpec::new(
+                a.params.clone(),
+                vec![ObjTerm {
+                    qoi: q,
+                    weight: 1.0,
+                    target: None,
+                }],
+                method,
+            );
+            if let Some(s) = a.substeps {
+                spec.substeps = s;
+            }
+            let mut job = GradJob::new(m, o, spec).map_err(err)?;
+            run_job(&mut job, &mut progress("runs")).map_err(err)?;
+            let g = job.result().unwrap();
+            (g.report(), serde_json::to_value(g)?, Some(g.to_csv()))
+        }
         "sensitivity" => {
             if a.params.is_empty() {
                 anyhow::bail!("give the parameters with --params a,b");
@@ -271,7 +355,12 @@ pub fn run(
                 map,
                 window: a.window,
                 method: a.sens_method,
-                max_iter: a.max_iter.unwrap_or(40),
+                max_iter: a.max_iter.unwrap_or(match a.optimizer {
+                    Some(CalibOptimizer::Lbfgsb) => 100,
+                    _ => 40,
+                }),
+                optimizer: a.optimizer.unwrap_or_default(),
+                gradient: a.grad_method.unwrap_or_default(),
             };
             let mut job = Calibration::new(m, o, spec).map_err(err)?;
             run_job(&mut job, &mut progress("iterations")).map_err(err)?;
@@ -305,11 +394,57 @@ pub fn run(
                 objective: a.objective.clone(),
                 max_iter: a.max_iter.unwrap_or(200),
                 tol: 1e-8,
+                algorithm: a.algorithm.unwrap_or_default(),
+                gradient: a.grad_method.unwrap_or_default(),
             };
             let mut job = Optimization::new(m, o, spec).map_err(err)?;
             run_job(&mut job, &mut progress("iterations")).map_err(err)?;
             let r = job.result();
             (Optimization::report_of(&r), serde_json::to_value(&r)?, None)
+        }
+        "doe" => {
+            if a.factors.is_empty() {
+                anyhow::bail!("give the factors with --factor p=lo:hi[:levels] (repeatable)");
+            }
+            if a.qois.is_empty() {
+                anyhow::bail!("give the quantities with --qoi 'max(x)' (repeatable)");
+            }
+            let spec = DoeSpec {
+                factors: a
+                    .factors
+                    .iter()
+                    .map(|f| Factor::parse(f).map_err(err))
+                    .collect::<anyhow::Result<_>>()?,
+                design: a.design.unwrap_or_default(),
+                qois: a.qois.clone(),
+                samples: a.samples.unwrap_or(0),
+                seed: a.seed.unwrap_or(12345),
+                alpha: a.alpha.clone(),
+                center: a.center,
+                generators: a.generators.clone(),
+                resolution: a.resolution,
+                pareto: a.pareto.clone(),
+                pareto_qois: None,
+            };
+            let mut job = DoeJob::new(m, o, spec).map_err(err)?;
+            let total = job.plan().coded.len();
+            eprintln!("{total} runs on {jobs} threads");
+            let t0 = std::time::Instant::now();
+            let last = std::sync::Mutex::new(0.0f64);
+            job.run_parallel(jobs, &|d, t| {
+                let el = t0.elapsed().as_secs_f64();
+                let mut l = last.lock().unwrap();
+                if el - *l > 0.5 || d == t {
+                    *l = el;
+                    eprint!("\rruns: {d}/{t}  ({el:.1} s)   ");
+                    if d == t {
+                        eprintln!();
+                    }
+                }
+            })
+            .map_err(err)?;
+            let r = job.result();
+            (r.report(), serde_json::to_value(&r)?, Some(r.to_csv()))
         }
         _ => unreachable!(),
     };

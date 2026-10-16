@@ -30,6 +30,8 @@ export interface RunOutput {
   series: Map<string, Float64Array>;
   /** Index of the pool worker that ran it. */
   worker: number;
+  /** Values of the requested quantities of interest (null where not available). */
+  qoi?: (number | null)[];
   /** Wall time in the pool, including waiting for sources. */
   ms: number;
 }
@@ -44,6 +46,7 @@ interface Job {
   model: string;
   options: SimSettings;
   vars: string[];
+  qois?: string[];
   resolve: (r: RunOutput) => void;
   reject: (e: Error) => void;
 }
@@ -105,12 +108,12 @@ class PoolWorker {
   async run(job: Job): Promise<RunOutput> {
     const t0 = performance.now();
     await this.sync();
-    const r = await this.call<{ summary: RunSummary; time: Float64Array; cols: Float64Array[] }>("run", job.model, job.options, job.vars);
+    const r = await this.call<{ summary: RunSummary; time: Float64Array; cols: Float64Array[]; qoi?: (number | null)[] }>("run", job.model, job.options, job.vars, job.qois ?? null);
     const series = new Map<string, Float64Array>();
     job.vars.forEach((n, i) => {
       if (r.cols[i]?.length) series.set(n, r.cols[i]);
     });
-    return { summary: r.summary, time: r.time, series, worker: this.index, ms: performance.now() - t0 };
+    return { summary: r.summary, time: r.time, series, worker: this.index, ms: performance.now() - t0, qoi: r.qoi };
   }
 
   terminate() {
@@ -136,11 +139,13 @@ export class WorkerPool {
 
   /**
    * Simulate `model` with `options` (as for Simulate, including `params` overrides) on the
-   * next free worker. Resolves with the run summary and the trajectories of `vars`.
+   * next free worker. Resolves with the run summary and the trajectories of `vars`, and
+   * with the values of the quantities of interest `qois` (`max(x)`, `final(y)`, ...)
+   * evaluated in the worker.
    */
-  run(model: string, options: SimSettings, vars: string[] = []): Promise<RunOutput> {
+  run(model: string, options: SimSettings, vars: string[] = [], qois?: string[]): Promise<RunOutput> {
     return new Promise((resolve, reject) => {
-      this.queue.push({ model, options, vars, resolve, reject });
+      this.queue.push({ model, options, vars, qois, resolve, reject });
       this.pump();
     });
   }

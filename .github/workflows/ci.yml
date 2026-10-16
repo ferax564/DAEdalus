@@ -20,10 +20,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: Build CLI and FMI runtime (the FMU import tests need libdaedalus_fmi.so)
+        run: cargo build --release -p daedalus-cli -p daedalus-fmi
       - name: Test
         run: cargo test --release --workspace
-      - name: Build CLI and FMI runtime
-        run: cargo build --release -p daedalus-cli -p daedalus-fmi
       - name: Simulate every Daedalus example
         run: ./target/release/daedalus test-library library/Daedalus -m Daedalus
       - name: Simulate the MultiBody vehicle examples (MSL 4.1.0)
@@ -48,6 +48,18 @@ jobs:
             --vars rpm_engine,rpm_stall_theory
           python3 -m fmpy.cli validate /tmp/StallTest.fmu
           python3 tools/fmu_check.py /tmp/StallTest.fmu /tmp/StallTest.csv rpm_engine,rpm_stall_theory
+      - name: Export an FMI 3.0 FMU and validate it with FMPy
+        run: |
+          M=Daedalus.Examples.TorqueConverter.StallTest
+          ./target/release/daedalus fmu library/Daedalus -m $M --fmi-version 3 -o /tmp/StallTest3.fmu
+          python3 -m fmpy.cli validate /tmp/StallTest3.fmu
+          python3 tools/fmu_check.py /tmp/StallTest3.fmu /tmp/StallTest.csv rpm_engine,rpm_stall_theory
+      - name: Import the FMUs back (Model Exchange and Co-Simulation)
+        run: |
+          for f in /tmp/StallTest.fmu /tmp/StallTest3.fmu; do
+            ./target/release/daedalus simulate $f -o /tmp/me.csv --vars rpm_engine
+            ./target/release/daedalus simulate $f --fmi-type cs -o /tmp/cs.csv --vars rpm_engine
+          done
       - name: Scalability smoke test (2000-mass chain)
         run: |
           python3 tools/gen_chain.py 2000 > /tmp/chain.mo

@@ -429,6 +429,8 @@ fn calibration_recovers_parameters() {
             window: None,
             method,
             max_iter: 50,
+            optimizer: Default::default(),
+            gradient: Default::default(),
         };
         let mut cal = Calibration::new(m.clone(), o.clone(), spec).unwrap();
         run_job(&mut cal, &mut |_, _| true).unwrap();
@@ -492,6 +494,8 @@ fn calibration_respects_bounds() {
         time_column: None,
         map: vec![],
         window: Some((0.5, 2.5)),
+        optimizer: Default::default(),
+        gradient: Default::default(),
         method: SensMethod::Auto,
         max_iter: 30,
     };
@@ -538,6 +542,8 @@ fn optimization_hits_a_target() {
         ],
         max_iter: 300,
         tol: 1e-12,
+        algorithm: Default::default(),
+        gradient: Default::default(),
     };
     let mut opt = Optimization::new(m, o, spec).unwrap();
     run_job(&mut opt, &mut |_, _| true).unwrap();
