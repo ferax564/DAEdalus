@@ -92,8 +92,9 @@ model, and SSP systems run, import and export. See [FMI and SSP](fmi.md).
 
 `sensitivity --adjoint` gives the gradient of one quantity with respect to many
 parameters for about the cost of one extra solve, and drives the L-BFGS-B optimizer
-(`optimize --algorithm lbfgsb`; Nelder–Mead is the default). `calibrate` uses the same
-gradients in Levenberg–Marquardt steps. `daedalus doe` runs full, fractional, central composite, Box–Behnken and
+(`optimize --algorithm lbfgsb`; Nelder–Mead is the default). `calibrate` takes
+Levenberg–Marquardt steps, with its Jacobian from sensitivities; `--optimizer lbfgsb`
+switches to adjoint gradients. `daedalus doe` runs full, fractional, central composite, Box–Behnken and
 Latin hypercube designs and fits response surfaces. See
 [Sensitivity, DOE and calibration](analysis.md#design-of-experiments).
 
