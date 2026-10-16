@@ -563,8 +563,7 @@ impl<'m> Simulation<'m> {
         let mut hist: Vec<Vec<f64>> = Vec::new();
         for _ in 0..100 {
             self.rt.save_pre();
-            let rel_changed = self.rt.latch_relations();
-            self.rt.run_ode();
+            let rel_changed = self.settle_relations();
             let mut conds = self.when_conds();
             let prev = std::mem::take(&mut self.cond_prev);
             let fired = self.fire(&conds, &prev);
@@ -651,6 +650,60 @@ impl<'m> Simulation<'m> {
             "event iteration did not converge at t = {}",
             self.rt.time()
         ))
+    }
+
+    /// Solve the event equations for the current `pre` values: relations take the values
+    /// of the variables they compute (MLS 8.6), so a relation on an algebraic variable of
+    /// a mixed system is iterated with `pre` held fixed. A friction element that becomes
+    /// stuck tests `sa > tau0_max` on the locking torque, not on the value `sa` had while
+    /// it was still sliding. Returns whether any relation changed.
+    fn settle_relations(&mut self) -> bool {
+        let m = self.rt.m;
+        let rel = m.layout.rel0..m.layout.rel0 + m.layout.n_rel;
+        let start = self.rt.r[rel.clone()].to_vec();
+        self.rt.latch_relations();
+        self.rt.run_ode();
+        let mut hist: Vec<Vec<f64>> = vec![self.rt.r[rel.clone()].to_vec()];
+        for _ in 0..50 {
+            if !self.relatch_outside_band() {
+                break;
+            }
+            let rels = self.rt.r[rel.clone()].to_vec();
+            if let Some(k) = hist.iter().position(|h| *h == rels) {
+                let toggling: Vec<usize> = (0..rels.len())
+                    .filter(|&i| hist[k..].iter().any(|h| h[i] != rels[i]))
+                    .collect();
+                if !self.mode_search(&toggling) {
+                    self.rt.run_ode();
+                }
+                break;
+            }
+            hist.push(rels);
+            self.rt.run_ode();
+        }
+        // A relation the plain latch flipped and the hysteresis test flipped back (it
+        // sits on its switching point) has not changed.
+        self.rt.r[rel] != start[..]
+    }
+
+    /// Re-latch the relations on the values the last solve of the event equations gave,
+    /// except those that sit inside their hysteresis band: a relation that put the
+    /// system on its own switching point (a friction element that starts sliding with
+    /// exactly the breakaway torque, the bearing next to a stuck gear) keeps its value
+    /// instead of flipping on the rounding. Returns whether any relation changed.
+    fn relatch_outside_band(&mut self) -> bool {
+        let m = self.rt.m;
+        self.rt.eval_zc();
+        let mut changed = false;
+        for i in 0..m.layout.n_rel {
+            let s = m.layout.rel0 + i;
+            let raw = self.rt.r[m.zc_raw[i] as usize];
+            if self.rt.r[s] != raw && !(self.rt.r[m.zc_g[i] as usize].abs() <= self.hysteresis(i)) {
+                self.rt.r[s] = raw;
+                changed = true;
+            }
+        }
+        changed
     }
 
     /// Look for relation values that reproduce themselves: the relations that toggled in
@@ -1290,8 +1343,42 @@ impl<'m> Simulation<'m> {
                         crossing.push(i);
                     }
                 }
+                // A long step (a stuck friction element: the states do not move, the
+                // driving torques do) can pass a relation on an algebraic variable twice,
+                // there and back. Look at the output points inside the step as well.
+                let mut t_hi = tn;
+                if rec.is_some() {
+                    let mut inner = Vec::new();
+                    let mut k = st.k_out;
+                    while next_out(k) < tn * (1.0 - 1e-14) && next_out(k) <= o.stop_time {
+                        let to = next_out(k);
+                        k += 1;
+                        if to <= tp {
+                            continue;
+                        }
+                        st.solver.interpolate(to, &mut st.xi);
+                        self.rt.rhs(to, &st.xi, &mut st.x);
+                        self.rt.eval_zc();
+                        for i in 0..n_rel {
+                            let raw = self.rt.r[m.zc_raw[i] as usize];
+                            let lat = self.rt.r[m.layout.rel0 + i];
+                            let g = self.rt.r[m.zc_g[i] as usize].abs();
+                            if raw != lat && !(g <= self.hysteresis(i)) {
+                                inner.push(i);
+                            }
+                        }
+                        if !inner.is_empty() {
+                            t_hi = to;
+                            crossing = inner;
+                            break;
+                        }
+                    }
+                    if t_hi == tn && k > st.k_out {
+                        self.rt.rhs(tn, st.solver.x(), &mut st.xi);
+                    }
+                }
                 if !crossing.is_empty() {
-                    let mut best = tn;
+                    let mut best = t_hi;
                     let after_event = tp - st.last_event <= 1e-10 * tp.abs().max(1.0);
                     for &i in &crossing {
                         let te = self.locate(&*st.solver, i, tp, best, after_event, &mut st.xi);
