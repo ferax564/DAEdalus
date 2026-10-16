@@ -625,6 +625,15 @@ impl Integrator for Bdf {
             self.h_abs = self.max_step;
             self.n_equal_steps = 0;
             self.lu_valid = false;
+        } else if self.h_abs < min_step {
+            // A step proposal below the resolution of `t` (the initial-step heuristic
+            // after an event with very fast transients) starts at the smallest step
+            // instead; only steps rejected below it are too small.
+            let f = min_step / self.h_abs;
+            self.change_d(f);
+            self.h_abs = min_step;
+            self.n_equal_steps = 0;
+            self.lu_valid = false;
         }
         let mut y_new = vec![0.0; n];
         let mut dsum = vec![0.0; n];
