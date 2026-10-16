@@ -106,10 +106,27 @@ pub(crate) fn initial_step(
     } else {
         0.01 * d0 / d1
     };
-    let h0 = h0.min(span);
-    let x1: Vec<f64> = x.iter().zip(f0).map(|(a, f)| a + h0 * f).collect();
+    let mut h0 = h0.min(span);
+    // The probe evaluation at `t + h0` is a throwaway: its algebraic loops must not
+    // leave their iterates as the start guesses of the real steps, and a probe the
+    // model cannot be evaluated at (an Euler step of a whole run's span through a
+    // switching circuit) is retried closer to `t` instead of giving a NaN estimate
+    // that falls back to the span.
+    let mut tears = Vec::new();
+    rt.save_tears(&mut tears);
+    let err0 = rt.error.take();
     let mut f1 = vec![0.0; n];
-    rt.rhs(t + h0, &x1, &mut f1);
+    for _ in 0..30 {
+        let x1: Vec<f64> = x.iter().zip(f0).map(|(a, f)| a + h0 * f).collect();
+        rt.rhs(t + h0, &x1, &mut f1);
+        let ok = rt.error.take().is_none() && f1.iter().all(|v| v.is_finite());
+        rt.restore_tears(&tears);
+        if ok {
+            break;
+        }
+        h0 *= 0.1;
+    }
+    rt.error = err0;
     let d2 = rms(
         f1.iter().zip(f0).zip(&scale).map(|((a, b), s)| (a - b) / s),
         n,
@@ -119,6 +136,9 @@ pub(crate) fn initial_step(
     } else {
         (0.01 / d1.max(d2)).powf(1.0 / (order + 1.0))
     };
+    // An estimate that overflowed (derivatives of 1e28 at a switching instant) says
+    // nothing beyond the probe itself: start from the probe's distance.
+    let h1 = if h1 > 0.0 && h1.is_finite() { h1 } else { h0 };
     (100.0 * h0).min(h1).min(span)
 }
 
@@ -650,6 +670,10 @@ impl Integrator for Bdf {
         let mut dy = vec![0.0; n];
         let safety;
         let error_norm;
+        // Tear start guesses at step entry: a rejected step's wild iterates (values a
+        // huge trial step "converged" to) must not seed the retry.
+        let mut tears0 = Vec::new();
+        rt.save_tears(&mut tears0);
         loop {
             if self.h_abs < min_step {
                 return Err(format!("step size too small at t = {}", self.t));
@@ -762,6 +786,7 @@ impl Integrator for Bdf {
                 self.change_d(0.5);
                 self.n_equal_steps = 0;
                 self.lu_valid = false;
+                rt.restore_wild_tears(&tears0);
                 continue;
             }
             let s = 0.9 * (2.0 * NEWTON_MAXITER as f64 + 1.0)
@@ -778,6 +803,7 @@ impl Integrator for Bdf {
                 self.h_abs *= factor;
                 self.change_d(factor);
                 self.n_equal_steps = 0;
+                rt.restore_wild_tears(&tears0);
                 continue;
             }
             if self.probe.enabled {

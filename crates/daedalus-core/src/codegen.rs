@@ -1928,6 +1928,46 @@ impl<'m> Runtime<'m> {
         }
     }
 
+    /// Copies the current values of every algebraic-loop tear into `out`.
+    pub fn save_tears(&self, out: &mut Vec<f64>) {
+        out.clear();
+        for b in &self.m.newton {
+            out.extend(b.tears.iter().map(|&t| self.r[t as usize]));
+        }
+    }
+
+    /// Puts back the saved value of each tear that has run away from it (not finite, or
+    /// more than a million times its saved size): the wild iterate a huge rejected trial
+    /// step "converged" to (a Spice3 BJT capacitance tear at -1e135) must not seed the
+    /// retry, while tears that merely moved keep their values as better start guesses.
+    pub fn restore_wild_tears(&mut self, v: &[f64]) {
+        let mut k = 0;
+        for b in &self.m.newton {
+            for &t in &b.tears {
+                if let Some(&x) = v.get(k) {
+                    let y = self.r[t as usize];
+                    if !y.is_finite() || y.abs() > 1e6 * (1.0 + x.abs()) {
+                        self.r[t as usize] = x;
+                    }
+                }
+                k += 1;
+            }
+        }
+    }
+
+    /// Puts back tear values saved by `save_tears` (the start guesses of the next solves).
+    pub fn restore_tears(&mut self, v: &[f64]) {
+        let mut k = 0;
+        for b in &self.m.newton {
+            for &t in &b.tears {
+                if let Some(&x) = v.get(k) {
+                    self.r[t as usize] = x;
+                }
+                k += 1;
+            }
+        }
+    }
+
     fn newton(&mut self, bi: usize) {
         let t0 = self.prof.as_mut().map(|p| p.enter());
         let s0 = self.newton_stats;
@@ -1946,7 +1986,7 @@ impl<'m> Runtime<'m> {
         let b = &m.newton[bi];
         let n = b.tears.len();
         self.newton_stats.solves += 1;
-        work.resize(n * n + 3 * n, 0.0);
+        work.resize(n * n + 4 * n, 0.0);
         // scratch buffers kept in the runtime: no allocation per solve
         let mut weights = std::mem::take(&mut self.weights);
         let mut best_x = std::mem::take(&mut self.best_x);
@@ -2051,6 +2091,7 @@ impl<'m> Runtime<'m> {
         let mut prev_abs = f64::INFINITY;
         let mut n_forced = 0u32;
         let mut n_stalled = 0u32;
+        let mut n_stalled_total = 0u32;
         let mut n_kicks = 0u32;
         let mut hit_bound = false;
         // A linear block normally converges in one step; if it does not (an ill-conditioned
@@ -2100,12 +2141,14 @@ impl<'m> Runtime<'m> {
             self.newton_stats.iterations += 1;
             // Assemble J and -F.
             let (jm, rest) = work.split_at_mut(n * n);
-            let (rhs, old) = rest.split_at_mut(n);
+            let (rhs, rest) = rest.split_at_mut(n);
+            let (old, f0v) = rest.split_at_mut(n);
             for (k, &s) in b.jac_slots.iter().enumerate() {
                 jm[k] = self.r[s as usize];
             }
             for (i, &s) in b.residuals.iter().enumerate() {
                 rhs[i] = -self.r[s as usize];
+                f0v[i] = self.r[s as usize];
             }
             let f_entry = -rhs[0];
             // Row weights for the damping test: residuals of very different scale
@@ -2221,6 +2264,9 @@ impl<'m> Runtime<'m> {
             }
             // Damped update: halve the step while the residual grows.
             let mut lambda = 1.0;
+            // Smallest trial step at which a dominant residual changed sign: the step
+            // crossed that row's root (see the bisection below).
+            let mut flip: Option<(f64, usize)> = None;
             if self.step_cap > 0.0 {
                 let r = (0..n)
                     .map(|i| rhs[i].abs() / (self.step_cap * (1.0 + old[i].abs())))
@@ -2261,6 +2307,23 @@ impl<'m> Runtime<'m> {
                     .iter()
                     .map(|&s| self.r[s as usize].abs())
                     .fold(0.0, f64::max);
+                if n > 1 {
+                    let mut pick: Option<(f64, usize)> = None;
+                    for (i, &s) in b.residuals.iter().enumerate() {
+                        let (f0, f) = (f0v[i], self.r[s as usize]);
+                        if f.is_finite()
+                            && f != 0.0
+                            && (f < 0.0) != (f0 < 0.0)
+                            && f0.abs() >= 0.1 * norm
+                            && pick.is_none_or(|(a, _)| f0.abs() > a)
+                        {
+                            pick = Some((f0.abs(), i));
+                        }
+                    }
+                    if let Some((_, i)) = pick {
+                        flip = Some((lambda, i));
+                    }
+                }
                 // either measure decreasing is progress
                 if (nn.is_finite() && nn < wnorm0 * (1.0 - 1e-4 * lambda) + 1e-300)
                     || (nu.is_finite() && nu < norm * (1.0 - 1e-4 * lambda) + 1e-300)
@@ -2269,6 +2332,61 @@ impl<'m> Runtime<'m> {
                 }
                 lambda *= 0.5;
             }
+            // Several tears, a damped step that stalled, and a dominant residual that
+            // changed sign within the shortest trial step: a piecewise-linear row (a
+            // limited amplifier `v_out = if V0*v_in > vps then vps else ...` with V0 = 1e4)
+            // whose linear zone is so narrow that the Newton steps of the saturated
+            // branches on either side jump over it, and halving never enters it. That
+            // row's root lies on the segment (it is continuous); bisect for it along the
+            // Newton direction, where the other rows keep shrinking linearly.
+            if lambda < 1e-3 && !forced && !linear {
+                if let Some((lf, k)) = flip {
+                    let sk = f0v[k] < 0.0;
+                    let (mut lo, mut hi) = (0.0f64, lf);
+                    for _ in 0..80 {
+                        let mid = 0.5 * (lo + hi);
+                        if mid <= lo || mid >= hi {
+                            break;
+                        }
+                        for (i, &t) in b.tears.iter().enumerate() {
+                            self.r[t as usize] = old[i] + mid * rhs[i];
+                        }
+                        self.run(&b.body);
+                        let f = self.r[b.residuals[k] as usize];
+                        if !f.is_finite() {
+                            break;
+                        }
+                        if (f < 0.0) == sk {
+                            lo = mid;
+                        } else {
+                            hi = mid;
+                        }
+                    }
+                    let mut best_l = lambda;
+                    let mut best_n = f64::INFINITY;
+                    for l in [lambda, lo, hi] {
+                        for (i, &t) in b.tears.iter().enumerate() {
+                            self.r[t as usize] = old[i] + l * rhs[i];
+                        }
+                        self.run(&b.body);
+                        let nu = b
+                            .residuals
+                            .iter()
+                            .map(|&s| self.r[s as usize].abs())
+                            .fold(0.0, f64::max);
+                        if nu < best_n {
+                            best_n = nu;
+                            best_l = l;
+                        }
+                    }
+                    if best_n < norm {
+                        lambda = best_l;
+                    }
+                    for (i, &t) in b.tears.iter().enumerate() {
+                        self.r[t as usize] = old[i] + lambda * rhs[i];
+                    }
+                }
+            }
             // One tear whose damped Newton step stalled (the residual first grows along
             // the step: a fold of a piecewise-linear characteristic, as in a Schmitt
             // trigger whose branch ends) and no sign change known yet: search outwards
@@ -2276,10 +2394,15 @@ impl<'m> Runtime<'m> {
             // so that the bracketing above can take over.
             if lambda < 1e-3 && !forced {
                 n_stalled += 1;
+                n_stalled_total += 1;
             } else {
                 n_stalled = 0;
             }
-            if n == 1 && n_stalled >= 2 && !self.init_mode && (neg.is_none() || pos.is_none()) {
+            // Stalls alternating with full steps (a cycle across the fold: the full step
+            // lands on the steep side, the damped step back stalls) count too.
+            if n == 1
+                && (n_stalled >= 2 || n_stalled_total >= 3)
+                && !self.init_mode && (neg.is_none() || pos.is_none()) {
                 let x0 = old[0];
                 let f0 = f_entry;
                 let (lo, hi) = b.bounds[0];
