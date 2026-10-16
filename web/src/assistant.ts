@@ -319,7 +319,7 @@ export function initAssistant(hooks: AssistantHooks) {
     } catch {
       /* private window: keep it in memory */
     }
-    if (k) keyBox.classList.add("hidden");
+    keyBox.classList.toggle("hidden", !!k);
   };
   let pending = "";
   const setOpen = (on: boolean) => {

@@ -560,6 +560,11 @@ export class StructureView {
     );
   }
 
+  /** Redraw incidence, Jacobian, and eigenvalue canvases after a theme change. */
+  redraw() {
+    this.drawAll();
+  }
+
   private drawAll() {
     this.drawIncidence();
     this.drawJacobian();

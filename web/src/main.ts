@@ -447,10 +447,11 @@ async function showInspector(c: ComponentInfo | null) {
     return;
   }
   const editable = editableUri(current?.source?.uri);
+  const localComponent = editable && c.declared_in === current?.path;
   const head = `<h4>${escapeHtml(c.name)}</h4>
     <div class="muted">${escapeHtml(c.type_name)}</div>
     <p>${escapeHtml(c.description)}</p>`;
-  if (editable && c.type_path) {
+  if (localComponent && c.type_path) {
     const listed = await api.parameters(c.type_path);
     if (gen !== inspectorGen) return;
     const mods = new Map(c.modifiers.map(([k, v]) => [k, v]));
@@ -1562,6 +1563,7 @@ function setTheme(choice: ThemeChoice) {
 function redrawThemedCanvases() {
   plot.draw();
   analysis.redraw();
+  structureView.redraw();
   redrawPerformance();
 }
 document.querySelectorAll<HTMLButtonElement>("[data-theme-choice]").forEach((b) => {
@@ -1901,6 +1903,7 @@ async function restoreRun(model: string, params: [string, number][], options: Si
   field("set-n", options.intervals);
   field("set-tol", options.tolerance);
   field("set-method", options.method);
+  syncSetupLabel();
   await simulate();
   for (const n of vars) {
     const v = summary?.vars.find((x) => x.name === n);
