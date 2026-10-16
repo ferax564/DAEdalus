@@ -616,12 +616,21 @@ impl<'m> Simulation<'m> {
     fn event_iteration_inner(&mut self) -> Result<(), String> {
         let m = self.rt.m;
         let mut hist: Vec<Vec<f64>> = Vec::new();
-        for _ in 0..100 {
+        for iter in 0..100 {
             self.rt.save_pre();
             let n_rel = m.layout.n_rel;
             let rel = m.layout.rel0..m.layout.rel0 + n_rel;
             let rels0 = self.rt.r[rel.clone()].to_vec();
-            let mut rel_changed = self.rt.latch_relations();
+            // The first iteration takes the relations as they are (the crossing that
+            // triggered the event, the start values at initialization). Later ones were
+            // settled by the previous iteration: one that sits on its switching point
+            // keeps its value instead of flipping on the rounding of the new pre() values
+            // (a brake that starts forward with `sa` equal to `tau0` up to rounding).
+            let mut rel_changed = if iter == 0 {
+                self.rt.latch_relations()
+            } else {
+                self.relatch_outside_band()
+            };
             // Whether the relations that just changed sit on their switching points.
             let on_point = (0..n_rel).all(|i| {
                 self.rt.r[m.layout.rel0 + i] == rels0[i]
