@@ -169,9 +169,9 @@ stay quiet: numeric literals are unit-polymorphic (`x + 1`, `1.5*R`), parameters
 variables declared `unit="1"` (gains, ideal-switch and friction path parameters) are
 polymorphic, each branch of an if-equation is its own equation, `log` takes any unit, a
 clash that involves an inferred unit drops that inference instead of reporting it, and a
-clash by exactly the unit of a folded `constant ... unitTime = 1` is ignored. On the 509
-MSL 4.1.0 examples that flatten and the 19 `Daedalus` / `MultiBodyVehicle` examples it
-reports no issue, and it costs about 1 % of the flattening time. Rotations count as
+clash by exactly the unit of a folded `constant ... unitTime = 1` is ignored. On the 550
+MSL 4.1.0 and `Daedalus` example models that flatten it reports two issues, both real and
+both in the MSL's `TestGlycol` example, and it costs about 1 % of the flattening time. Rotations count as
 dimensionless when checking (`rad/s` agrees with `Hz`) but not when converting for display.
 
 In the workbench, **Check** lists the unit issues in the messages panel. Plots show each
@@ -369,9 +369,9 @@ that are left unconnected: a component placed in the model none of whose
 electrical component, through which no current can flow. Connectors whose
 unconnected flow is simply zero by the language rules (an open output
 terminal, a free flange, a lone ground, the disabled thermal ports inside a
-machine) are reported as notes only. Over the 521 example models of the
-Modelica Standard Library 4.1.0 and the Daedalus library that flatten, this
-gives 2 warnings, both real (the `earth` resistor of the transformer examples
+machine) are reported as notes only. Over the 551 example models of the
+Modelica Standard Library 4.1.0 and the Daedalus library (550 of them flatten),
+this gives 2 warnings, both real (the `earth` resistor of the transformer examples
 whose `p` pin is left open), and no false positive.
 
 `simulate` prints the same initialization report when the initial solve
