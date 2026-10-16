@@ -306,6 +306,7 @@ dependencies = [
 name = "daedalus-wasm"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "daedalus-core",
  "serde",
  "serde_json",

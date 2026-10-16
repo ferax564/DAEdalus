@@ -73,6 +73,18 @@
             <div id="view-structure" class="view hidden"></div>
             <div id="view-linear" class="view linear hidden"></div>
           </div>
+          <div id="plot-strip" class="hidden">
+            <div id="strip-resize" title="Drag to resize the plot"></div>
+            <div class="strip-bar">
+              <button id="strip-toggle" title="Show or hide the plot below the diagram">▾ Plot</button>
+              <span id="strip-note" class="strip-note">Click a component or connection in the diagram to plot its variables</span>
+              <span class="spacer" style="flex:1"></span>
+              <button id="strip-new" title="Add a subplot">New subplot</button>
+              <button id="strip-clear" title="Remove every curve">Clear</button>
+              <button id="strip-open" title="Open the plot in Simulation mode, with the plot tools">Open in Simulation ↗</button>
+            </div>
+            <div id="strip-host" class="plot-host"></div>
+          </div>
         </div>
         <div id="plot-pane" class="pane hidden">
           <div class="tabs">
@@ -87,10 +99,23 @@
               <label title="Default to Imperial / US units (ft, lbf, psi, mph, degF, hp ...)"><input type="checkbox" id="plot-imperial" /> Imperial</label>
             </span>
             <span class="spacer"></span>
+            <span id="live-status" class="live-status"></span>
+            <button id="live-stop" class="hidden" title="Stop the running simulation (the rows so far are kept)">■ Stop</button>
+            <label title="Stream the results into the plot while the simulation runs"><input id="plot-live" type="checkbox" checked /> Live</label>
+            <button id="sim-diagram-btn" title="Show the diagram next to the plot: click a component or connection to plot its variables">Diagram</button>
+            <button id="dash-btn" title="Dashboard: sliders, gauges and displays for live, interactive runs">Dashboard</button>
             <button id="export-csv">Export CSV</button>
             <button id="export-mat">Export .mat</button>
           </div>
-          <div id="plot" class="plot-host"></div>
+          <div id="plot-tools" class="plot-tools"></div>
+          <div id="plot-body">
+            <div id="sim-diagram" class="hidden"></div>
+            <div id="plot-col">
+              <div id="plot" class="plot-host"></div>
+              <div id="plot-stats" class="hidden"></div>
+            </div>
+            <div id="dashboard" class="hidden"></div>
+          </div>
           <div id="anim" class="plot-host hidden"></div>
         </div>
       </section>

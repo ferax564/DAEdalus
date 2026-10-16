@@ -324,6 +324,58 @@ The page is laid out like Dymola:
   replay with STL/OBJ meshes, studio lighting, camera presets, follow and
   chase cameras, part selection with X-ray, and WebM recording.
 
+### Plotting and dashboards
+
+- **Live plotting.** With **Live** ticked (the default) a simulation streams its
+  rows into the plot while it runs, on a fixed time axis from start to stop time;
+  **■ Stop** ends it and keeps the rows so far. The worker advances the run in
+  slices of about 120 ms of wall-clock time (`sim::Incremental`): the solver takes
+  exactly the steps of a run in one go, so the result is identical; only the
+  plotted variables' new rows cross to the page after each slice. A profiled run
+  (and Live unticked) uses the one-shot path.
+- **Plots in the Modeling page.** Once a model has results, a plot strip below the
+  diagram shows the same plot window as the Simulation page (curves added in one
+  appear in the other). It can be resized by its top edge and collapsed; both are
+  remembered per browser. Simulating from the Modeling page with the strip open
+  stays there.
+- **Click to plot.** Clicking a component in the diagram (Modeling page with
+  results, or the **Diagram** pane next to the plot in Simulation mode) opens a
+  menu of its variables, its own first and then its connectors'; clicking a
+  connection lists the across and flow variables of both connectors.
+- **Matrix layout.** **Layout** arranges the subplots in rows × columns (1 × 2 up
+  to 3 × 3). All time subplots share one time axis: drag to zoom, wheel to zoom
+  around the cursor, Shift+drag to pan, double-click to reset; the cursor readout
+  shows the same time in every subplot.
+- **Expressions.** The expression field plots a formula over result variables,
+  re-evaluated after every run: `inertia.w*60/(2*pi)`, `abs(a - b)`, `der(x)`
+  (the solver's derivative when `der(x)` is a result variable, else differences),
+  `integral(x)`, `movavg(x, T)`, `rms(x, T)`, `min`, `max`, `pow`, `atan2`, the
+  usual elementary functions, `pi`, `e` and `time`. `fft(x)` plots the amplitude
+  spectrum of the visible time window (uniform resampling to a power of two, Hann
+  window) in a frequency subplot. **Signal…** applies one of these operators to
+  every variable of the active subplot.
+- **Stats** shows min, max, time-weighted mean, RMS and peak-to-peak of every
+  curve over the visible window, updated as you zoom.
+- **Dashboard.** A panel of widgets bound to the open model: sliders on free Real
+  parameters, gauges, numeric displays and mini plots of variables. **Run live**
+  paces the simulation against wall time (0.1× to 200×) in the worker; **Pause**,
+  **Stop** and the speed apply during the run. Moving a slider during the run
+  changes the parameter at the time reached without restarting: parameters bound to
+  it are evaluated again, an event iteration settles the discrete variables and
+  the integrator restarts from the current states (start values and
+  `fixed = false` parameters keep their initial values). Only free Real
+  parameters can change this way; others need a new run. A slider moved while
+  nothing runs sets the override for the next run. Layouts are saved per model in
+  local storage, and **Share** copies a link (`&dash=…`) that opens the model
+  with the dashboard.
+
+`sim::Incremental` (`advance(t, wall_budget)`, `set_params`, `results`,
+`finish`) is the core of both; `crates/daedalus-core/tests/incremental.rs` checks
+that budget slices reproduce a full run bit for bit, that time slices see every
+event, and that mid-run parameter changes propagate. In the WebAssembly workspace
+it is `liveStart`, `liveAdvance`, `liveValues`, `liveSetParams` and `liveFinish`.
+`web/scripts/e2e-plotting.mjs` exercises all of the above in Chromium.
+
 ## Experiments: sweeps, runs and comparison
 
 `daedalus sweep` translates a model once and simulates it for every combination of
