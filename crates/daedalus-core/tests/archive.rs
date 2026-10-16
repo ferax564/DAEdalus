@@ -2,7 +2,9 @@
 //! library index, install specifications and `uses` resolution.
 #![cfg(feature = "archive")]
 
-use daedalus_core::archive::{self, find_libraries, modelica_uris, read_package, split_uri, write_zip};
+use daedalus_core::archive::{
+    self, find_libraries, modelica_uris, read_package, split_uri, write_zip,
+};
 use daedalus_core::frontend::Library;
 use daedalus_core::libraries::{self, Available, Requirement, builtin_index, parse_spec, resolve};
 
@@ -15,8 +17,16 @@ fn mylib() -> Library {
         "MyLib.Parts",
         "within MyLib;\npackage Parts\n  model Tank\n    parameter String file = Modelica.Utilities.Files.loadResource(\"modelica://MyLib/Resources/Data/tank.txt\");\n    Real h(start=1, fixed=true);\n  equation\n    der(h) = -0.1*h;\n    annotation(Documentation(info=\"<html><img src=\\\"modelica://MyLib/Resources/Images/tank.png\\\"></html>\"));\n  end Tank;\n  model Unused\n  end Unused;\nend Parts;\n",
     );
-    l.add_lazy_text("lib/MyLib/Other.mo", "MyLib.Other", "within MyLib;\nmodel Other\n  Real y = 1;\nend Other;\n");
-    l.add_lazy_text("msl/Modelica/package.mo", "Modelica", "package Modelica\n  annotation(version=\"4.0.0\");\nend Modelica;\n");
+    l.add_lazy_text(
+        "lib/MyLib/Other.mo",
+        "MyLib.Other",
+        "within MyLib;\nmodel Other\n  Real y = 1;\nend Other;\n",
+    );
+    l.add_lazy_text(
+        "msl/Modelica/package.mo",
+        "Modelica",
+        "package Modelica\n  annotation(version=\"4.0.0\");\nend Modelica;\n",
+    );
     l.set_document("user/Plant.mo", "model Plant\n  MyLib.Parts.Tank tank;\n  annotation(experiment(StopTime=1));\nend Plant;\n");
     l
 }
@@ -38,9 +48,21 @@ fn zip_round_trip_and_safe_paths() {
 fn modelica_uris_are_found_and_split() {
     let t = r#"x = loadResource("modelica://MyLib/Resources/Data/a%20b.txt"); <a href="modelica://MyLib.Parts.Tank">Tank</a>"#;
     let u = modelica_uris(t);
-    assert_eq!(u, vec!["modelica://MyLib/Resources/Data/a%20b.txt", "modelica://MyLib.Parts.Tank"]);
-    assert_eq!(split_uri(&u[0]).unwrap(), ("MyLib".to_string(), "Resources/Data/a b.txt".to_string()));
-    assert_eq!(split_uri(&u[1]).unwrap(), ("MyLib.Parts.Tank".to_string(), String::new()));
+    assert_eq!(
+        u,
+        vec![
+            "modelica://MyLib/Resources/Data/a%20b.txt",
+            "modelica://MyLib.Parts.Tank"
+        ]
+    );
+    assert_eq!(
+        split_uri(&u[0]).unwrap(),
+        ("MyLib".to_string(), "Resources/Data/a b.txt".to_string())
+    );
+    assert_eq!(
+        split_uri(&u[1]).unwrap(),
+        ("MyLib.Parts.Tank".to_string(), String::new())
+    );
     assert!(split_uri("http://x").is_none());
 }
 
@@ -49,22 +71,44 @@ fn model_package_holds_the_closure_and_resources() {
     let lib = mylib();
     let have = ["lib/MyLib/Resources/Data/tank.txt"];
     let list = |key: &str| -> Vec<String> {
-        have.iter().filter(|h| **h == key || h.starts_with(&format!("{key}/"))).map(|h| h.to_string()).collect()
+        have.iter()
+            .filter(|h| **h == key || h.starts_with(&format!("{key}/")))
+            .map(|h| h.to_string())
+            .collect()
     };
     let plan = archive::plan_package(&lib, "Plant", archive::STANDARD_LIBRARIES, &list).unwrap();
     let rels: Vec<&str> = plan.files.iter().map(|(_, r)| r.as_str()).collect();
     assert!(rels.contains(&"Plant.mo"), "{rels:?}");
     assert!(rels.contains(&"MyLib/package.mo"));
     assert!(rels.contains(&"MyLib/Parts.mo"));
-    assert!(!rels.contains(&"MyLib/Other.mo"), "a file the model does not need stays out");
+    assert!(
+        !rels.contains(&"MyLib/Other.mo"),
+        "a file the model does not need stays out"
+    );
     assert!(!rels.iter().any(|r| r.starts_with("Modelica")));
     assert_eq!(plan.uses.get("Modelica").map(String::as_str), Some("4.0.0"));
-    assert_eq!(plan.resources, vec![("lib/MyLib/Resources/Data/tank.txt".to_string(), "MyLib/Resources/Data/tank.txt".to_string())]);
-    assert_eq!(plan.missing, vec!["modelica://MyLib/Resources/Images/tank.png".to_string()]);
+    assert_eq!(
+        plan.resources,
+        vec![(
+            "lib/MyLib/Resources/Data/tank.txt".to_string(),
+            "MyLib/Resources/Data/tank.txt".to_string()
+        )]
+    );
+    assert_eq!(
+        plan.missing,
+        vec!["modelica://MyLib/Resources/Images/tank.png".to_string()]
+    );
 
-    let docs: std::collections::HashMap<String, String> =
-        lib.docs.iter().map(|d| (d.uri.clone(), d.text.to_string())).collect();
-    let text = |uri: &str| docs.get(uri).cloned().or_else(|| lib.lazy_text(uri).map(|t| t.to_string()));
+    let docs: std::collections::HashMap<String, String> = lib
+        .docs
+        .iter()
+        .map(|d| (d.uri.clone(), d.text.to_string()))
+        .collect();
+    let text = |uri: &str| {
+        docs.get(uri)
+            .cloned()
+            .or_else(|| lib.lazy_text(uri).map(|t| t.to_string()))
+    };
     let read = |key: &str| (key == have[0]).then(|| b"0 1\n1 0.5\n".to_vec());
     let zip = archive::write_package(&plan, &text, &read).unwrap();
 
@@ -102,7 +146,10 @@ fn library_archives_are_found_and_installed() {
         vec![
             ("Complex".to_string(), "repo-1.0/Complex.mo".to_string()),
             ("Lib".to_string(), "repo-1.0/Lib/".to_string()),
-            ("ModelicaServices".to_string(), "repo-1.0/ModelicaServices/".to_string()),
+            (
+                "ModelicaServices".to_string(),
+                "repo-1.0/ModelicaServices/".to_string()
+            ),
         ]
     );
 
@@ -133,7 +180,14 @@ fn library_archives_are_found_and_installed() {
 #[test]
 fn index_and_install_specs() {
     let idx = builtin_index();
-    for name in ["Buildings", "ThermoSysPro", "OpenIPSL", "VehicleInterfaces", "ExternData", "Modelica"] {
+    for name in [
+        "Buildings",
+        "ThermoSysPro",
+        "OpenIPSL",
+        "VehicleInterfaces",
+        "ExternData",
+        "Modelica",
+    ] {
         assert!(idx.find(name).is_some(), "{name} in the index");
     }
     let s = parse_spec("Buildings@11.1.0", &idx).unwrap();
@@ -143,15 +197,32 @@ fn index_and_install_specs() {
     // latest when no version is given
     let s = parse_spec("buildings", &idx).unwrap();
     assert_eq!(s.version.as_deref(), Some("12.1.0"));
-    let s = parse_spec("https://github.com/modelica/ModelicaStandardLibrary/tree/v4.0.0", &idx).unwrap();
-    assert_eq!((s.git_ref.as_str(), s.version.as_deref()), ("v4.0.0", Some("4.0.0")));
+    let s = parse_spec(
+        "https://github.com/modelica/ModelicaStandardLibrary/tree/v4.0.0",
+        &idx,
+    )
+    .unwrap();
+    assert_eq!(
+        (s.git_ref.as_str(), s.version.as_deref()),
+        ("v4.0.0", Some("4.0.0"))
+    );
     assert_eq!(s.packages, vec!["Modelica", "ModelicaServices", "Complex"]);
     let s = parse_spec("https://github.com/someone/MyLib@main", &idx).unwrap();
-    assert_eq!((s.repo.as_str(), s.git_ref.as_str(), s.version.as_deref()), ("someone/MyLib", "main", None));
-    assert!(s.archive_urls()[0].starts_with("https://codeload.github.com/someone/MyLib/zip/refs/tags/main"));
+    assert_eq!(
+        (s.repo.as_str(), s.git_ref.as_str(), s.version.as_deref()),
+        ("someone/MyLib", "main", None)
+    );
+    assert!(
+        s.archive_urls()[0]
+            .starts_with("https://codeload.github.com/someone/MyLib/zip/refs/tags/main")
+    );
     let s = parse_spec("someone/MyLib@v1.2", &idx).unwrap();
     assert_eq!(s.version.as_deref(), Some("1.2"));
-    assert!(s.cdn_urls().1.starts_with("https://cdn.jsdelivr.net/gh/someone/MyLib@v1.2"));
+    assert!(
+        s.cdn_urls()
+            .1
+            .starts_with("https://cdn.jsdelivr.net/gh/someone/MyLib@v1.2")
+    );
     assert!(parse_spec("NoSuchLibrary", &idx).is_err());
 }
 
@@ -163,8 +234,17 @@ fn uses_resolution_and_conflicts() {
         origin: format!("{n} {v}"),
         loaded,
     };
-    let rq = |by: &str, n: &str, v: &str| Requirement { by: by.into(), name: n.into(), version: v.into() };
-    let avail = vec![av("Modelica", "3.2.3", false), av("Modelica", "4.0.0", false), av("Modelica", "4.1.0", false), av("Lib", "1.0", false)];
+    let rq = |by: &str, n: &str, v: &str| Requirement {
+        by: by.into(),
+        name: n.into(),
+        version: v.into(),
+    };
+    let avail = vec![
+        av("Modelica", "3.2.3", false),
+        av("Modelica", "4.0.0", false),
+        av("Modelica", "4.1.0", false),
+        av("Lib", "1.0", false),
+    ];
 
     // exact version
     let r = resolve(&[rq("M", "Modelica", "4.0.0")], &avail);
@@ -175,7 +255,10 @@ fn uses_resolution_and_conflicts() {
     assert_eq!(r.selected[0].version.as_deref(), Some("4.1.0"));
     assert_eq!(r.notes.len(), 1);
     // two requirers of different majors: a conflict
-    let r = resolve(&[rq("A", "Modelica", "3.2.3"), rq("B", "Modelica", "4.0.0")], &avail);
+    let r = resolve(
+        &[rq("A", "Modelica", "3.2.3"), rq("B", "Modelica", "4.0.0")],
+        &avail,
+    );
     assert_eq!(r.conflicts.len(), 1, "{r:?}");
     assert!(r.conflicts[0].contains("3.2.3 (by A)") && r.conflicts[0].contains("4.0.0 (by B)"));
     // an explicitly loaded library wins, and a major mismatch is a conflict
@@ -192,8 +275,14 @@ fn uses_resolution_and_conflicts() {
     assert!(r.selected.is_empty());
     assert_eq!(r.conflicts.len(), 1);
 
-    assert_eq!(libraries::compare_versions("4.10.0", "4.9.1"), std::cmp::Ordering::Greater);
-    assert_eq!(libraries::compare_versions("4.1.0-rc.1", "4.1.0"), std::cmp::Ordering::Less);
+    assert_eq!(
+        libraries::compare_versions("4.10.0", "4.9.1"),
+        std::cmp::Ordering::Greater
+    );
+    assert_eq!(
+        libraries::compare_versions("4.1.0-rc.1", "4.1.0"),
+        std::cmp::Ordering::Less
+    );
 }
 
 #[test]

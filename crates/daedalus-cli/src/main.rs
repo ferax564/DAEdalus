@@ -384,14 +384,7 @@ fn run() -> anyhow::Result<()> {
                 so.params.push((k.to_string(), v.parse()?));
             }
             "-o" | "--output" => output = Some(next(&mut i)?),
-            "--vars" => {
-                vars = Some(
-                    next(&mut i)?
-                        .split(',')
-                        .map(|s| s.trim().to_string())
-                        .collect(),
-                )
-            }
+            "--vars" => vars = Some(split_names(&next(&mut i)?)),
             "--no-index-reduction" => opts.index_reduction = false,
             "--no-tearing" => opts.tearing = false,
             "--state" => opts.state_overrides.push(
@@ -1596,6 +1589,29 @@ fn with_all_files<T>(
         return f(lib);
     }
     r
+}
+
+/// Split a comma-separated list of variable names, keeping the commas of subscripts
+/// (`a,cell[1, 2].v`).
+fn split_names(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut depth = 0i32;
+    let mut cur = String::new();
+    for c in s.chars() {
+        match c {
+            '[' => depth += 1,
+            ']' => depth -= 1,
+            ',' if depth <= 0 => {
+                out.push(cur.trim().to_string());
+                cur.clear();
+                continue;
+            }
+            _ => {}
+        }
+        cur.push(c);
+    }
+    out.push(cur.trim().to_string());
+    out
 }
 
 fn csv_list(s: &str) -> Vec<String> {

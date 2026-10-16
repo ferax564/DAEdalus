@@ -240,6 +240,14 @@ impl Recorder {
         )
     }
 
+    /// Drop the last stored row; returns its time.
+    fn pop(&mut self) -> Option<f64> {
+        for c in &mut self.res.series {
+            c.pop();
+        }
+        self.res.time.pop()
+    }
+
     fn record(&mut self, rt: &mut Runtime) {
         let m = rt.m;
         rt.run(&m.outputs);
@@ -557,39 +565,93 @@ impl<'m> Simulation<'m> {
         }
     }
 
+    /// Fire the when-clauses whose conditions rose against `prev`, then follow the
+    /// relations and conditions the actions change until nothing more fires. Returns
+    /// whether anything fired and the final condition values.
+    fn fire_chain(
+        &mut self,
+        mut conds: Vec<Vec<bool>>,
+        prev: &[Vec<bool>],
+        rel_changed: &mut bool,
+    ) -> (bool, Vec<Vec<bool>>) {
+        let fired = self.fire(&conds, prev);
+        // Relations read the values the actions just assigned (`time >= t_start +
+        // waitTime` right after `t_start := time`), then the algebraics follow. A
+        // condition that only becomes true with those values belongs to the same
+        // solution of the event equations: fire it before anything is committed.
+        if fired {
+            for _ in 0..100 {
+                self.rt.run_ode();
+                *rel_changed |= self.rt.latch_relations();
+                self.rt.run_ode();
+                let now = self.when_conds();
+                let seen = Self::or_conds(&conds, prev);
+                let more = self.fire(&now, &seen);
+                conds = now;
+                if !more {
+                    break;
+                }
+            }
+        }
+        (fired, conds)
+    }
+
+    fn or_conds(a: &[Vec<bool>], b: &[Vec<bool>]) -> Vec<Vec<bool>> {
+        a.iter()
+            .zip(b)
+            .map(|(c, p)| c.iter().zip(p).map(|(&x, &y)| x || y).collect())
+            .collect()
+    }
+
     /// Event iteration at the current time until discrete values settle.
     fn event_iteration(&mut self) -> Result<(), String> {
+        self.rt.hold_samples = true;
+        self.rt.held_samples.clear();
+        let r = self.event_iteration_inner();
+        self.rt.hold_samples = false;
+        self.rt.held_samples.clear();
+        r
+    }
+
+    fn event_iteration_inner(&mut self) -> Result<(), String> {
         let m = self.rt.m;
         let mut hist: Vec<Vec<f64>> = Vec::new();
         for _ in 0..100 {
             self.rt.save_pre();
-            let rel_changed = self.rt.latch_relations();
+            let n_rel = m.layout.n_rel;
+            let rel = m.layout.rel0..m.layout.rel0 + n_rel;
+            let rels0 = self.rt.r[rel.clone()].to_vec();
+            let mut rel_changed = self.rt.latch_relations();
+            // Whether the relations that just changed sit on their switching points.
+            let on_point = (0..n_rel).all(|i| {
+                self.rt.r[m.layout.rel0 + i] == rels0[i]
+                    || self.rt.r[m.zc_g[i] as usize].abs() <= self.hysteresis(i)
+            });
             self.rt.run_ode();
-            let mut conds = self.when_conds();
             let prev = std::mem::take(&mut self.cond_prev);
-            let fired = self.fire(&conds, &prev);
-            // Relations read the values the actions just assigned (`time >= t_start +
-            // waitTime` right after `t_start := time`), then the algebraics follow. A
-            // condition that only becomes true with those values belongs to the same
-            // solution of the event equations: fire it before anything is committed.
-            let mut rel_changed = rel_changed;
-            if fired {
-                for _ in 0..100 {
-                    self.rt.run_ode();
-                    rel_changed |= self.rt.latch_relations();
-                    self.rt.run_ode();
-                    let now = self.when_conds();
-                    let seen: Vec<Vec<bool>> = conds
-                        .iter()
-                        .zip(&prev)
-                        .map(|(c, p)| c.iter().zip(p).map(|(&a, &b)| a || b).collect())
-                        .collect();
-                    let more = self.fire(&now, &seen);
-                    conds = now;
-                    if !more {
-                        break;
-                    }
-                }
+            let conds = self.when_conds();
+            let (mut fired, mut conds) = self.fire_chain(conds, &prev, &mut rel_changed);
+            // The when-clauses of this iteration have acted (`entryTime := time` of a
+            // firing pulse timer): the relations settle on the values they assigned, not on
+            // a transient that would switch a latching element (a thyristor) off.
+            let rels1 = self.rt.r[rel.clone()].to_vec();
+            let (moved, unresolved) = self.settle_relations(&rels1);
+            rel_changed |= moved;
+            // Relations on their switching points that are back at the values they had
+            // before this iteration (a relation on an ill-conditioned loop whose rounding
+            // flips it, and back) did not move.
+            if on_point && !unresolved && self.rt.r[rel.clone()] == rels0[..] {
+                rel_changed = false;
+            }
+            // Conditions on the relations the mixed system just moved (`u >= x` after a
+            // jump of `u` at this instant) are edges of this iteration: once pre() moves
+            // on they would be lost.
+            if self.rt.r[rel.clone()] != rels1[..] {
+                let seen = Self::or_conds(&conds, &prev);
+                let now = self.when_conds();
+                let (more, now) = self.fire_chain(now, &seen, &mut rel_changed);
+                fired |= more;
+                conds = now;
             }
             self.cond_prev = conds;
             // Recompute algebraics with the new discrete values.
@@ -627,6 +689,13 @@ impl<'m> Simulation<'m> {
                 a != b && !(a.is_nan() && b.is_nan())
             });
             if !rel_changed && !fired && !disc_changed {
+                if !self.rt.held_samples.is_empty() {
+                    // The event instant is over: sample() turns false again, and what
+                    // depends on it settles in the following iterations.
+                    self.rt.hold_samples = false;
+                    self.rt.held_samples.clear();
+                    continue;
+                }
                 self.rt.save_pre();
                 return Ok(());
             }
@@ -651,6 +720,75 @@ impl<'m> Simulation<'m> {
             "event iteration did not converge at t = {}",
             self.rt.time()
         ))
+    }
+
+    /// Solve the event equations for the current `pre` values: relations take the values
+    /// of the variables they compute (MLS 8.6), so relations and the equations they switch
+    /// form one mixed system at fixed `pre` (a stuck friction element: `locked` -> `sa` ->
+    /// `sa > tau0_max` -> `startForward` -> `locked`). A friction element that becomes
+    /// stuck tests `sa > tau0_max` on the locking torque, not on the value `sa` had while
+    /// it was still sliding. Relations that cycle (forward sliding gives `sa < -tau0_max`,
+    /// backward `sa > tau0_max`) skip the consistent mode in between: search for it.
+    /// Returns whether the relations moved from `start`, and whether no consistent mode
+    /// was found (the relations are then back at `start`).
+    fn settle_relations(&mut self, start: &[f64]) -> (bool, bool) {
+        let m = self.rt.m;
+        let rel = m.layout.rel0..m.layout.rel0 + m.layout.n_rel;
+        let mut hist: Vec<Vec<f64>> = vec![start.to_vec()];
+        let mut unresolved = false;
+        for _ in 0..50 {
+            if !self.relatch_outside_band() {
+                break;
+            }
+            self.rt.run_ode();
+            let rels = self.rt.r[rel.clone()].to_vec();
+            if let Some(k) = hist.iter().position(|h| *h == rels) {
+                let toggling: Vec<usize> = (0..rels.len())
+                    .filter(|&i| hist[k..].iter().any(|h| h[i] != rels[i]))
+                    .collect();
+                if !self.mode_search(&toggling) {
+                    // No consistent mode of these relations alone (it involves other
+                    // elements' modes too): leave it to the iteration on pre() from the
+                    // values the when-clauses left.
+                    self.rt.r[rel.clone()].copy_from_slice(start);
+                    self.rt.run_ode();
+                    unresolved = true;
+                }
+                break;
+            }
+            hist.push(rels);
+        }
+        (self.rt.r[rel] != start[..], unresolved)
+    }
+
+    /// Re-latch the relations on the values the last solve of the event equations gave,
+    /// except those that sit inside their hysteresis band: a relation that put the
+    /// system on its own switching point (a friction element that starts sliding with
+    /// exactly the breakaway torque, the bearing next to a stuck gear) keeps its value
+    /// instead of flipping on the rounding. Returns whether any relation changed.
+    fn relatch_outside_band(&mut self) -> bool {
+        let m = self.rt.m;
+        self.rt.eval_zc();
+        let mut changed = false;
+        for i in 0..m.layout.n_rel {
+            let s = m.layout.rel0 + i;
+            let raw = self.rt.r[m.zc_raw[i] as usize];
+            // A sample() tick held true for the event instant stays true (see
+            // `Runtime::held_samples`).
+            if self.rt.hold_samples && m.sample_rels.contains(&i) {
+                if self.rt.held_samples.contains(&i) {
+                    continue;
+                }
+                if raw != 0.0 {
+                    self.rt.held_samples.push(i);
+                }
+            }
+            if self.rt.r[s] != raw && !(self.rt.r[m.zc_g[i] as usize].abs() <= self.hysteresis(i)) {
+                self.rt.r[s] = raw;
+                changed = true;
+            }
+        }
+        changed
     }
 
     /// Look for relation values that reproduce themselves: the relations that toggled in
@@ -850,7 +988,23 @@ impl<'m> Simulation<'m> {
             self.rt.r[m.layout.rel0 + r] = 0.0;
         }
         self.rt.run_ode();
-        // when-clauses activated by initial()
+        // when-clauses activated by initial(): the left limit of a continuous-time
+        // variable at the start time, pre(x), is its initial value.
+        let mut assigned = vec![false; m.layout.nv];
+        for w in &m.whens {
+            for acts in &w.actions {
+                for a in acts {
+                    if let Action::Assign(v, _) | Action::Reinit(v, _) = a {
+                        assigned[*v as usize] = true;
+                    }
+                }
+            }
+        }
+        for (v, var) in m.vars.iter().enumerate() {
+            if var.kind == VarKind::Continuous && v < m.layout.nv && !assigned[v] {
+                self.rt.r[m.layout.pre0 + v] = self.rt.r[v];
+            }
+        }
         let c1 = self.when_conds();
         self.rt.r[m.layout.initial] = 0.0;
         let c0 = self.when_conds();
@@ -866,9 +1020,14 @@ impl<'m> Simulation<'m> {
             })
             .collect();
         let fired = self.fire(&c1, &edge);
+        if fired {
+            // The clauses fired by the initialization belong to it: the equations reading
+            // their results (`change(y)`, `Q = S or pre(Q)`) see the start values in pre()
+            // before the event iteration at the start time takes them over.
+            self.rt.run_ode();
+        }
         self.cond_prev = c0;
         self.rt.r[m.layout.initial] = 0.0;
-        let _ = fired;
         // Event iteration at the start time (handles sample() at t0 and initial() clauses).
         self.event_iteration_ext(false)?;
         self.check_newton("initialization")?;
@@ -1039,7 +1198,19 @@ impl<'m> Simulation<'m> {
             max_step = dt;
         }
         let rtol = o.tolerance;
-        let atol = o.tolerance;
+        // Absolute tolerance per state from its nominal value, as Dymola and
+        // OpenModelica do: a state of size 1e-4 (`nominal = 1e-4`) is integrated to
+        // 1e-4 * tolerance, not to the tolerance itself.
+        let atol: Vec<f64> = {
+            self.rt.run(&m.nominals);
+            m.state_nominals
+                .iter()
+                .map(|s| {
+                    let v = s.map_or(1.0, |s| self.rt.r[s as usize].abs());
+                    o.tolerance * if v.is_finite() && v > 0.0 { v } else { 1.0 }
+                })
+                .collect()
+        };
         self.stats.method = o.method.name().to_string();
         // FMU components: the tape does not see through them (their derivatives and
         // outputs are set from outside), so the state Jacobian is dense and by
@@ -1053,22 +1224,22 @@ impl<'m> Simulation<'m> {
         };
         let solver: Box<dyn Integrator> = match o.method {
             Method::Bdf => {
-                let b = Bdf::new(n, rtol, atol, max_step, pattern).with_jacobian(jacobian);
+                let b = Bdf::new(n, rtol, atol.clone(), max_step, pattern).with_jacobian(jacobian);
                 self.stats.jacobian_colors = b.n_colors();
                 Box::new(b)
             }
             Method::Radau => {
-                let r = Radau5::new(n, rtol, atol, max_step, pattern, jacobian);
+                let r = Radau5::new(n, rtol, atol.clone(), max_step, pattern, jacobian);
                 self.stats.jacobian_colors = r.n_colors();
                 Box::new(r)
             }
             Method::Esdirk => {
-                let e = Esdirk::new(n, rtol, atol, max_step, pattern, jacobian);
+                let e = Esdirk::new(n, rtol, atol.clone(), max_step, pattern, jacobian);
                 self.stats.jacobian_colors = e.n_colors();
                 Box::new(e)
             }
             Method::Auto => {
-                let b = Bdf::new(n, rtol, atol, max_step, pattern).with_jacobian(jacobian);
+                let b = Bdf::new(n, rtol, atol.clone(), max_step, pattern).with_jacobian(jacobian);
                 self.stats.jacobian_colors = b.n_colors();
                 Box::new(AutoSwitch::new(Dopri5::new(n, rtol, atol, max_step), b))
             }
@@ -1096,6 +1267,7 @@ impl<'m> Simulation<'m> {
             event_rows: 0,
             guard: 0,
             last_event: f64::NEG_INFINITY,
+            last_event_rows: usize::MAX,
             same_instant: 0,
             wall0: crate::backend::web_time_now(),
             deadline: f64::INFINITY,
@@ -1238,6 +1410,29 @@ impl<'m> Simulation<'m> {
         self.delay_events.first().copied()
     }
 
+    /// The earliest pending `sample()` tick after `t`.
+    fn next_sample_time(&self, t: f64) -> Option<f64> {
+        let m = self.rt.m;
+        m.sample_rels
+            .iter()
+            .zip(&m.sample_next)
+            .filter(|&(&i, _)| self.rt.r[m.layout.rel0 + i] == 0.0)
+            .map(|(_, &v)| self.rt.r[v as usize])
+            // A tick only round-off ahead (a slice ended at 0.1 + 0.1 + .. just short of
+            // 0.4) is no step limit: the next step crosses it and it fires at its time.
+            .filter(|&ts| ts > t + 1e-12 * t.abs().max(1e-3))
+            .min_by(f64::total_cmp)
+            .map(|t0| {
+                let ticks = m
+                    .sample_rels
+                    .iter()
+                    .zip(&m.sample_next)
+                    .filter(|&(&i, _)| self.rt.r[m.layout.rel0 + i] == 0.0)
+                    .map(|(_, &v)| self.rt.r[v as usize]);
+                sample_cluster_end(t0, ticks)
+            })
+    }
+
     fn advance(
         &mut self,
         st: &mut Stepper,
@@ -1289,6 +1484,9 @@ impl<'m> Simulation<'m> {
                 Some(te) if te < t_lim => te,
                 _ => t_lim,
             };
+            // Steps end on the next sample() tick: the states at a time event are then
+            // the step's own solution, not an interpolation across the tick.
+            let t_lim = self.next_sample_time(t).map_or(t_lim, |ts| t_lim.min(ts));
             let t_lim = if n == 0 {
                 t_lim.min(t + max_step)
             } else {
@@ -1322,14 +1520,62 @@ impl<'m> Simulation<'m> {
                         crossing.push(i);
                     }
                 }
+                // A long step (a stuck friction element: the states do not move, the
+                // driving torques do) can pass a relation on an algebraic variable twice,
+                // there and back. Look at the output points inside the step as well.
+                let mut t_hi = tn;
+                if rec.is_some() {
+                    let mut inner = Vec::new();
+                    let mut k = st.k_out;
+                    while next_out(k) < tn * (1.0 - 1e-14) && next_out(k) <= o.stop_time {
+                        let to = next_out(k);
+                        k += 1;
+                        if to <= tp {
+                            continue;
+                        }
+                        st.solver.interpolate(to, &mut st.xi);
+                        self.rt.rhs(to, &st.xi, &mut st.x);
+                        self.rt.eval_zc();
+                        for i in 0..n_rel {
+                            let raw = self.rt.r[m.zc_raw[i] as usize];
+                            let lat = self.rt.r[m.layout.rel0 + i];
+                            let g = self.rt.r[m.zc_g[i] as usize].abs();
+                            if raw != lat && !(g <= self.hysteresis(i)) {
+                                inner.push(i);
+                            }
+                        }
+                        if !inner.is_empty() {
+                            t_hi = to;
+                            crossing = inner;
+                            break;
+                        }
+                    }
+                    if t_hi == tn && k > st.k_out {
+                        self.rt.rhs(tn, st.solver.x(), &mut st.xi);
+                    }
+                }
                 if !crossing.is_empty() {
-                    let mut best = tn;
+                    let mut best = t_hi;
                     let after_event = tp - st.last_event <= 1e-10 * tp.abs().max(1.0);
+                    let mut ticks = Vec::new();
                     for &i in &crossing {
-                        let te = self.locate(&*st.solver, i, tp, best, after_event, &mut st.xi);
+                        // A sample() tick happens at its known time.
+                        let te = match m.sample_rels.iter().position(|&r| r == i) {
+                            Some(k) => {
+                                let te = self.rt.r[m.sample_next[k] as usize].clamp(tp, tn);
+                                ticks.push(te);
+                                te
+                            }
+                            None => self.locate(&*st.solver, i, tp, best, after_event, &mut st.xi),
+                        };
                         if te < best {
                             best = te;
                         }
+                    }
+                    // Ticks of different sample() calls that coincide up to round-off
+                    // are one event, at the latest of them (where all are true).
+                    if ticks.contains(&best) {
+                        best = sample_cluster_end(best, ticks.into_iter());
                     }
                     event_t = Some(best);
                 }
@@ -1407,7 +1653,8 @@ impl<'m> Simulation<'m> {
                 p.output_secs += crate::profile::now() - t0;
             }
             if let Some(te) = event_t {
-                if te - st.last_event <= 1e-10 * te.abs().max(1.0) {
+                let same = te - st.last_event <= 1e-10 * te.abs().max(1.0);
+                if same {
                     st.same_instant += 1;
                     if st.same_instant > 500 {
                         let names: Vec<String> = (0..n_rel)
@@ -1439,11 +1686,29 @@ impl<'m> Simulation<'m> {
                 st.solver.interpolate(te, &mut st.xi);
                 self.rt.rhs(te, &st.xi, &mut st.x);
                 let snap = self.prof.as_deref_mut().map(|p| p.event_begin(&self.rt));
-                let store = o.store_events && st.event_rows < event_budget && rec.is_some();
+                // Replacing the right values of an event at the same instant adds no row,
+                // so it is allowed (and not charged) once the budget is spent.
+                let merge = same
+                    && rec
+                        .as_deref()
+                        .is_some_and(|r| r.res.time.len() == st.last_event_rows);
+                let store =
+                    o.store_events && rec.is_some() && (merge || st.event_rows < event_budget);
+                let mut merged_at = None;
                 if store && let Some(rec) = rec.as_deref_mut() {
-                    rec.record(&mut self.rt);
-                    st.event_rows += 2;
-                    if st.event_rows >= event_budget {
+                    // An event right after another one at the same instant (a friction
+                    // element starting to slide: `startForward` at `sa > tau0_max`, then
+                    // `mode = Forward` as `w > 0` an instant later) continues it: the
+                    // values in between hold for no time, so its rows replace the right
+                    // values of the first one instead of adding a spike.
+                    // They keep its time: both are the same event instant.
+                    if merge {
+                        merged_at = rec.pop();
+                    } else {
+                        rec.record(&mut self.rt);
+                        st.event_rows += 2;
+                    }
+                    if !merge && st.event_rows >= event_budget {
                         self.log.push(format!(
                             "more than {} event points at t = {te}: later events are not stored \
                              (only output points)",
@@ -1467,6 +1732,10 @@ impl<'m> Simulation<'m> {
                 if let Some(rec) = rec.as_deref_mut() {
                     if store {
                         rec.record(&mut self.rt);
+                        if let (Some(t0), Some(t)) = (merged_at, rec.res.time.last_mut()) {
+                            *t = t0;
+                        }
+                        st.last_event_rows = rec.res.time.len();
                     }
                     // Output point coinciding with the event.
                     if (next_out(st.k_out) - te).abs() <= 1e-12 * te.abs().max(1.0) {
@@ -1674,6 +1943,8 @@ pub struct Stepper {
     event_rows: usize,
     guard: u64,
     last_event: f64,
+    /// Rows stored when the last event's right values were recorded.
+    last_event_rows: usize,
     same_instant: u32,
     wall0: f64,
     /// Wall-clock time (`profile::now`) at which `advance` returns early (slices).
@@ -1862,6 +2133,14 @@ impl<'m> Incremental<'m> {
 }
 
 /// Convenience: simulate a compiled model with options.
+/// The latest of the tick times `ticks` that coincide with `t0` up to round-off.
+fn sample_cluster_end(t0: f64, ticks: impl Iterator<Item = f64>) -> f64 {
+    let tol = 1e-12 * t0.abs().max(1e-3);
+    ticks
+        .filter(|&ts| ts >= t0 && ts - t0 <= tol)
+        .fold(t0, f64::max)
+}
+
 pub fn simulate(m: &Model, opts: SimOptions) -> Result<(Results, SimStats), SimError> {
     Simulation::new(m, opts).run()
 }

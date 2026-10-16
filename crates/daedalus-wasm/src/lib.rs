@@ -307,7 +307,17 @@ impl Workspace {
         };
         self.results = Some(res);
         let r = self.results.as_ref().unwrap();
-        summary_json(&m, r, model, error, translate_ms, load_ms, stats, experiment, &units)
+        summary_json(
+            &m,
+            r,
+            model,
+            error,
+            translate_ms,
+            load_ms,
+            stats,
+            experiment,
+            &units,
+        )
     }
 
     /// JSON performance profile and event log of the last simulation (`null` unless it
@@ -327,7 +337,9 @@ impl Workspace {
         let req: LinearRequest = match serde_json::from_str(options) {
             Ok(r) => r,
             Err(e) => {
-                return to_json(&serde_json::json!({"ok": false, "error": format!("options: {e}")}));
+                return to_json(
+                    &serde_json::json!({"ok": false, "error": format!("options: {e}")}),
+                );
             }
         };
         self.ensure(model, Some(true));
@@ -1026,7 +1038,13 @@ impl Workspace {
     /// JSON: structural and text diff of a class between two source texts
     /// (`daedalus_core::diff::ClassDiff`), or `{"error": ...}`.
     #[wasm_bindgen(js_name = diffSources)]
-    pub fn diff_sources(&self, old_text: &str, new_text: &str, old_class: &str, new_class: &str) -> String {
+    pub fn diff_sources(
+        &self,
+        old_text: &str,
+        new_text: &str,
+        old_class: &str,
+        new_class: &str,
+    ) -> String {
         let o = (!old_class.is_empty()).then_some(old_class);
         let n = (!new_class.is_empty()).then_some(new_class);
         match daedalus_core::diff::diff_sources(old_text, new_text, o, n.or(o)) {
@@ -1063,7 +1081,13 @@ impl Workspace {
     /// `component` of `class` (or the class itself when empty), converted to the
     /// declared units, as a modifier and as a record named `record`.
     #[wasm_bindgen(js_name = paramsFor)]
-    pub fn params_for(&mut self, class: &str, component: &str, params: &str, record: &str) -> String {
+    pub fn params_for(
+        &mut self,
+        class: &str,
+        component: &str,
+        params: &str,
+        record: &str,
+    ) -> String {
         self.ensure(class, Some(true));
         let p: Vec<daedalus_core::params::ParamValue> = match serde_json::from_str(params) {
             Ok(v) => v,
@@ -1134,7 +1158,11 @@ impl Workspace {
             }
             if let Some(t) = f.read() {
                 for (n, v) in L::package_meta(&t).1.uses {
-                    reqs.push(L::Requirement { by: f.class.clone(), name: n, version: v });
+                    reqs.push(L::Requirement {
+                        by: f.class.clone(),
+                        name: n,
+                        version: v,
+                    });
                 }
             }
         }
@@ -1161,22 +1189,31 @@ impl Workspace {
         if libs.is_empty() {
             return err_json("no Modelica library (a directory with package.mo) in the archive");
         }
-        let present: std::collections::HashSet<String> = daedalus_core::libraries::loaded(&self.lib)
-            .into_iter()
-            .map(|a| a.name)
-            .collect();
+        let present: std::collections::HashSet<String> =
+            daedalus_core::libraries::loaded(&self.lib)
+                .into_iter()
+                .map(|a| a.name)
+                .collect();
         self.ensured.clear();
         let mut out = Vec::new();
         for (name, prefix) in libs {
             let single = prefix.ends_with(".mo");
-            let main = if single { prefix.clone() } else { format!("{prefix}package.mo") };
+            let main = if single {
+                prefix.clone()
+            } else {
+                format!("{prefix}package.mo")
+            };
             let text = files
                 .iter()
                 .find(|(n, _)| *n == main)
                 .map(|(_, d)| String::from_utf8_lossy(d).into_owned())
                 .unwrap_or_default();
             let (top, meta) = daedalus_core::libraries::package_meta(&text);
-            let name = if name.is_empty() { top.unwrap_or_default() } else { name };
+            let name = if name.is_empty() {
+                top.unwrap_or_default()
+            } else {
+                name
+            };
             if present.contains(&name) {
                 out.push(serde_json::json!({"name": name, "skipped": "already loaded"}));
                 continue;
@@ -1189,7 +1226,9 @@ impl Workspace {
                 nfiles = 1;
             } else {
                 for (n, d) in &files {
-                    let Some(rel) = n.strip_prefix(prefix.as_str()) else { continue };
+                    let Some(rel) = n.strip_prefix(prefix.as_str()) else {
+                        continue;
+                    };
                     let rel = format!("{name}/{rel}");
                     if rel.ends_with(".mo") || rel.ends_with("package.order") {
                         self.add_library_file(&base, &rel, &String::from_utf8_lossy(d));

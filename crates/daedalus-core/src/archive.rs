@@ -27,7 +27,12 @@ use std::sync::Arc;
 pub const MANIFEST: &str = "daedalus-package.json";
 
 /// Libraries that a package refers to rather than carries.
-pub const STANDARD_LIBRARIES: &[&str] = &["Modelica", "ModelicaServices", "Complex", "ModelicaReference"];
+pub const STANDARD_LIBRARIES: &[&str] = &[
+    "Modelica",
+    "ModelicaServices",
+    "Complex",
+    "ModelicaReference",
+];
 
 /// A path inside an archive, made safe: forward slashes, no `..`, no root.
 fn clean(path: &str) -> Option<String> {
@@ -53,7 +58,9 @@ pub fn read_zip(bytes: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
         if f.is_dir() {
             continue;
         }
-        let Some(name) = clean(f.name()) else { continue };
+        let Some(name) = clean(f.name()) else {
+            continue;
+        };
         let mut data = Vec::with_capacity(f.size() as usize);
         f.read_to_end(&mut data)?;
         out.push((name, data));
@@ -85,7 +92,17 @@ pub fn modelica_uris(text: &str) -> Vec<String> {
     while let Some(k) = lower[from..].find("modelica://") {
         let s = from + k;
         let e = text[s..]
-            .find(|c: char| c == '"' || c == '\'' || c == '\\' || c == '<' || c == '>' || c == ')' || c.is_whitespace() || c == '#' || c == '?')
+            .find(|c: char| {
+                c == '"'
+                    || c == '\''
+                    || c == '\\'
+                    || c == '<'
+                    || c == '>'
+                    || c == ')'
+                    || c.is_whitespace()
+                    || c == '#'
+                    || c == '?'
+            })
             .map_or(text.len(), |i| s + i);
         let uri = text[s..e].to_string();
         if uri.len() > "modelica://".len() && !out.contains(&uri) {
@@ -173,9 +190,19 @@ fn doc_class(text: &str, ast: Option<&rumoca_ir_ast::StoredDefinition>) -> Optio
     let within = ast
         .within
         .as_ref()
-        .map(|w| w.name.iter().map(|t| t.text.to_string()).collect::<Vec<_>>().join("."))
+        .map(|w| {
+            w.name
+                .iter()
+                .map(|t| t.text.to_string())
+                .collect::<Vec<_>>()
+                .join(".")
+        })
         .unwrap_or_default();
-    Some(if within.is_empty() { name } else { format!("{within}.{name}") })
+    Some(if within.is_empty() {
+        name
+    } else {
+        format!("{within}.{name}")
+    })
 }
 
 fn dir_of(uri: &str) -> &str {
@@ -236,7 +263,9 @@ pub fn plan_package(
             let base = if parent.is_empty() {
                 uri.to_string()
             } else {
-                uri.strip_prefix(&format!("{parent}/")).unwrap_or(uri).to_string()
+                uri.strip_prefix(&format!("{parent}/"))
+                    .unwrap_or(uri)
+                    .to_string()
             };
             // a versioned directory ("Buildings 12.1.0") is stored under its name
             let mut parts: Vec<&str> = base.split('/').collect();
@@ -284,7 +313,11 @@ pub fn plan_package(
             }
         }
     }
-    let included: BTreeSet<String> = plan.files.iter().map(|(u, _)| root_of(&class_of[u])).collect();
+    let included: BTreeSet<String> = plan
+        .files
+        .iter()
+        .map(|(u, _)| root_of(&class_of[u]))
+        .collect();
     for r in reqs {
         if !included.contains(&r.name) {
             let e = plan.uses.entry(r.name).or_default();
@@ -297,7 +330,9 @@ pub fn plan_package(
     let mut seen = BTreeSet::new();
     for (uri, _) in plan.files.clone() {
         for u in modelica_uris(&texts[&uri]) {
-            let Some((class, path)) = split_uri(&u) else { continue };
+            let Some((class, path)) = split_uri(&u) else {
+                continue;
+            };
             if path.is_empty() || !seen.insert(u.clone()) {
                 continue;
             }
@@ -323,12 +358,17 @@ pub fn plan_package(
                 plan.missing.push(u.clone());
                 continue;
             }
-            let parent = pkg_dir.get(&root).map(|d| dir_of(d).to_string()).unwrap_or_default();
+            let parent = pkg_dir
+                .get(&root)
+                .map(|d| dir_of(d).to_string())
+                .unwrap_or_default();
             for f in found {
                 let base = if parent.is_empty() {
                     f.clone()
                 } else {
-                    f.strip_prefix(&format!("{parent}/")).unwrap_or(&f).to_string()
+                    f.strip_prefix(&format!("{parent}/"))
+                        .unwrap_or(&f)
+                        .to_string()
                 };
                 let mut parts: Vec<&str> = base.split('/').collect();
                 if let Some(first) = parts.first_mut()
@@ -378,7 +418,10 @@ pub fn write_package(
         missing,
         created_by: format!("DAEdalus {}", env!("CARGO_PKG_VERSION")),
     };
-    files.insert(0, (MANIFEST.to_string(), serde_json::to_vec_pretty(&manifest)?));
+    files.insert(
+        0,
+        (MANIFEST.to_string(), serde_json::to_vec_pretty(&manifest)?),
+    );
     write_zip(&files)
 }
 
@@ -404,7 +447,10 @@ pub fn read_package(bytes: &[u8]) -> Result<Package> {
         pkg.manifest = Some(serde_json::from_slice(&m).context("daedalus-package.json")?);
     } else {
         // strip a common top folder that is not itself a package
-        let top: BTreeSet<&str> = files.iter().map(|(n, _)| n.split('/').next().unwrap_or("")).collect();
+        let top: BTreeSet<&str> = files
+            .iter()
+            .map(|(n, _)| n.split('/').next().unwrap_or(""))
+            .collect();
         if top.len() == 1 && files.iter().all(|(n, _)| n.contains('/')) {
             let t = top.into_iter().next().unwrap().to_string();
             let is_pkg = files.iter().any(|(n, _)| *n == format!("{t}/package.mo"));
@@ -417,9 +463,11 @@ pub fn read_package(bytes: &[u8]) -> Result<Package> {
     }
     for (name, data) in files {
         if name.ends_with(".mo") {
-            pkg.mo.push((name, String::from_utf8_lossy(&data).into_owned()));
+            pkg.mo
+                .push((name, String::from_utf8_lossy(&data).into_owned()));
         } else if name.ends_with("package.order") {
-            pkg.orders.push((name, String::from_utf8_lossy(&data).into_owned()));
+            pkg.orders
+                .push((name, String::from_utf8_lossy(&data).into_owned()));
         } else {
             pkg.resources.push((name, data));
         }
@@ -434,7 +482,10 @@ pub fn read_package(bytes: &[u8]) -> Result<Package> {
 pub fn find_libraries(paths: &[&str]) -> Vec<(String, String)> {
     let dirs: BTreeSet<&str> = paths
         .iter()
-        .filter_map(|p| p.strip_suffix("/package.mo").or_else(|| (*p == "package.mo").then_some("")))
+        .filter_map(|p| {
+            p.strip_suffix("/package.mo")
+                .or_else(|| (*p == "package.mo").then_some(""))
+        })
         .collect();
     let inside = |d: &str, a: &str| a.is_empty() || d.starts_with(&format!("{a}/"));
     let outer: Vec<&str> = dirs
@@ -446,7 +497,11 @@ pub fn find_libraries(paths: &[&str]) -> Vec<(String, String)> {
     for d in &outer {
         let name = d.rsplit('/').next().unwrap_or(d);
         let name = name.split(' ').next().unwrap_or(name).to_string();
-        let prefix = if d.is_empty() { String::new() } else { format!("{d}/") };
+        let prefix = if d.is_empty() {
+            String::new()
+        } else {
+            format!("{d}/")
+        };
         found.push((name, prefix));
     }
     let parents: BTreeSet<&str> = outer.iter().map(|d| dir_of(d)).collect();
@@ -461,7 +516,12 @@ pub fn find_libraries(paths: &[&str]) -> Vec<(String, String)> {
             continue;
         }
         let file = p.rsplit('/').next().unwrap_or(p);
-        let name = file.trim_end_matches(".mo").split(' ').next().unwrap_or("").to_string();
+        let name = file
+            .trim_end_matches(".mo")
+            .split(' ')
+            .next()
+            .unwrap_or("")
+            .to_string();
         found.push((name, p.to_string()));
     }
     found.sort();
@@ -571,7 +631,12 @@ pub fn register_package(lib: &mut Library, pkg: &Package, prefix: &str) -> (usiz
     let mut skipped = BTreeSet::new();
     let mut n = 0;
     for (path, text) in &pkg.mo {
-        let root = path.split('/').next().unwrap_or("").trim_end_matches(".mo").to_string();
+        let root = path
+            .split('/')
+            .next()
+            .unwrap_or("")
+            .trim_end_matches(".mo")
+            .to_string();
         if path.contains('/') {
             if present.contains(&root) {
                 skipped.insert(root);

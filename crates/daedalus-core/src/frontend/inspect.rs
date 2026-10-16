@@ -389,7 +389,9 @@ pub fn class_meta(def: &ast::ClassDef) -> ClassMeta {
                 ast::Expression::NamedArgument { name, value, .. } => {
                     out.push((name.text.to_string(), &**value))
                 }
-                ast::Expression::ClassModification { target, .. } => out.push((cref_text(target), a)),
+                ast::Expression::ClassModification { target, .. } => {
+                    out.push((cref_text(target), a))
+                }
                 ast::Expression::FunctionCall { comp, .. } => out.push((cref_text(comp), a)),
                 _ => {}
             }

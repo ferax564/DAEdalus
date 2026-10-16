@@ -64,7 +64,11 @@ fn opts(m: &Model, stop: f64, method: Method) -> SimOptions {
 /// Slices that end only on the wall-clock budget take the same steps as a full run.
 #[test]
 fn budget_slices_reproduce_the_full_run_exactly() {
-    for (name, method) in [("L.Ball", Method::Bdf), ("L.Ball", Method::Dopri5), ("L.Sampled", Method::Bdf)] {
+    for (name, method) in [
+        ("L.Ball", Method::Bdf),
+        ("L.Ball", Method::Dopri5),
+        ("L.Sampled", Method::Bdf),
+    ] {
         let m = model(name);
         let o = opts(&m, 3.0, method);
         let (full, _) = simulate(&m, o.clone()).unwrap();
@@ -99,7 +103,10 @@ fn time_slices_match_the_full_run() {
         inc.advance(t, 0.0).unwrap();
         assert!(inc.time() <= t + 1e-12);
         // rows are readable between slices
-        assert_eq!(*inc.results().time.last().unwrap() <= inc.time() + 1e-12, true);
+        assert_eq!(
+            *inc.results().time.last().unwrap() <= inc.time() + 1e-12,
+            true
+        );
     }
     let (r, _, _) = inc.finish();
     assert_eq!(r.final_value("n"), full.final_value("n"));
@@ -134,9 +141,15 @@ fn set_params_mid_run() {
     let (r, _, err) = inc.finish();
     assert!(err.is_none());
     let x = r.final_value("x").unwrap();
-    assert!((x - 2.0).abs() < 1e-6, "x(1) = 0.5 * 1 + 0.5 * 3 = 2, got {x}");
+    assert!(
+        (x - 2.0).abs() < 1e-6,
+        "x(1) = 0.5 * 1 + 0.5 * 3 = 2, got {x}"
+    );
     let y = r.final_value("y").unwrap();
-    assert!((y - 12.0).abs() < 1e-5, "y = k2 * x with k2 = 2 * 3, got {y}");
+    assert!(
+        (y - 12.0).abs() < 1e-5,
+        "y = k2 * x with k2 = 2 * 3, got {y}"
+    );
     // The result lists the parameters as they are at the end.
     assert_eq!(r.final_value("k2"), Some(6.0));
     // Mid-run, x is still continuous: the value at t = 0.5 is 0.5.
@@ -184,7 +197,9 @@ fn set_params_refuses_other_names() {
     let mut inc = Incremental::new(&m, opts(&m, 1.0, Method::Bdf)).unwrap();
     inc.advance(0.3, 0.0).unwrap();
     for bad in ["k2", "mode", "x", "nope"] {
-        let e = inc.set_params(&[("k".into(), 5.0), (bad.into(), 1.0)]).unwrap_err();
+        let e = inc
+            .set_params(&[("k".into(), 5.0), (bad.into(), 1.0)])
+            .unwrap_err();
         assert!(e.contains(bad), "{e}");
     }
     while !inc.advance(f64::INFINITY, 0.0).unwrap() {}

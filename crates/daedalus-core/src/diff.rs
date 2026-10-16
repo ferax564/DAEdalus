@@ -164,7 +164,9 @@ pub fn unified(lines: &[DiffLine], old_name: &str, new_name: &str, context: usiz
             .unwrap_or(0);
         let old_n = hunk.iter().filter(|l| l.op != '+').count();
         let new_n = hunk.iter().filter(|l| l.op != '-').count();
-        out.push_str(&format!("@@ -{old_start},{old_n} +{new_start},{new_n} @@\n"));
+        out.push_str(&format!(
+            "@@ -{old_start},{old_n} +{new_start},{new_n} @@\n"
+        ));
         for l in hunk {
             out.push(l.op);
             out.push_str(&l.text);
@@ -448,7 +450,10 @@ fn compare_component(o: &ComponentInfo, n: &ComponentInfo) -> Option<ComponentCh
         ));
     }
     if o.description != n.description {
-        details.push(format!("description \"{}\" -> \"{}\"", o.description, n.description));
+        details.push(format!(
+            "description \"{}\" -> \"{}\"",
+            o.description, n.description
+        ));
     }
     if o.protected != n.protected {
         details.push(if n.protected {
@@ -504,10 +509,18 @@ pub fn diff_libraries(
 ) -> Result<ClassDiff> {
     let ta = la.tree();
     let tb = lb.tree();
-    let ia = locate(&ta, old_class)
-        .ok_or_else(|| anyhow!("class {} not found in the old version", old_class.unwrap_or("")))?;
-    let ib = locate(&tb, new_class.or(old_class).or(Some(&ta.node(ia).path)))
-        .ok_or_else(|| anyhow!("class {} not found in the new version", new_class.or(old_class).unwrap_or("")))?;
+    let ia = locate(&ta, old_class).ok_or_else(|| {
+        anyhow!(
+            "class {} not found in the old version",
+            old_class.unwrap_or("")
+        )
+    })?;
+    let ib = locate(&tb, new_class.or(old_class).or(Some(&ta.node(ia).path))).ok_or_else(|| {
+        anyhow!(
+            "class {} not found in the new version",
+            new_class.or(old_class).unwrap_or("")
+        )
+    })?;
     let pa = ta.node(ia).path.clone();
     let pb = tb.node(ib).path.clone();
     let ca = inspect::class_info(la, &pa).ok_or_else(|| anyhow!("class {pa} not found"))?;
@@ -664,7 +677,10 @@ pub fn diff_libraries(
         other.push(format!("kind {} -> {}", ca.kind, cb.kind));
     }
     if ca.description != cb.description {
-        other.push(format!("description \"{}\" -> \"{}\"", ca.description, cb.description));
+        other.push(format!(
+            "description \"{}\" -> \"{}\"",
+            ca.description, cb.description
+        ));
     }
     if ca.documentation != cb.documentation || ca.revisions != cb.revisions {
         other.push("documentation changed".into());
@@ -679,8 +695,12 @@ pub fn diff_libraries(
     if ca.experiment != cb.experiment {
         other.push(format!(
             "experiment {} -> {}",
-            ca.experiment.as_ref().map_or("(none)".into(), |v| v.to_string()),
-            cb.experiment.as_ref().map_or("(none)".into(), |v| v.to_string())
+            ca.experiment
+                .as_ref()
+                .map_or("(none)".into(), |v| v.to_string()),
+            cb.experiment
+                .as_ref()
+                .map_or("(none)".into(), |v| v.to_string())
         ));
     }
     if ca.metadata != cb.metadata {
@@ -700,15 +720,21 @@ pub fn diff_libraries(
                 let line_start = d.text[..s.start.min(d.text.len())]
                     .rfind('\n')
                     .map_or(0, |i| i + 1);
-                d.text.get(line_start..s.end.min(d.text.len())).map(String::from)
+                d.text
+                    .get(line_start..s.end.min(d.text.len()))
+                    .map(String::from)
             })
             .unwrap_or_default()
     };
     let mut text = text_diff(&src(la, &ca), &src(lb, &cb));
     // number the lines as in the files
     let (oa, ob) = (
-        ca.source.as_ref().map_or(0, |s| s.line.saturating_sub(1) as usize),
-        cb.source.as_ref().map_or(0, |s| s.line.saturating_sub(1) as usize),
+        ca.source
+            .as_ref()
+            .map_or(0, |s| s.line.saturating_sub(1) as usize),
+        cb.source
+            .as_ref()
+            .map_or(0, |s| s.line.saturating_sub(1) as usize),
     );
     for l in &mut text {
         l.old = l.old.map(|n| n + oa);
