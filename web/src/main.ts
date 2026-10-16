@@ -1279,15 +1279,20 @@ const setMoreOpen = (open: boolean) => {
   moreMenu.classList.toggle("open", open);
   moreBtn.setAttribute("aria-expanded", String(open));
 };
+// The menu sits before its trigger in the DOM, so Tab from the trigger would skip it: focus its first control on open.
 moreBtn.onclick = (e) => {
   e.stopPropagation();
-  setMoreOpen(!moreMenu.classList.contains("open"));
+  const open = !moreMenu.classList.contains("open");
+  setMoreOpen(open);
+  if (open) moreMenu.querySelector<HTMLElement>("a[href], button:not([disabled]), input")?.focus();
 };
 document.addEventListener("click", (e) => {
   if (!moreMenu.contains(e.target as Node)) setMoreOpen(false);
 });
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") setMoreOpen(false);
+  if (e.key !== "Escape") return;
+  if (moreMenu.contains(document.activeElement)) moreBtn.focus();
+  setMoreOpen(false);
 });
 // The toolbar wraps on narrow windows, so panels fixed under it (the Assistant drawer) follow its real height.
 new ResizeObserver(() => document.documentElement.style.setProperty("--topbar-h", `${$("topbar").offsetHeight}px`)).observe($("topbar"));
