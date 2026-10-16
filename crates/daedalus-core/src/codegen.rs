@@ -1741,6 +1741,9 @@ pub struct Runtime<'m> {
     pub init_mode: bool,
     /// Largest Newton step relative to `1 + |tear|` (0: unlimited).
     step_cap: f64,
+    /// Newton steps may leave the tears' declared `min`/`max` (a retry after a solve
+    /// that stalled on a bound).
+    ignore_bounds: bool,
     /// `delay()` reads the right value at a delayed jump (set while events are handled).
     pub delay_right: bool,
     /// Block timing of the performance analyzer (None: not profiling).
@@ -1777,6 +1780,7 @@ impl<'m> Runtime<'m> {
             error: None,
             init_mode: false,
             step_cap: 0.0,
+            ignore_bounds: false,
             delay_right: true,
             prof: None,
         }
@@ -2006,6 +2010,8 @@ impl<'m> Runtime<'m> {
         let (mut neg, mut pos): (Option<(f64, f64)>, Option<(f64, f64)>) = (None, None);
         let mut prev_abs = f64::INFINITY;
         let mut n_forced = 0u32;
+        let mut n_kicks = 0u32;
+        let mut hit_bound = false;
         // A linear block normally converges in one step; if it does not (an ill-conditioned
         // or switching system), it continues as a damped Newton iteration.
         let max_iter = if self.step_cap > 0.0 { 400 } else { 50 };
@@ -2186,9 +2192,13 @@ impl<'m> Runtime<'m> {
                     let (lo, hi) = b.bounds[i];
                     let x = old[i] + lambda * rhs[i];
                     // Stay inside the declared range; a step that leaves it is cut short.
-                    self.r[t as usize] = if x < lo && old[i] >= lo {
+                    self.r[t as usize] = if self.ignore_bounds {
+                        x
+                    } else if x < lo && old[i] >= lo {
+                        hit_bound = true;
                         old[i] + (lo - old[i]) * 0.5_f64.max(0.0)
                     } else if x > hi && old[i] <= hi {
+                        hit_bound = true;
                         old[i] + (hi - old[i]) * 0.5
                     } else {
                         x
@@ -2222,7 +2232,26 @@ impl<'m> Runtime<'m> {
                 .fold(0.0, f64::max);
             if step < 1e-13 {
                 self.run(&b.body);
-                return;
+                // Stuck where the residual is flat in some tear (`dp = k*m_flow^2` at
+                // `m_flow = 0`) but not solved: move off that point and continue.
+                let nn = b
+                    .residuals
+                    .iter()
+                    .map(|&s| self.r[s as usize].abs())
+                    .fold(0.0, f64::max);
+                let scale = b
+                    .tears
+                    .iter()
+                    .map(|&s| self.r[s as usize].abs())
+                    .fold(1.0, f64::max);
+                if nn <= 1e-6 * scale || n_kicks >= 2 {
+                    return;
+                }
+                n_kicks += 1;
+                for (i, &t) in b.tears.iter().enumerate() {
+                    let x = &mut self.r[t as usize];
+                    *x = old[i] + 1e-6 * (1.0 + old[i].abs());
+                }
             }
         }
         self.run(&b.body);
@@ -2244,6 +2273,18 @@ impl<'m> Runtime<'m> {
             .iter()
             .map(|&s| self.r[s as usize].abs())
             .fold(1.0, f64::max);
+        if !(norm <= 1e-6 * scale) && hit_bound && !self.ignore_bounds {
+            // Stalled against a tear's `min` or `max` (the solution lies just outside it,
+            // as a small negative flow through a port declared `min = 0`): the attributes
+            // are checks, not constraints of the equations, so solve again without them.
+            for (i, &t) in b.tears.iter().enumerate() {
+                self.r[t as usize] = entry[i];
+            }
+            self.ignore_bounds = true;
+            self.newton_iterate(bi, work, piv, weights, best_x, entry);
+            self.ignore_bounds = false;
+            return;
+        }
         if !(norm <= 1e-6 * scale) {
             // A failed solve leaves the tears where they were, so that the retry (with a
             // smaller step) starts from the last good point and not from a wild iterate.
