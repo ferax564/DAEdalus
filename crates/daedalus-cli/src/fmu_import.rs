@@ -2,7 +2,7 @@
 //! `.ssp` files as sources of `simulate` (see `daedalus_core::fmu_import`).
 
 use anyhow::{Context, bail};
-use daedalus_core::external::FmiKind;
+use daedalus_core::external_component::FmiKind;
 use daedalus_core::fmu_import::Fmu;
 use daedalus_core::fmu_import::ssp::{self, SspImportOptions};
 use daedalus_core::fmu_import::wrapper::{self, WrapperOptions};

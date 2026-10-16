@@ -97,8 +97,8 @@ pub struct System {
     pub asserts: Vec<(ExprId, String)>,
     pub aliases: Vec<Alias>,
     pub experiment: Experiment,
-    /// FMU components (see [`crate::external`]).
-    pub externals: Vec<crate::external::ExternalComponent>,
+    /// FMU components (see [`crate::external_component`]).
+    pub externals: Vec<crate::external_component::ExternalComponent>,
     pub stats: Stats,
     pub warnings: Vec<String>,
     pub origins: Vec<String>,
@@ -598,6 +598,10 @@ pub fn compile_traced(
                         WhenAction::Assign(_, e)
                         | WhenAction::Reinit(_, e)
                         | WhenAction::Assert(e, _) => roots.push(*e),
+                        WhenAction::Effect(c, e) => {
+                            roots.push(*c);
+                            roots.push(*e);
+                        }
                         WhenAction::Terminate(_) => {}
                     }
                 }

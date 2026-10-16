@@ -1204,7 +1204,7 @@ impl<'a> Checker<'a> {
                 Self::mul(u, U::Known(sec), true)
             }
             Node::Time => U::Known(sec),
-            Node::Initial | Node::Local(_) => U::Lit,
+            Node::Initial | Node::Terminal | Node::Local(_) => U::Lit,
             Node::Neg(_) | Node::Add(..) | Node::Sub(..) => {
                 let mut t = Vec::new();
                 self.terms(e, &mut t);
@@ -1323,8 +1323,13 @@ impl<'a> Checker<'a> {
                 self.terms(b, &mut t);
                 self.unify(&t, "if-branches")
             }
-            Node::Interp(_, _, x) | Node::InterpDer(_, _, x) => {
+            Node::Interp(_, x, _) => {
                 self.eval(x);
+                U::Weak
+            }
+            Node::Interp2(_, u1, u2) => {
+                self.eval(u1);
+                self.eval(u2);
                 U::Weak
             }
             Node::Delay(k, d) => {
@@ -1421,6 +1426,10 @@ pub fn check(f: &FlatModel) -> UnitReport {
                         items.push(Item::Assign(*v, *e, w.origin))
                     }
                     WhenAction::Assert(e, _) => items.push(Item::Expr(*e, w.origin)),
+                    WhenAction::Effect(c, e) => {
+                        items.push(Item::Expr(*c, w.origin));
+                        items.push(Item::Expr(*e, w.origin));
+                    }
                     WhenAction::Terminate(_) => {}
                 }
             }

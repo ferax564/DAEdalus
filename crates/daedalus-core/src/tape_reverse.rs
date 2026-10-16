@@ -172,7 +172,7 @@ fn reverse_ins(rt: &mut Runtime, ins: &Ins, adj: &mut [f64]) {
                 }
             }
         }
-        Ins::Cmp(_, d, ..) | Ins::InterpDer(d, ..) | Ins::CallD(d, ..) | Ins::Delay(d, ..) => {
+        Ins::Cmp(_, d, ..) | Ins::CallD(d, ..) | Ins::Delay(d, ..) => {
             adj[d as usize] = 0.0;
         }
         Ins::Select(d, c, a, b) => {
@@ -180,36 +180,39 @@ fn reverse_ins(rt: &mut Runtime, ins: &Ins, adj: &mut [f64]) {
             let k = if r[c as usize] != 0.0 { a } else { b };
             adj[k as usize] += g;
         }
-        Ins::Interp(d, t, c, x) => {
-            let g = take(adj, d);
-            if g != 0.0 {
-                let s = rt.m.tables[t as usize].slope(c as usize, r[x as usize]);
-                adj[x as usize] += g * s;
-            }
-        }
+        // Table lookups and calls: exact partials along each distinct argument register,
+        // by forward mode on the one instruction.
+        Ins::Interp(d, _, x, ne) => partials(rt, ins, d, vec![x, ne], adj),
+        Ins::Interp2(d, _, u1, u2) => partials(rt, ins, d, vec![u1, u2], adj),
         Ins::Call(d, site, _) => {
-            let g = take(adj, d);
-            if g == 0.0 {
-                return;
-            }
-            // Exact partials along each distinct argument register, by forward mode.
-            let m = rt.m;
-            let mut args: Vec<u32> = m.sites[site as usize].args.clone();
-            args.sort_unstable();
-            args.dedup();
-            let mut dr = vec![0.0; rt.r.len()];
-            for s in args {
-                dr.iter_mut().for_each(|x| *x = 0.0);
-                dr[s as usize] = 1.0;
-                rt.run_tangent(std::slice::from_ref(ins), &mut dr);
-                let p = dr[d as usize];
-                if p != 0.0 {
-                    adj[s as usize] += g * p;
-                }
-            }
+            let args = rt.m.sites[site as usize].args.clone();
+            partials(rt, ins, d, args, adj)
         }
+        // Effects of impure external functions: no derivative.
+        Ins::Exec(_) => {}
         Ins::Newton(bi) => reverse_newton(rt, bi as usize, adj),
         Ins::Jz(..) | Ins::Jmp(..) => {}
+    }
+}
+
+/// Add `g * d(ins)/d(arg)` to the adjoint of every argument register of `ins`, where `g`
+/// is the adjoint of its result `d`.
+fn partials(rt: &mut Runtime, ins: &Ins, d: u32, mut args: Vec<u32>, adj: &mut [f64]) {
+    let g = take(adj, d);
+    if g == 0.0 {
+        return;
+    }
+    args.sort_unstable();
+    args.dedup();
+    let mut dr = vec![0.0; rt.r.len()];
+    for s in args {
+        dr.iter_mut().for_each(|x| *x = 0.0);
+        dr[s as usize] = 1.0;
+        rt.run_tangent(std::slice::from_ref(ins), &mut dr);
+        let p = dr[d as usize];
+        if p != 0.0 && p.is_finite() {
+            adj[s as usize] += g * p;
+        }
     }
 }
 

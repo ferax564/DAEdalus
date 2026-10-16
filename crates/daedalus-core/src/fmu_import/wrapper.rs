@@ -10,7 +10,7 @@
 //! `communicationStepSize`.
 
 use super::md::{Causality, ModelDescription, Ty, Variability};
-use crate::external::{DERIVATIVES, FMU_ANNOTATION, FmiKind, STATES, STEP};
+use crate::external_component::{DERIVATIVES, FMU_ANNOTATION, FmiKind, STATES, STEP};
 use std::collections::HashSet;
 use std::fmt::Write;
 

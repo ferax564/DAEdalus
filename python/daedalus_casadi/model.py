@@ -314,7 +314,7 @@ class Model:
             return [n[2], n[3]]
         if op == "if":
             return [n[1], n[2], n[3]]
-        if op in ("interp", "interp_der"):
+        if op in ("interp", "interp_der", "interp_der2"):
             return [n[3]]
         raise ValueError(f"unknown node '{op}'")
 
@@ -362,18 +362,23 @@ class Model:
                 return w * v[n[2]] + (1 - w) * v[n[3]]
             return ca.if_else(v[n[1]], v[n[2]], v[n[3]])
         if op == "interp":
-            return self._table_fn(n[1], n[2], False)(v[n[3]])
+            return self._table_fn(n[1], n[2], 0)(v[n[3]])
         if op == "interp_der":
-            return self._table_fn(n[1], n[2], True)(v[n[3]])
+            return self._table_fn(n[1], n[2], 1)(v[n[3]])
+        if op == "interp_der2":
+            return self._table_fn(n[1], n[2], 2)(v[n[3]])
         raise ValueError(f"unknown node '{op}'")
 
-    def _table_fn(self, t: int, col: int, der: bool) -> ca.Function:
-        key = (t, col, der)
+    def _table_fn(self, t: int, col: int, order: int) -> ca.Function:
+        """Value (``order`` 0) or derivative of order 1 or 2 of a table column."""
+        key = (t, col, order)
         if key not in self._table_fns:
             xs = ca.SX.sym("x")
-            y = table_expr(self._tables[t], col, xs)
-            out = ca.jacobian(y, xs) if der else y
-            self._table_fns[key] = ca.Function(f"table{t}_{col}{'_der' if der else ''}", [xs], [out])
+            out = table_expr(self._tables[t], col, xs)
+            for _ in range(order):
+                out = ca.jacobian(out, xs)
+            name = f"table{t}_{col}" + ("", "_der", "_der2")[order]
+            self._table_fns[key] = ca.Function(name, [xs], [out])
         return self._table_fns[key]
 
     def __repr__(self) -> str:
@@ -386,8 +391,10 @@ class Model:
 def table_expr(tab: dict, col: int, x):
     """Interpolate column ``col`` of an exported table at ``x`` (CasADi expression).
 
-    Follows the DAEdalus runtime: linear, constant or cubic Hermite segments,
-    hold / linear / periodic extrapolation, ``shift`` and ``start``.
+    Follows the DAEdalus runtime (the MSL C tables): linear, constant or cubic
+    spline segments, hold / linear / periodic extrapolation, ``shift`` and ``start``.
+    Linear extrapolation continues the edge segment (constant segments too) or the
+    end slope of a spline. Time tables are looked up without their event intervals.
     """
     rows, cols = tab["rows"], tab["cols"]
     data = np.asarray(tab["data"], dtype=float).reshape(rows, cols)
@@ -395,8 +402,9 @@ def table_expr(tab: dict, col: int, x):
     smooth = tab.get("smoothness", 0)
     extrap = tab.get("extrapolation", 0)
     start = _num(tab.get("start"))
-    slopes = np.asarray(tab.get("slopes") or [], dtype=float)
-    slopes = slopes.reshape(rows, cols)[:, col] if slopes.size else None
+    # spline coefficients [c0, c1, c2] per segment: y = y_k + ((c0 v + c1) v + c2) v
+    spline = np.asarray(tab.get("spline") or [], dtype=float)
+    coef = spline.reshape(rows - 1, cols, 3)[:, col, :] if spline.size and rows > 1 else None
     if rows == 0:
         return ca.SX(0.0) * x
     if rows == 1:
@@ -413,26 +421,28 @@ def table_expr(tab: dict, col: int, x):
         y = ca.SX(ys[0])
         for k in range(1, n):
             y = y + (ys[k] - ys[k - 1]) * (xi >= xs[k])
-    elif smooth == 2 and slopes is not None:
+        if extrap == 1:
+            for k, out in ((0, xi < x0), (n - 2, xi > x1)):
+                a, b = xs[k], xs[k + 1]
+                if b > a:
+                    lin = ys[k] + (ys[k + 1] - ys[k]) * (xi - a) / (b - a)
+                    y = ca.if_else(out, lin, y)
+    elif smooth == 2 and coef is not None:
         y = ca.SX(0.0)
         for k in range(n - 1):
             a, b = xs[k], xs[k + 1]
-            h = b - a
-            if h <= 0:
-                continue
-            w = (xi - a) / h
-            seg = (
-                (2 * w**3 - 3 * w**2 + 1) * ys[k]
-                + (w**3 - 2 * w**2 + w) * h * slopes[k]
-                + (-2 * w**3 + 3 * w**2) * ys[k + 1]
-                + (w**3 - w**2) * h * slopes[k + 1]
-            )
+            c0, c1, c2 = coef[k]
+            v = xi - a
+            seg = ys[k] + ((c0 * v + c1) * v + c2) * v
             lo = (xi >= a) if k > 0 else ca.SX(1)
             hi = (xi < b) if k < n - 2 else ca.SX(1)
             y = y + ca.if_else(ca.logic_and(lo, hi), seg, 0)
         if extrap == 1:
-            y = ca.if_else(xi < x0, ys[0] + slopes[0] * (xi - x0), y)
-            y = ca.if_else(xi > x1, ys[-1] + slopes[-1] * (xi - x1), y)
+            c0, c1, c2 = coef[-1]
+            h = x1 - xs[-2]
+            s1 = (3 * c0 * h + 2 * c1) * h + c2
+            y = ca.if_else(xi < x0, ys[0] + coef[0][2] * (xi - x0), y)
+            y = ca.if_else(xi > x1, ys[-1] + s1 * (xi - x1), y)
     else:
         # Sum of clamped ramps: exact for linear segments, with jumps at repeated abscissae.
         y = ca.SX(ys[0])

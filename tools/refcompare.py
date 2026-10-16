@@ -15,11 +15,15 @@ list of those signals. For each model this script
 Usage:
   tools/refcompare.py --daedalus target/release/daedalus --msl MSL_DIR \
       --ref REF_DIR [--filter Modelica.Blocks] [--jobs 4] [--timeout 120] \
-      [--json out.json] [--markdown out.md] [--baseline baseline.json]
+      [--json out.json] [--markdown out.md] [--baseline baseline.json] \
+      [--root ModelicaTest]
 
 MSL_DIR is a checkout of ModelicaStandardLibrary (with Modelica/,
 ModelicaServices/ and Complex.mo); REF_DIR a checkout of MAP-LIB_ReferenceResults
-at the matching tag. With --baseline, the exit status is non-zero when a model
+at the matching tag. --root selects the top-level package whose examples are
+compared (default: the first part of --filter, else Modelica); with ModelicaTest,
+MSL_DIR/ModelicaTest is loaded as well and the models under REF_DIR/ModelicaTest
+are listed. With --baseline, the exit status is non-zero when a model
 that passed in the baseline no longer passes.
 
 The JSON file holds {meta, summary, results}. meta records where the numbers
@@ -120,9 +124,9 @@ def model_dir(ref, model):
     return os.path.join(ref, *model.split("."))
 
 
-def list_models(ref, prefix):
+def list_models(ref, prefix, top="Modelica"):
     out = []
-    root = os.path.join(ref, "Modelica")
+    root = os.path.join(ref, top)
     for d, _, files in os.walk(root):
         if "comparisonSignals.txt" in files:
             rel = os.path.relpath(d, ref).replace(os.sep, ".")
@@ -147,6 +151,10 @@ def run_one(args, model):
             os.path.join(args.msl, "Modelica"),
             os.path.join(args.msl, "ModelicaServices"),
             os.path.join(args.msl, "Complex.mo"),
+        ]
+        if args.root != "Modelica":
+            cmd.append(os.path.join(args.msl, args.root))
+        cmd += [
             "-m", model, "-o", out, "--vars", ",".join(signals),
             "--start", repr(uniq[0]), "--stop", repr(uniq[-1]),
         ]
@@ -213,7 +221,8 @@ def main():
     ap.add_argument("--daedalus", required=True)
     ap.add_argument("--msl", required=True)
     ap.add_argument("--ref", required=True)
-    ap.add_argument("--filter", default="Modelica")
+    ap.add_argument("--filter", default=None)
+    ap.add_argument("--root", default=None, help="top-level package to compare (Modelica or ModelicaTest; default: the first part of --filter)")
     ap.add_argument("--jobs", type=int, default=os.cpu_count() or 1)
     ap.add_argument("--timeout", type=float, default=120)
     ap.add_argument("--json")
@@ -232,7 +241,11 @@ def main():
         "timeout": args.timeout,
     }
 
-    models = list_models(args.ref, args.filter)
+    if args.root is None:
+        args.root = (args.filter or "Modelica").split(".")[0]
+    if args.filter is None:
+        args.filter = args.root
+    models = list_models(args.ref, args.filter, args.root)
     results = []
     with cf.ThreadPoolExecutor(args.jobs) as ex:
         futs = {ex.submit(run_one, args, m): m for m in models}

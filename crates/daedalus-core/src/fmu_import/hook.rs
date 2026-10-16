@@ -7,7 +7,7 @@ use super::wrapper::{Port, interface};
 use crate::backend::AliasKind;
 use crate::codegen::{Model, Runtime};
 use crate::expr::VarId;
-use crate::external::{DERIVATIVES, ExternalComponent, FmiKind, Hook, STATES, STEP};
+use crate::external_component::{DERIVATIVES, ExternalComponent, FmiKind, Hook, STATES, STEP};
 use rustc_hash::FxHashMap;
 use std::sync::Arc;
 

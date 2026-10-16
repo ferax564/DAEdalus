@@ -51,7 +51,10 @@ impl Work {
             if !seen.insert(x) {
                 continue;
             }
-            if matches!(self.arena.node(x), Node::Rel(_) | Node::Initial) {
+            if matches!(
+                self.arena.node(x),
+                Node::Rel(_) | Node::Initial | Node::Terminal
+            ) {
                 return true;
             }
             ch.clear();
@@ -442,6 +445,10 @@ pub fn apply_substitution(w: &mut Work, subst: &FxHashMap<VarId, ExprId>) {
                     WhenAction::Assign(_, e)
                     | WhenAction::Reinit(_, e)
                     | WhenAction::Assert(e, _) => {
+                        *e = sub(&mut w.arena, *e, &mut memo);
+                    }
+                    WhenAction::Effect(c, e) => {
+                        *c = sub(&mut w.arena, *c, &mut memo);
                         *e = sub(&mut w.arena, *e, &mut memo);
                     }
                     WhenAction::Terminate(_) => {}

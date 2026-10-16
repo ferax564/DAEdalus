@@ -55,6 +55,17 @@ classes.
      Fritsch–Butland cubic smoothness, hold, linear and periodic
      extrapolation, and time events at breakpoints.
 
+**Synchronous models and state machines.** After flattening:
+1. `statemachines.rs` replaces the state machines of MLS chapter 17 by the
+   clocked equations of MLS 17.3.4: `selectedState`, `activeState`,
+   `nextState` and their resets per machine, plus the merged definitions of
+   the variables the states define.
+2. `clocks.rs` then:
+   - solves the clock equations;
+   - splits the clocked equations into partitions and infers their clocks;
+   - lowers each base clock to one `when` clause that runs the solved
+     equations of its partitions in dependency order.
+
 **Inspection (`inspect.rs`)** serves the workbench. For any class it returns:
 - the class tree;
 - components with their placements;

@@ -3,7 +3,7 @@
 
 use super::Fmu;
 use super::md::{FmiVersion, Ty};
-use crate::external::FmiKind;
+use crate::external_component::FmiKind;
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
 use std::sync::{Arc, Mutex};
 

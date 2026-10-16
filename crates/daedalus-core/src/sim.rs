@@ -315,7 +315,7 @@ impl<'m> Simulation<'m> {
     /// Run `f` on the external components' hook (imported FMUs), if the model has one.
     fn with_ext<R>(
         &mut self,
-        f: impl FnOnce(&mut dyn crate::external::Hook, &mut Runtime<'m>) -> R,
+        f: impl FnOnce(&mut dyn crate::external_component::Hook, &mut Runtime<'m>) -> R,
     ) -> Option<R> {
         let mut h = self.rt.ext.take()?;
         let r = f(&mut *h, &mut self.rt);
@@ -488,6 +488,10 @@ impl<'m> Simulation<'m> {
                         self.rt.run(&m.when_prog);
                     }
                     fired.push(wi);
+                    if !w.effects[bi].is_empty() {
+                        self.rt.run(&w.effects[bi]);
+                        self.drain_ext_log();
+                    }
                     if let Some(p) = self.prof.as_deref_mut() {
                         p.when_fired(wi, bi);
                     }
@@ -530,6 +534,27 @@ impl<'m> Simulation<'m> {
 
     fn rt_log(&mut self, s: String) {
         self.log.push(s);
+    }
+
+    /// The terminal event at the end of a successful simulation: `terminal()` is true and
+    /// the when-clauses it activates run (writing result files, for instance).
+    fn terminal_event(&mut self) {
+        let m = self.rt.m;
+        self.rt.run(&m.ode);
+        let prev = self.when_conds();
+        self.rt.r[m.layout.terminal] = 1.0;
+        let conds = self.when_conds();
+        self.fire(&conds, &prev);
+        self.rt.r[m.layout.terminal] = 0.0;
+        self.drain_ext_log();
+    }
+
+    /// Move the lines printed by external functions (`print`, errors) to the log.
+    fn drain_ext_log(&mut self) {
+        if !self.rt.loops.ext.log.is_empty() {
+            let lines = self.rt.loops.ext.take_log();
+            self.log.extend(lines);
+        }
     }
 
     /// Event iteration at the current time until discrete values settle.
@@ -778,7 +803,7 @@ impl<'m> Simulation<'m> {
         self.rt.run(&m.starts);
         self.rt.save_pre();
         if !m.externals.is_empty() && self.rt.ext.is_none() {
-            let make = crate::external::factory().ok_or_else(|| crate::external::unsupported(m))?;
+            let make = crate::external_component::factory().ok_or_else(|| crate::external_component::unsupported(m))?;
             self.rt.ext = Some(make(m)?);
         }
         let (stop, tol) = (self.opts.stop_time, self.opts.tolerance);
@@ -882,11 +907,15 @@ impl<'m> Simulation<'m> {
         let t1 = crate::backend::web_time_now();
         self.stats.init_ms = (t1 - t_init) * 1000.0;
         let r = self.integrate(&mut rec);
+        if r.is_ok() {
+            self.terminal_event();
+        }
         self.stats.sim_ms = (crate::backend::web_time_now() - t1) * 1000.0;
         self.stats.newton_solves = self.rt.newton_stats.solves;
         self.stats.newton_iterations = self.rt.newton_stats.iterations;
         self.stats.output_points = rec.res.time.len();
         self.stats.states = m.states.len();
+        self.drain_ext_log();
         rec.res.log.append(&mut self.log);
         if let Some(msg) = &self.terminated {
             rec.res.log.push(format!("terminated: {msg}"));

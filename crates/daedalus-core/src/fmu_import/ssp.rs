@@ -10,7 +10,7 @@
 use super::Fmu;
 use super::md::{Causality, ModelDescription, Ty};
 use super::wrapper::{self, Port, WrapperOptions, interface, wrapper_text};
-use crate::external::FmiKind;
+use crate::external_component::FmiKind;
 use anyhow::{Context, Result, anyhow, bail};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;

@@ -391,7 +391,7 @@ fn run() -> anyhow::Result<()> {
             "--fmi-type" => {
                 let t = next(&mut i)?;
                 import.kind = Some(
-                    daedalus_core::external::FmiKind::parse(&t)
+                    daedalus_core::external_component::FmiKind::parse(&t)
                         .ok_or_else(|| anyhow::anyhow!("unknown FMI type '{t}' (me | cs)"))?,
                 )
             }

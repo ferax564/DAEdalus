@@ -112,6 +112,10 @@ pub enum WhenAction {
     Terminate(String),
     /// `assert(cond, msg)` evaluated at the event.
     Assert(ExprId, String),
+    /// `Effect(cond, call)`: a call of an impure external function (a [`crate::expr::Node::Call`]
+    /// of a native program), executed when the branch fires and `cond` holds, before the
+    /// other actions read its results. Effects run in the order of the list.
+    Effect(ExprId, ExprId),
 }
 
 /// `when c1 then .. elsewhen c2 then .. end when` lowered to an ordered list of branches.
@@ -162,8 +166,8 @@ pub struct FlatModel {
     pub origins: Vec<String>,
     pub experiment: Experiment,
     pub warnings: Vec<String>,
-    /// Instances of FMU wrapper blocks (see [`crate::external`]).
-    pub externals: Vec<crate::external::ExternalComponent>,
+    /// Instances of FMU wrapper blocks (see [`crate::external_component`]).
+    pub externals: Vec<crate::external_component::ExternalComponent>,
     /// Source position of an origin (index into `origins`), where the frontend knows it.
     pub origin_locs: rustc_hash::FxHashMap<u32, SrcLoc>,
     /// Where the `start` attribute of a variable comes from (equation debugger).
@@ -265,6 +269,9 @@ impl FlatModel {
                         }
                         WhenAction::Assert(c, m) => {
                             let _ = writeln!(s, "    assert({}, {m:?});", self.show(*c));
+                        }
+                        WhenAction::Effect(c, e) => {
+                            let _ = writeln!(s, "    if {} then {};", self.show(*c), self.show(*e));
                         }
                     }
                 }

@@ -6,7 +6,7 @@
 //! - [`wrapper`] generates the Modelica wrapper block of an FMU (`daedalus import-fmu`):
 //!   parameters, inputs and outputs from the model description, and an annotation
 //!   `__Daedalus_FMU(fileName = ..., fmiType = ...)` that marks the block as an external
-//!   component (see [`crate::external`]).
+//!   component (see [`crate::external_component`]).
 //! - [`hook`] evaluates the FMU components of a model inside the simulator: Model
 //!   Exchange FMUs contribute their states, derivatives and event indicators to the
 //!   model's integrator; Co-Simulation FMUs are stepped at their communication step
