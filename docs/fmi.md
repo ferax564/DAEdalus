@@ -1,7 +1,9 @@
 # FMI and SSP
 
-`daedalus fmu` exports a model as a Functional Mock-up Unit for FMI 2.0 or 3.0, so it runs in any
-FMI importer: Simulink, Dymola, OpenModelica, FMPy, Silver, or your own co-simulation
+An FMU (Functional Mock-up Unit) is a single file that packages a model so that another
+simulation tool can run it. FMI is the standard that defines how those files work.
+
+`daedalus fmu` exports a model as an FMU for FMI 2.0 or 3.0, so it runs in any FMI importer: Simulink, Dymola, OpenModelica, FMPy, Silver, or your own co-simulation
 master. One FMU carries both interfaces:
 
 - **Co-Simulation.** The FMU steps itself with the model's own BDF or Dopri5 solver and

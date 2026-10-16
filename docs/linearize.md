@@ -1,7 +1,11 @@
 # Linearization
 
 `daedalus linearize` computes the linear state-space model of a Modelica model around an
-operating point:
+operating point. In plain terms, it replaces the model's nonlinear equations with straight-line
+approximations at one working point. The result is a small matrix system that control tools can
+analyze. The four matrices say: how the states drive their own change (A), how the inputs drive the
+states (B), how the states show up in the outputs (C), and how the inputs reach the outputs directly (D).
+
 
 ```
 der(x) = A x + B u

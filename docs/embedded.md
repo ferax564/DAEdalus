@@ -1,5 +1,9 @@
 # Embedded C code and processor in the loop
 
+In plain terms: you design a controller in Modelica, DAEdalus turns it into C code for a
+microcontroller, and then you test that code against a simulated plant before any hardware is
+involved.
+
 `daedalus codegen-c` turns a Modelica model with top-level inputs and outputs, typically a
 controller block, into portable C99 that advances it by a fixed step. `daedalus hil` then
 runs that code in closed loop with a plant model simulated by DAEdalus: on your computer
