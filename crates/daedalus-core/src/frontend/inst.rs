@@ -7689,7 +7689,11 @@ impl<'a, 't> Flattener<'a, 't> {
             match s {
                 ast::Statement::Empty => {}
                 ast::Statement::Assignment { comp, value } => {
-                    let v = self.translate(value, scope, ctx)?;
+                    let v = match self.translate(value, scope, ctx)? {
+                        // `data := readLine(file, i)`: one target takes the first output.
+                        Val::Tuple(t) if !t.is_empty() => t.into_iter().next().unwrap(),
+                        v => v,
+                    };
                     let guard = self.exit_guard(ctx);
                     let before = guard.map(|_| ctx.locals.clone());
                     self.assign_local(comp, v, scope, ctx)?;
@@ -8384,39 +8388,77 @@ impl<'a, 't> Flattener<'a, 't> {
                 let sel = match self.eval_subscripts(subs, &dims, scope, ctx) {
                     Ok(sel) => sel,
                     Err(e) => {
-                        // `x[i] := v` with an index known only at run time: every element
-                        // becomes `if i == k then v else x[k]`.
-                        if subs.len() != dims.len()
-                            || !subs
-                                .iter()
-                                .all(|s| matches!(s, ast::Subscript::Expression(_)))
-                        {
+                        // `x[i] := v`, `x[i, 1:n] := w` with an index known only at run
+                        // time: every selected element becomes `if i == k then v else x[k]`.
+                        if subs.len() != dims.len() {
                             return Err(e);
                         }
-                        let mut idx = Vec::with_capacity(subs.len());
+                        // Per dimension: a run-time index, or the constant positions taken.
+                        let mut rt: Vec<Option<ExprId>> = Vec::with_capacity(subs.len());
+                        let mut sets: Vec<Vec<usize>> = Vec::with_capacity(subs.len());
                         for (k, s) in subs.iter().enumerate() {
-                            let ast::Subscript::Expression(x) = s else {
-                                unreachable!()
-                            };
-                            let saved = ctx.end_value;
-                            ctx.end_value = Some(dims[k]);
-                            let i = self.translate(x, scope, ctx);
-                            ctx.end_value = saved;
-                            idx.push(i?.scalar()?);
-                        }
-                        let val = v.scalar()?;
-                        for (flat, e) in el.iter_mut().enumerate() {
-                            let mut rem = flat;
-                            let mut cond = Arena::ONE;
-                            for k in (0..dims.len()).rev() {
-                                let pos = rem % dims[k];
-                                rem /= dims[k];
-                                let a = &mut self.model.arena;
-                                let kc = a.constant((pos + 1) as f64);
-                                let c = a.cmp(Cmp::Eq, idx[k], kc);
-                                cond = a.f2(Fn2::And, cond, c);
+                            match s {
+                                ast::Subscript::Expression(x) => {
+                                    let saved = ctx.end_value;
+                                    ctx.end_value = Some(dims[k]);
+                                    let i = self.translate(x, scope, ctx);
+                                    ctx.end_value = saved;
+                                    match i? {
+                                        Val::A(_, xs) => {
+                                            let mut pos = Vec::with_capacity(xs.len());
+                                            for x in xs {
+                                                let Some(c) = self.eval_param_expr(x) else {
+                                                    return Err(e);
+                                                };
+                                                pos.push((c as usize).wrapping_sub(1));
+                                            }
+                                            rt.push(None);
+                                            sets.push(pos);
+                                        }
+                                        other => {
+                                            rt.push(Some(other.scalar()?));
+                                            sets.push(Vec::new());
+                                        }
+                                    }
+                                }
+                                _ => {
+                                    rt.push(None);
+                                    sets.push((0..dims[k]).collect());
+                                }
                             }
-                            *e = self.model.arena.if_(cond, val, *e);
+                        }
+                        let (_, vals) = v.elems()?;
+                        if vals.is_empty() {
+                            return Err(e);
+                        }
+                        for (flat, el_e) in el.iter_mut().enumerate() {
+                            let mut rem = flat;
+                            let mut pos = vec![0; dims.len()];
+                            for k in (0..dims.len()).rev() {
+                                pos[k] = rem % dims[k];
+                                rem /= dims[k];
+                            }
+                            let mut cond = Arena::ONE;
+                            let mut vi = 0usize;
+                            let mut taken = true;
+                            for k in 0..dims.len() {
+                                match rt[k] {
+                                    Some(i) => {
+                                        let a = &mut self.model.arena;
+                                        let kc = a.constant((pos[k] + 1) as f64);
+                                        let c = a.cmp(Cmp::Eq, i, kc);
+                                        cond = a.f2(Fn2::And, cond, c);
+                                    }
+                                    None => match sets[k].iter().position(|&p| p == pos[k]) {
+                                        Some(j) => vi = vi * sets[k].len() + j,
+                                        None => taken = false,
+                                    },
+                                }
+                            }
+                            if taken {
+                                let val = *vals.get(vi).unwrap_or(&vals[0]);
+                                *el_e = self.model.arena.if_(cond, val, *el_e);
+                            }
                         }
                         return Ok(Val::A(dims, el));
                     }
