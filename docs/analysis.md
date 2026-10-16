@@ -13,6 +13,8 @@ with no scripting.
 | How much does the result spread? Which inputs cause the spread? | `montecarlo`, `gsa` | Uncertainty |
 | Which parameter values fit my measurements? | `calibrate` | Calibrate |
 | Which value meets my target? | `optimize` | Optimize |
+| How does a scalar depend on many parameters? | `sensitivity --adjoint` | Sensitivity (adjoint) |
+| Which factors and interactions matter, over a designed set of runs? | `doe` | DOE |
 
 Only free parameters can be varied: public parameters with a literal value, the ones
 that are editable in the variable browser. Parameters computed from others, protected
@@ -66,6 +68,54 @@ ranking (time average of |p/y dy/dp|, summed over outputs):
 
 The output holds the time series of `dy/dp` and of the normalized `p/y dy/dp`, and `-o`
 writes them as JSON or CSV.
+
+## Adjoint gradients
+
+With many parameters and one scalar to differentiate, `--adjoint` computes the whole
+gradient for about the cost of one forward and one backward solve, however many
+parameters there are:
+
+```sh
+daedalus sensitivity crates/daedalus-core/tests/models/adjoint.mo -m Adjoint.Chain --adjoint \
+    --objective 'integral(y)' --params k1,k2,k3,k4,k5,k6,g,w,e
+```
+
+```
+gradient of integral(y) for Adjoint.Chain (adjoint: backward solve with reverse-mode tape passes)
+  note: adjoint: 1000 backward Radau IIA steps over 1001 mesh nodes; 4000 reverse and 12000 tangent tape passes (forward 0.8 ms, backward 10.1 ms)
+
+  J = 4.0528170837e0
+
+  parameter                             value            dJ/dp    p/J dJ/dp
+  k1                               1.000000e0    7.79789943e-2    1.9241e-2
+  k5                              6.000000e-1    1.13501154e-1    1.6803e-2
+  g                               9.000000e-1    7.33660425e-2    1.6292e-2
+  k6                               1.100000e0   -5.09701197e-2   -1.3834e-2
+  e                                1.500000e0    3.60191614e-2    1.3331e-2
+  k3                              8.000000e-1    6.24062793e-2    1.2319e-2
+  k4                               1.700000e0    2.13180931e-2    8.9421e-3
+  k2                               1.300000e0    1.97269796e-2    6.3277e-3
+  w                                2.000000e0   -5.16754637e-3   -2.5501e-3
+```
+
+Nine parameters, one backward solve of about 10 ms.
+
+- Objectives: `final(x)`, `at(x,T)`, `integral(x)` or `mean(x)`, with an optional window
+  such as `integral(x,T0,T1)`. `max` and `min` are differentiated at the maximum or
+  minimum on the output grid.
+- The backward pass solves `-dλ/dt = (df/dx)ᵀ λ + (dg/dx)ᵀ` with a two-stage Radau IIA
+  step, and each `f_pᵀ λ` is one reverse pass over the compiled model, algebraic loops
+  included.
+- `--grad-method auto|adjoint|forward|fd`: `auto` uses the adjoint and falls back to
+  forward sensitivities or differences for models with events, saying why.
+- The gradients agree with forward sensitivities and central differences to about 1e-7
+  relative on the test models (`crates/daedalus-core/tests/adjoint.rs`).
+
+The same gradients drive `optimize --algorithm lbfgsb` and `calibrate --optimizer lbfgsb`
+(bound-constrained L-BFGS-B). On a 6-state chain with 9 parameters, L-BFGS-B converges in
+about 5 runs plus 5 gradients, where Nelder–Mead needs several hundred runs.
+
+![Adjoint sensitivity of integral(y) in Adjoint.Chain: the normalized gradient for nine parameters from one backward solve](img/analysis/adjoint.webp)
 
 ## Uncertainty and global sensitivity
 
@@ -156,6 +206,53 @@ modifier: (linear(m_body = 500.70892))
 
 Dynamic optimization, where the inputs vary over time and constraints apply along the
 trajectory, is the job of the [CasADi export](optimal-control.md).
+
+## Design of experiments
+
+`daedalus doe` runs a designed set of experiments and fits a quadratic response surface
+to each quantity. Three factors on the quarter car, in a central composite design:
+
+```sh
+daedalus doe library/Daedalus -m Daedalus.Examples.QuarterCar.BumpComparison \
+    --factor linear.m_body=300:500 --factor linear.c_spring=20e3:40e3 --factor bump.h=0.03:0.07 \
+    --design ccd --qoi 'max(linear.a_body)' --qoi 'max(linear.body.s)' --pareto min,min
+```
+
+```
+central composite design of Daedalus.Examples.QuarterCar.BumpComparison: 15 runs over linear.m_body, linear.c_spring, bump.h, 0 failed
+  note: surface coefficients in coded units: x = (p - center) / half-range
+
+max(linear.a_body): R^2 = 0.99959, adjusted R^2 = 0.99884, RMSE = 1.7867e-1 (15 runs, 10 terms)
+  term                              coefficient    std error           t
+  1                                  1.239930e1    9.6031e-2     1.291e2
+  linear.m_body                     -3.124492e0    5.6500e-2    -5.530e1
+  linear.c_spring                   4.985366e-1    5.6500e-2     8.824e0
+  bump.h                             5.198308e0    5.6500e-2     9.201e1
+  linear.m_body*bump.h              -1.249333e0    6.3169e-2    -1.978e1
+  linear.m_body^2                   7.431336e-1    1.1142e-1     6.670e0
+  ...
+
+Pareto front of max(linear.a_body) (min) and max(linear.body.s) (min): 1 runs
+  run    2:    5.77770e0   6.04319e-1   linear.m_body = 500.000000, linear.c_spring = 20000.000000, bump.h = 0.030000
+```
+
+In coded units, the bump height raises the peak acceleration by 5.2 m/s² over half its
+range and the body mass lowers it by 3.1 m/s². A heavier body also softens the effect
+of the bump (the `m_body*bump.h` interaction).
+
+- Designs: `full` factorial with `p=lo:hi:levels`; `frac`, 2^(k−p) fractions with
+  minimum-aberration generators, your own `--generators` or a `--resolution`; `ccd`
+  (default), with `--alpha face|rotatable|orthogonal`; `bbd`, Box–Behnken; and `lhs`.
+- Per quantity: R², adjusted R², RMSE and coefficients with standard errors and
+  t-values. Terms the design cannot estimate are dropped and listed.
+- Main effects, two-factor interaction tables and, with `--pareto` for two quantities,
+  the non-dominated runs.
+
+The workbench's **DOE** tab picks the design and the quantities and shows main effects,
+interactions, coefficients and the Pareto front. **Use** applies a Pareto point's
+parameters.
+
+![A central composite design on three parameters of Adjoint.Chain: main effects, response surface coefficients with error bars, and the fit table](img/analysis/doe.webp)
 
 ## Checked against known answers
 

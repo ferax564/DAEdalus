@@ -32,6 +32,8 @@ surrogate of 2 outputs over 2 parameters, 120 runs (24 held out)
   i_rms: R2 0.9999, max error 0.01005 (range 1.307)
 ```
 
+![Left: the friction torque recovered from noisy speed data, the true law and the SINDy formula. Right: the speed error against the rig, without the friction and with the discovered law](img/sciml/missing_physics.webp)
+
 ## Missing physics
 
 The known model, with the unknown torque as an input:

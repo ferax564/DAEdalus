@@ -88,7 +88,7 @@
 ### Modelica Standard Library coverage
 
 The MSL 4.x sweep is `daedalus test-library <MSL> -m Modelica`:
-**473 of 534** example models translate and simulate (up from 441, 261 and 110
+**489 of 534** example models translate and simulate (up from 473, 441, 261 and 110
 before that). Recently covered: `Modelica.Media` (IF97 water, R134a, ideal-gas
 mixtures, moist air, reference air) and most `Modelica.Fluid` examples, through
 compiled run-time functions with exact forward-mode partials, Dymola-style
