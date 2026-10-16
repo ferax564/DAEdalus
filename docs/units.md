@@ -5,6 +5,11 @@ have none, and shows each variable in the unit you choose. Findings are warnings
 errors, and the rules are tuned so that the Modelica Standard Library's own idioms stay
 quiet.
 
+In plain terms: a unit says what a number measures, such as metres or seconds. The check
+catches slips such as adding a height to a flow, which are easy to miss in a long model.
+Inferring a unit means working out the unit of a variable that has none, from the
+equations it appears in.
+
 ## Checking a model
 
 ```sh
@@ -55,7 +60,8 @@ In the workbench, **Check** lists the unit issues in the Messages panel.
   `degC`, `bar`, `rpm`, `l`, `min`, `h` and the Imperial `ft`, `in`, `lbf`, `psi`, `mph`,
   `hp`, `degF` and more.
 - The terms of a sum, the two sides of an equation, the branches of an `if`, the operands
-  of a relation and the arguments of `min` and `max` must agree. Products combine units,
+  of a relation and the arguments of `min` and `max` must agree. In short, you can only
+  add, compare or equate quantities that share a unit. Products combine units,
   `der()` divides by seconds and `sqrt` halves the exponents. The arguments of `sin`,
   `exp` and similar functions must be dimensionless.
 - Functions are checked through their inlined bodies, with the units of the actual
@@ -74,7 +80,8 @@ are clean. It costs about 1 % of the flattening time.
 
 ## Display units
 
-Plots show each variable in its `displayUnit`. Without one, they use a Dymola-style
+A `displayUnit` is the unit a variable is shown in. It changes only how results look, not
+how the model is simulated. Plots show each variable in its `displayUnit`. Without one, they use a Dymola-style
 default: rpm, deg, bar, degC, l/min or kJ. The plot toolbar picks the unit of the x and y
 axes from the units that convert. **Imperial** switches the defaults to ft, lbf, lbf.ft,
 psi, mph, degF, hp, gal/min and similar units. Variables whose unit was inferred are

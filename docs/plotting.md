@@ -4,6 +4,9 @@ Results stream into the plot while a simulation runs. A dashboard of sliders and
 can change parameters during the run without restarting it. The plot window itself has
 matrix layouts, expressions, FFTs and statistics.
 
+In plain terms: a plot draws each result as a curve over time. A dashboard is a page of
+controls, such as sliders, that you can move while the model is still running.
+
 ![NEDCSensitivity plotting live: four NEDC cycles in, with the run still going](img/plotting/live.webp)
 
 ## Live plotting
@@ -35,11 +38,14 @@ of both connectors.
   `integral(x)`, `movavg(x, T)` and `rms(x, T)`. `min`, `max`, `pow`, `atan2`, the usual
   elementary functions, `pi`, `e` and `time` also work.
 - **FFT.** `fft(x)` plots the amplitude spectrum of the visible time window in a
-  frequency subplot. The window is resampled uniformly to a power of two, with a Hann
-  window.
+  frequency subplot. The spectrum shows how strong each frequency in the signal is. The
+  window is resampled uniformly to a power of two, with a Hann window (a smooth taper that
+  reduces the blur between neighbouring frequencies).
 - **Signal…** applies one of these operators to every variable of the active subplot.
 - **Stats** shows the min, max, time-weighted mean, RMS and peak-to-peak of every curve
-  over the visible window, and updates as you zoom.
+  over the visible window, and updates as you zoom. The time-weighted mean counts each
+  value by how long it lasts, and RMS (root mean square) is the typical size of a signal
+  that swings above and below zero.
 - **Units**: each axis can be shown in any unit its quantity converts to, and **Imperial**
   switches the defaults; see [Unit checking](units.md#display-units).
 
