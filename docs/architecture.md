@@ -4,7 +4,7 @@ DAEdalus goes from Modelica source text to results in five stages:
 
 ```
 .mo sources ──► frontend ──► flat model ──► backend ──► causal system ──► codegen ──► tape ──► solvers ──► results
-               (Rumoca     (scalar DAE)    (symbolic)                    (register             (BDF, Dopri5,   (.mat / CSV /
+               (Rumoca     (scalar DAE)    (symbolic)                    (register             (BDF, Radau,    (.mat / CSV /
                 parser +                                                  bytecode)             RK4, events)    in memory)
                 own inst.)
 ```
@@ -65,6 +65,13 @@ classes.
 `inspect.rs` parses annotations with a small recursive-descent parser over the
 source text. This keeps annotations out of the simulation path.
 
+**Editing (`edit.rs`)** backs the diagram editor. It scans the document's
+tokens into class structure (sections, declarations with their modification,
+binding and annotation, connect equations, compound equations), then edits
+by replacing token ranges: comments and layout outside the touched tokens are
+kept byte for byte. An edit and its inverse give back the original file; the
+tests check this on every Daedalus example and on 613 MSL classes.
+
 ## Expression arena (`src/expr.rs`)
 
 Every expression is a hash-consed node in one arena. This gives three things:
@@ -120,8 +127,9 @@ The tape for the 10,000-mass chain has 360k instructions.
 
 **BDF.** Variable order 1–5 and variable step, the stiff default and the role
 DASSL plays in Dymola.
-- The Jacobian is built by colored finite differences, so it costs a few
-  function evaluations, not n.
+- The Jacobian (`src/solver_jac.rs`) is computed per color group of the
+  dependency pattern, so it costs a few passes, not n: exact forward-mode
+  passes of the tape by default, or finite differences (`--jacobian fd`).
 - Up to 48 states, Newton matrices use dense LU. Its singularity test is
   relative to each column, which avoids false singular reports when states have
   very different scales.
@@ -129,8 +137,14 @@ DASSL plays in Dymola.
   minimum-degree ordering. Threshold pivoting prefers the diagonal (threshold
   0.001), which keeps fill near zero for mechanical chains.
 
-**Explicit methods.** Dopri5 is Dormand–Prince 5(4) with dense output. RK4 and
-Euler run at a fixed step for real-time use.
+**Implicit Runge–Kutta.** Radau IIA order 5 (`src/solver_radau.rs`, after
+Hairer & Wanner's RADAU5, with the real/complex block decomposition of the
+Newton system) and ESDIRK4(3)6L[2]SA (`src/solver_esdirk.rs`). Both check the
+error of their dense output at mid-step. See [solvers.md](solvers.md).
+
+**Explicit methods.** Dopri5 is Dormand–Prince 5(4) with dense output and
+Hairer's stiffness test; `auto` (`src/solver_auto.rs`) switches from it to BDF
+and back. RK4 and Euler run at a fixed step for real-time use.
 
 **Events.**
 - Relations are monitored as zero crossings and located on the dense output.

@@ -225,6 +225,7 @@ impl CompiledModel {
         let opts = Options {
             index_reduction,
             tearing,
+            ..Default::default()
         };
         let (r, parse_errors) = py.detach(|| load_and_translate(&paths, &name, &opts));
         match r {

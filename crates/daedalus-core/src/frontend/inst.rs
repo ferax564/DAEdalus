@@ -4188,7 +4188,9 @@ impl<'a, 't> Flattener<'a, 't> {
                 Ok(Val::A(dims, out))
             }
             ArrayConstructor::Horizontal | ArrayConstructor::Vertical
-                if vals.iter().any(|v| matches!(v, Val::A(d, _) if d.len() > 2)) =>
+                if vals
+                    .iter()
+                    .any(|v| matches!(v, Val::A(d, _) if d.len() > 2)) =>
             {
                 // [A] / [A, B] / [A; B] with arrays of three or more dimensions:
                 // cat along dimension 2 (`,`) or 1 (`;`); the others must agree.
@@ -5688,8 +5690,13 @@ impl<'a, 't> Flattener<'a, 't> {
                     nargv.push((n.clone(), v.clone()));
                 }
             }
-            let outs =
-                self.inline_function_in(fv.cls, argv, nargv, fv.overrides.clone(), fv.penv.clone())?;
+            let outs = self.inline_function_in(
+                fv.cls,
+                argv,
+                nargv,
+                fv.overrides.clone(),
+                fv.penv.clone(),
+            )?;
             return Ok(if outs.len() == 1 {
                 outs.into_iter().next().unwrap()
             } else {
@@ -5953,17 +5960,17 @@ impl<'a, 't> Flattener<'a, 't> {
             let tparts: Vec<&str> = c.type_name.name.iter().map(|t| &*t.text).collect();
             // Through the package the function was reached by (`Medium.density`), the
             // record is the medium's own `ThermodynamicState`.
-            let t = match penv
-                .clone()
-                .and_then(|pe| this.lookup_class(&pe, &tparts))
-            {
+            let t = match penv.clone().and_then(|pe| this.lookup_class(&pe, &tparts)) {
                 Some(t) => t,
                 None => {
                     let env = this.env_of(*owner);
                     this.lookup_class(&env, &tparts)?
                 }
             };
-            if !matches!(this.tree.class_type(t), ClassType::Record | ClassType::Operator) {
+            if !matches!(
+                this.tree.class_type(t),
+                ClassType::Record | ClassType::Operator
+            ) {
                 return None;
             }
             // An array of record components: one call per element.
@@ -7353,7 +7360,11 @@ impl<'a, 't> Flattener<'a, 't> {
         // How each branch leaves: unconditionally (static flag) or under a run-time
         // condition (symbolic flag); `None` if it falls through.
         let exit_of = |stat: bool, sym: Option<ExprId>| -> ExprId {
-            if stat { Arena::ONE } else { sym.unwrap_or(Arena::ZERO) }
+            if stat {
+                Arena::ONE
+            } else {
+                sym.unwrap_or(Arena::ZERO)
+            }
         };
         let t_ret = exit_of(r1, ctx.sret);
         let t_brk = exit_of(ctx.broke, ctx.sbrk);
@@ -8096,7 +8107,9 @@ fn vals_identical(a: &Val, b: &Val) -> bool {
         (Val::SA(d1, x), Val::SA(d2, y)) => d1 == d2 && x == y,
         (Val::Rec(x), Val::Rec(y)) => {
             x.len() == y.len()
-                && x.iter().zip(y).all(|((n, u), (m, v))| n == m && vals_identical(u, v))
+                && x.iter()
+                    .zip(y)
+                    .all(|((n, u), (m, v))| n == m && vals_identical(u, v))
         }
         (Val::Tuple(x), Val::Tuple(y)) => {
             x.len() == y.len() && x.iter().zip(y).all(|(u, v)| vals_identical(u, v))

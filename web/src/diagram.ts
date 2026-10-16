@@ -28,6 +28,10 @@ export class DiagramView {
   private renderToken = 0;
   onSelect: (c: ComponentInfo | null) => void = () => {};
   onOpen: (typePath: string) => void = () => {};
+  /** The last diagram drawn and its placement matrices (for the diagram editor). */
+  rendered: { cls: ClassInfo; mats: Map<string, Mat>; root: SVGGElement } | null = null;
+  /** Called after every render of a class. */
+  onRendered: (kind: ViewKind) => void = () => {};
 
   constructor(host: HTMLElement, private src: ClassSource, private classes: Map<string, ClassInfo>) {
     this.svg = document.createElementNS(SVG_NS, "svg");
@@ -95,10 +99,12 @@ export class DiagramView {
     this.applyView();
   }
 
-  async show(cls: ClassInfo, kind: ViewKind) {
+  /** Draw a class; `keepView` keeps the current pan and zoom (after an edit). */
+  async show(cls: ClassInfo, kind: ViewKind, keepView = false) {
     const token = ++this.renderToken;
     const g = el("g", { transform: "scale(1,-1)" });
     const ctx = newCtx(this.svg);
+    let mats = new Map<string, Mat>();
     const layer = kind === "icon" ? cls.icon : cls.diagram;
     const ext = systemExtent(layer.coordinate_system);
     // drawing frame
@@ -110,7 +116,7 @@ export class DiagramView {
       ctx.subst = (s) => s.replace("%name", cls.name);
       ctx.cond = condition(null, cls, this.classes);
       drawGraphics(g, cls.diagram.graphics, IDENTITY, ctx);
-      const mats = await this.layout(cls);
+      mats = await this.layout(cls);
       if (token !== this.renderToken) return;
       // Conditional components switched off by their parameters are not drawn.
       const off = new Set(cls.components.filter((c) => c.condition && ctx.cond(c.condition) === false).map((c) => c.name));
@@ -130,7 +136,9 @@ export class DiagramView {
     if (token !== this.renderToken) return;
     this.svg.replaceChild(g, this.root);
     this.root = g;
-    this.fit(this.contentExtent(ext));
+    if (!keepView) this.fit(this.contentExtent(ext));
+    this.rendered = kind === "diagram" ? { cls, mats, root: g } : null;
+    this.onRendered(kind);
   }
 
   private contentExtent(ext: [[number, number], [number, number]]): [[number, number], [number, number]] {

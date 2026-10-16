@@ -3,8 +3,11 @@
 use daedalus_core::backend::Options;
 use daedalus_core::frontend::Library;
 use daedalus_core::sim::{Method, SimOptions};
+mod analysis;
 mod fmu;
 mod manage;
+mod mcp;
+mod sweep;
 mod mos;
 
 use std::path::Path;
@@ -34,9 +37,18 @@ COMMANDS:
               [--msl DIR] (see docs/scripting.md)
   fmu         export an FMI 2.0 FMU (Model Exchange and Co-Simulation) to -o
               (default <Model>.fmu); needs the runtime libdaedalus_fmi.so
+  mcp         serve the libraries to an AI assistant over the Model Context
+              Protocol (stdio): browse, edit, check, simulate, linearize.
+              `daedalus mcp [sources...] [-L DIR] [--workspace DIR]`
   test-library  translate and simulate every model with an experiment
                 annotation under --model (a package), each in its own
                 process with a time limit; prints a report
+  sweep       simulate once per parameter combination (-s), in parallel
+              threads; prints a summary table (see SWEEP OPTIONS)
+  structure   model structure: variable roles, BLT blocks, incidence,
+              state selection and why; with the state Jacobian at the start
+              (or --at T): sparsity, condition, eigenvalues, time constants,
+              participation factors, stiffness, algebraic-loop Jacobians
 {MANAGE}
 SOURCES:
   .mo files or directories (loaded recursively), or model packages (.zip). The
@@ -52,7 +64,9 @@ OPTIONS:
   --interval DT           output interval
   -n, --intervals N       number of output intervals (default 500)
   --tol TOL               relative tolerance (default 1e-6)
-  --method M              bdf | dopri5 | rk4 | euler
+  --method M              bdf | radau | esdirk | auto | dopri5 | rk4 | euler
+                          (default: the experiment's __Dymola_Algorithm, else
+                          bdf; auto switches between dopri5 and bdf)
   --step H                fixed step size
   --store-events E        rows at events: all | none | N (default: about
                           50 million values, at least the output points)
@@ -66,7 +80,9 @@ OPTIONS:
   --format F              linearize: text | json | mo (default text; mo writes
                           model linearized_model, to linearized_model.mo
                           unless -o is given); steady: text | json
-  --jacobian J            linearize: exact | fd (central differences)
+  --jacobian J            linearize: exact | fd (central differences);
+                          simulate: state Jacobian of bdf/radau/esdirk/auto,
+                          exact (default) | fd (forward differences)
   --at-time T             steady: simulate to time T first (default: start)
   --free a,b              steady: inputs or parameters to solve for (trim)
   --target y=v            steady: target value of a variable (repeatable or
@@ -74,6 +90,55 @@ OPTIONS:
   --fmi-lib FILE          fmu: the FMI runtime library (default: next to this
                           executable, or $DAEDALUS_FMI_LIB)
   --timeout S             per-model time limit for test-library (default 60)
+  --state NAME=TIER       stateSelect override, TIER = always | prefer | default
+                          | avoid | never; NAME may be a glob (arm.*.phi)
+                          (repeatable; check, dump, simulate, linearize,
+                          structure, fmu, export-casadi)
+  --no-jacobian           structure: skip the Jacobian analysis (structure also
+                          takes --at T and --format text | json)
+  --profile [FILE.json]   simulate: record a performance profile (step sizes,
+                          states limiting the step, time per block, event log,
+                          chattering) and print its summary; with a .json file
+                          also write the full profile there
+  --events                simulate: print the event log (implies profiling)
+
+SWEEP OPTIONS:
+  -s, --sweep NAME=VALUES  swept parameter (repeatable); VALUES is a list
+                          1,2,3 or lin:START:STOP:N or log:START:STOP:N
+  --grouped               run the n-th values of all parameters together
+                          (default: full factorial grid)
+  --vars a,b,c            variables kept per run (default: the states)
+  --stats S,...           summary columns per variable: initial | final |
+                          min | max | mean | at=T (default final)
+  -o FILE.csv | DIR       one combined CSV (run, parameters, time, vars), or
+                          a directory with run_001.csv... and summary.csv
+  --format csv | mat      per-run file format in an output directory
+  --summary FILE          write the summary table as CSV
+  --jobs N                parallel threads (default: cores)
+  --retranslate           translate every run again (default only for
+                          non-free, Integer and Boolean parameters)
+
+ANALYSIS COMMANDS (text summary on stdout; -o FILE.json or FILE.csv writes data):
+  sensitivity  local sensitivities dy/dp along the trajectory:
+                 --params a,b --outputs x,y [--sens-method auto|exact|fd]
+                 [--rel-step H]; exact = forward sensitivity equations with
+                 tape tangents (no events), fd = central differences
+  montecarlo   Monte Carlo statistics (mean, std, 5/50/95 % bands) over
+                 --dist p=lo:hi | p=normal:MEAN:STD | p=lognormal:MEAN:STD
+                 (repeatable) --outputs x,y [--qoi 'max(x)'] [-N SAMPLES]
+                 [--sampling lhs|random] [--seed S]; with --sobol or --morris
+                 global sensitivity indices of the --qoi quantities
+  gsa          the same, Sobol indices by default (N base samples: N (k+2)
+                 runs); quantities: final(x) max(x) min(x) mean(x)
+                 integral(x) at(x,T), window: max(x,T0,T1)
+  calibrate    fit parameters to measured data (projected Levenberg-Marquardt):
+                 --data meas.csv --tune p=lo:hi[:start] (repeatable)
+                 [--map column=var] [--weight column=W] [--window T0:T1]
+                 [--max-iter N] [--sens-method auto|exact|fd]; prints the fit,
+                 standard errors and a Modelica modifier
+  optimize     minimize scalar quantities over bounded parameters (Nelder-Mead):
+                 --tune p=lo:hi --minimize QOI | --maximize QOI |
+                 --target QOI=VALUE (repeatable)
 ";
 
 fn usage() -> String {
@@ -124,6 +189,10 @@ fn run() -> anyhow::Result<()> {
         return Ok(());
     }
     let cmd = args[0].clone();
+    if cmd == "mcp" {
+        return mcp::run(&args[1..]);
+    }
+    let (args, an) = analysis::take_args(args)?;
     let mut sources: Vec<String> = Vec::new();
     let mut libs: Vec<String> = Vec::new();
     let mut model = None;
@@ -142,6 +211,16 @@ fn run() -> anyhow::Result<()> {
     let mut format = String::from("text");
     let mut fmi_lib: Option<std::path::PathBuf> = None;
     let mut jac_method = daedalus_core::linearize::JacobianMethod::Exact;
+    let mut sweeps: Vec<String> = Vec::new();
+    let mut grouped = false;
+    let mut stats_spec: Option<String> = None;
+    let mut summary_out: Option<String> = None;
+    let mut retranslate = false;
+    let mut set_format = false;
+    let mut no_jacobian = false;
+    let mut profile: Option<Option<String>> = None;
+    let mut print_events = false;
+    let mut set_jac = false;
     let mut free: Vec<String> = Vec::new();
     let mut targets: Vec<(String, f64)> = Vec::new();
     let mut i = 1;
@@ -203,6 +282,10 @@ fn run() -> anyhow::Result<()> {
             }
             "--no-index-reduction" => opts.index_reduction = false,
             "--no-tearing" => opts.tearing = false,
+            "--state" => opts.state_overrides.push(
+                daedalus_core::backend::state_select::StateOverride::parse(&next(&mut i)?)?,
+            ),
+            "--no-jacobian" => no_jacobian = true,
             "--jobs" => jobs = next(&mut i)?.parse::<usize>()?.max(1),
             "--timeout" => timeout = next(&mut i)?.parse()?,
             "--fmi-lib" => fmi_lib = Some(next(&mut i)?.into()),
@@ -221,9 +304,30 @@ fn run() -> anyhow::Result<()> {
                     targets.push((k.trim().to_string(), v.trim().parse()?));
                 }
             }
-            "--format" => format = next(&mut i)?,
+            "--format" => {
+                format = next(&mut i)?;
+                set_format = true
+            }
+            "-s" | "--sweep" => sweeps.push(next(&mut i)?),
+            "--grouped" => grouped = true,
+            "--stats" => stats_spec = Some(next(&mut i)?),
+            "--summary" => summary_out = Some(next(&mut i)?),
+            "--retranslate" => retranslate = true,
+            "--profile" => {
+                // The report file is optional: only a following `.json` argument is one.
+                let file = args.get(i + 1).filter(|f| f.ends_with(".json")).cloned();
+                if file.is_some() {
+                    i += 1;
+                }
+                profile = Some(file);
+            }
+            "--events" => print_events = true,
             "--jacobian" => {
-                jac_method = match next(&mut i)?.as_str() {
+                let j = next(&mut i)?;
+                so.jacobian = daedalus_core::sim::JacobianMode::parse(&j)
+                    .ok_or_else(|| anyhow::anyhow!("unknown jacobian method '{j}' (exact | fd)"))?;
+                set_jac = true;
+                jac_method = match j.as_str() {
                     "exact" => daedalus_core::linearize::JacobianMethod::Exact,
                     "fd" | "cd" | "central" => {
                         daedalus_core::linearize::JacobianMethod::CentralDifference
@@ -383,6 +487,9 @@ fn run() -> anyhow::Result<()> {
             if set_method {
                 o.method = so.method;
             }
+            if set_jac {
+                o.jacobian = so.jacobian;
+            }
             if so.interval > 0.0 {
                 o.interval = so.interval;
             } else if set_intervals {
@@ -394,7 +501,22 @@ fn run() -> anyhow::Result<()> {
             o.store_events = so.store_events;
             o.max_event_rows = so.max_event_rows;
             o.params = so.params.clone();
-            let (res, stats) = match daedalus_core::sim::simulate(&m, o) {
+            let o_method = o.method;
+            o.profile = profile.is_some() || print_events;
+            let (r, prof) = daedalus_core::sim::simulate_profiled(&m, o);
+            if let Some(p) = &prof {
+                if print_events {
+                    print!("{}", p.event_log_text());
+                }
+                if profile.is_some() {
+                    print!("{}", p.summary_text());
+                }
+                if let Some(Some(file)) = &profile {
+                    std::fs::write(file, serde_json::to_string(p)?)?;
+                    eprintln!("profile written to {file}");
+                }
+            }
+            let (res, stats) = match r {
                 Ok(r) => r,
                 Err(e) => {
                     if let (Some(out), Some(p)) = (&output, &e.partial) {
@@ -418,6 +540,15 @@ fn run() -> anyhow::Result<()> {
                 stats.solver.jac_evals,
                 stats.events
             );
+            if stats.solver.tangent_evals > 0 || stats.solver.switches > 0 {
+                eprintln!(
+                    "solver {}: {} exact Jacobian passes ({} colors), {} method switches",
+                    o_method.name(),
+                    stats.solver.tangent_evals,
+                    stats.jacobian_colors,
+                    stats.solver.switches
+                );
+            }
             match &output {
                 Some(out) => write_result(&res, out, vars.as_deref())?,
                 None => {
@@ -516,6 +647,49 @@ fn run() -> anyhow::Result<()> {
             }
             Ok(())
         }
+        "structure" => {
+            let mut so2 = daedalus_core::structure::StructureOptions {
+                jacobian: !no_jacobian,
+                at: lin_at,
+                params: so.params.clone(),
+                ..Default::default()
+            };
+            if set_start || set_tol || set_method || set_stop {
+                // Experiment defaults with the command-line changes on top.
+                let m = with_all_files(&mut lib, |l| daedalus_core::translate(l, &model, &opts))?;
+                let mut o = SimOptions::from_model(&m);
+                if set_start {
+                    o.start_time = so.start_time;
+                }
+                if set_stop {
+                    o.stop_time = so.stop_time;
+                }
+                if set_tol {
+                    o.tolerance = so.tolerance;
+                }
+                if set_method {
+                    o.method = so.method;
+                }
+                o.params = so.params.clone();
+                so2.sim = Some(o);
+            }
+            let rep = with_all_files(&mut lib, |l| {
+                daedalus_core::structure::structure(l, &model, &opts, &so2)
+            })?;
+            let text = match format.as_str() {
+                "text" => rep.to_text(),
+                "json" => serde_json::to_string_pretty(&rep)? + "\n",
+                f => anyhow::bail!("unknown format '{f}' (text | json)"),
+            };
+            match &output {
+                Some(path) => {
+                    std::fs::write(path, text)?;
+                    eprintln!("wrote {path}");
+                }
+                None => print!("{text}"),
+            }
+            Ok(())
+        }
         "steady" => {
             let m = with_all_files(&mut lib, |l| daedalus_core::translate(l, &model, &opts))?;
             for w in &m.warnings {
@@ -566,6 +740,63 @@ fn run() -> anyhow::Result<()> {
             eprintln!("wrote {out}");
             Ok(())
         }
+        "sweep" => {
+            let m = with_all_files(&mut lib, |l| daedalus_core::translate(l, &model, &opts))?;
+            for w in &m.warnings {
+                eprintln!("warning: {w}");
+            }
+            // Simulation options as for `simulate`.
+            let mut o = SimOptions::from_model(&m);
+            if set_start {
+                o.start_time = so.start_time;
+            }
+            if set_stop {
+                o.stop_time = so.stop_time;
+            }
+            if set_tol {
+                o.tolerance = so.tolerance;
+            }
+            if set_method {
+                o.method = so.method;
+            }
+            if so.interval > 0.0 {
+                o.interval = so.interval;
+            } else if set_intervals {
+                o.interval = 0.0;
+            }
+            o.intervals = so.intervals;
+            o.fixed_step = so.fixed_step;
+            o.store_events = so.store_events;
+            o.max_event_rows = so.max_event_rows;
+            o.params = so.params.clone();
+            let stats = stats_spec
+                .as_deref()
+                .unwrap_or("final")
+                .split(',')
+                .map(daedalus_core::sweep::Stat::parse)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| anyhow::anyhow!(e))?;
+            let args = sweep::Args {
+                sweeps: sweeps.clone(),
+                combine: if grouped {
+                    daedalus_core::sweep::Combine::Grouped
+                } else {
+                    daedalus_core::sweep::Combine::Grid
+                },
+                vars: vars.clone(),
+                stats,
+                output: output.clone(),
+                format: if set_format {
+                    format.clone()
+                } else {
+                    "csv".into()
+                },
+                summary: summary_out.clone(),
+                jobs,
+                retranslate,
+            };
+            sweep::run(&mut lib, &model, m, o, &opts, args)
+        }
         "test-library" => {
             let mut child_args: Vec<String> = Vec::new();
             for l in &libs {
@@ -578,6 +809,16 @@ fn run() -> anyhow::Result<()> {
             }
             if !opts.tearing {
                 child_args.push("--no-tearing".into());
+            }
+            if set_method {
+                child_args.extend(["--method".into(), so.method.name().into()]);
+            }
+            if set_jac {
+                let j = match so.jacobian {
+                    daedalus_core::sim::JacobianMode::Exact => "exact",
+                    daedalus_core::sim::JacobianMode::Fd => "fd",
+                };
+                child_args.extend(["--jacobian".into(), j.into()]);
             }
             test_library(&lib, &model, &child_args, jobs, timeout)
         }
@@ -596,16 +837,52 @@ fn run() -> anyhow::Result<()> {
             };
             let mut o = SimOptions::from_model(&m);
             o.max_wall_time = timeout * 0.8;
+            if set_method {
+                o.method = so.method;
+            }
+            if set_jac {
+                o.jacobian = so.jacobian;
+            }
             match daedalus_core::sim::simulate(&m, o) {
                 Ok((_, st)) => println!(
-                    "OK {} states, {} steps, {:.0} ms",
+                    "OK {} states, {} steps, {:.0} ms, {} rejected, {} f-evals, {} jacobians",
                     m.states.len(),
                     st.solver.steps,
-                    t.elapsed().as_secs_f64() * 1000.0
+                    t.elapsed().as_secs_f64() * 1000.0,
+                    st.solver.rejected,
+                    st.solver.rhs_evals,
+                    st.solver.jac_evals
                 ),
                 Err(e) => println!("ERR simulate: {}", e.message.lines().next().unwrap_or("")),
             }
             Ok(())
+        }
+        c if analysis::COMMANDS.contains(&c) => {
+            let m = with_all_files(&mut lib, |l| daedalus_core::translate(l, &model, &opts))?;
+            for w in &m.warnings {
+                eprintln!("warning: {w}");
+            }
+            let mut o = SimOptions::from_model(&m);
+            if set_start {
+                o.start_time = so.start_time;
+            }
+            if set_stop {
+                o.stop_time = so.stop_time;
+            }
+            if set_tol {
+                o.tolerance = so.tolerance;
+            }
+            if set_method {
+                o.method = so.method;
+            }
+            if so.interval > 0.0 {
+                o.interval = so.interval;
+            } else if set_intervals {
+                o.interval = 0.0;
+            }
+            o.intervals = so.intervals;
+            o.params = so.params.clone();
+            analysis::run(c, m, o, &an, output.as_deref(), &format, jobs)
         }
         _ => anyhow::bail!("unknown command '{cmd}'\n\n{USAGE}"),
     }

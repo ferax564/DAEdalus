@@ -42,6 +42,38 @@ with zoom and pan (wheel and drag). It works for the bundled library and for the
 
 ![The package browser filtered to Examples](img/wb/filter.webp)
 
+## Graphical editing
+
+Classes in your own documents can be edited in the Diagram view. The bundled `Daedalus`
+library and the MSL are read-only: **Duplicate to my models** copies the open class into
+`MyModels.mo`, with every class name it uses written in full, and opens the copy.
+**New model** adds an empty model there. `MyModels.mo` is kept in the browser, and
+**Save .mo** downloads it.
+
+<div class="pair">
+<figure><img src="img/editing/connect.webp" alt="Connecting a resistor to a voltage source"><figcaption>Dragging a connection: the compatible connectors light up.</figcaption></figure>
+<figure><img src="img/editing/rc_circuit.webp" alt="An RC circuit built in the editor"><figcaption>An RC circuit built from MSL components, with R set in the parameter dialog.</figcaption></figure>
+</div>
+
+With **✎ Edit** on:
+
+- drag a class from the package browser onto the diagram to add a component;
+- click or rubber-band to select, Shift to add, drag to move, arrow keys to nudge;
+- **R** rotates by 90°, **H** and **V** flip, **Del** deletes components with their
+  connections, and the corner handle resizes;
+- drag from one connector to another to connect. Compatible connectors (same class,
+  same members, or one family such as `RealOutput`/`RealInput` or
+  `PositivePin`/`NegativePin`) light up, and the line is routed orthogonally;
+- double-click a component for its parameters: name, value, unit, description and the
+  class default. Values are written as modifiers, and emptying a field removes one;
+- **Ctrl+Z** and **Ctrl+Y** undo and redo.
+
+Each gesture edits only the tokens it has to, so comments, layout and other annotations
+in the source stay as written, and the Text view, **Check** and **Simulate** use the
+edited text at once.
+
+![The RC circuit simulated: the capacitor charges to 10 V](img/editing/rc_simulated.webp)
+
 ## Simulation and the variable browser
 
 **▶ Simulate** compiles the model in the worker and switches to Simulation mode. The left
@@ -68,6 +100,17 @@ The plot window draws thousands of points per series smoothly and has:
 - **Export CSV** and **Export .mat** of the plotted variables.
 
 ![QuarterCar.BumpComparison: body travel over the bump, and the damper's force-velocity loop as a parametric plot](img/examples/quarter_car_plot.webp)
+
+## Structure, analysis and experiments
+
+The **Structure** tab next to **Flat model** shows the equation structure, state selection
+and Jacobian ([Structure and state selection](structure.md)). **Analysis** in the toolbar
+runs sensitivities, Monte Carlo, calibration and optimization
+([Sensitivity, uncertainty and calibration](analysis.md)). Every run is kept in the
+**Runs** pane for overlays, differences, sweeps and share links
+([Experiments](experiments.md)), and **Profile** adds a **Performance** tab
+([Performance analyzer](performance.md)). **✦ Assistant** opens a chat with Claude that
+can use all of these ([AI assistant](assistant.md)).
 
 ## Animation
 

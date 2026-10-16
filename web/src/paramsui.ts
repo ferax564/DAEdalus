@@ -6,8 +6,8 @@ import { api } from "./rpc";
 import type { ComponentInfo, ParamValue } from "./types";
 
 export interface ParamsHost {
-  /** Replace a document's text (the edit is applied to the workbench). */
-  applyEdit(uri: string, text: string): Promise<void>;
+  /** Apply edit ops to the open class through the diagram editor (undoable); false on failure. */
+  applyOps(ops: unknown[]): Promise<boolean>;
   log(msg: string, cls?: string): void;
 }
 
@@ -65,8 +65,9 @@ export async function importParams(model: string, comp: ComponentInfo, host: Par
   dlg.querySelector<HTMLButtonElement>(".p-copy-rec")!.onclick = () => copy(r.record, "Record");
   dlg.querySelector<HTMLButtonElement>(".p-apply")!.onclick = async () => {
     try {
-      const e = await api.applyParams(model, comp.name, r.params);
-      await host.applyEdit(e.uri, e.text);
+      // the diagram editor's set_modifier op: same writer as the inspector, with undo
+      const ops = r.params.map((p) => ({ op: "set_modifier", name: comp.name, modifier: p.name, value: p.value }));
+      if (!(await host.applyOps(ops))) return;
       host.log(`${r.params.length} parameters of ${comp.name} set from ${f.name}`, "ok");
       dlg.close();
     } catch (err) {

@@ -102,9 +102,9 @@ fn apply_modifier_merges_into_the_declaration() {
     let p = params::parse_csv("zeta,5\nd,0.02\n").unwrap();
     let (uri, text) = daedalus_core::edit::apply_modifier(&l, "P.System", "v1", &ModTree::from_params(&p)).unwrap();
     assert_eq!(uri, "p.mo");
-    assert!(text.contains("Valve v1(zeta = 5, open = false, d = 0.02) \"first\";"), "{text}");
+    assert!(text.contains("Valve v1(zeta=5, open=false, d=0.02) \"first\";"), "{text}");
     let (_, text) = daedalus_core::edit::apply_modifier(&l, "P.System", "v2", &ModTree::from_params(&p)).unwrap();
-    assert!(text.contains("Valve v2(zeta = 5, d = 0.02);"), "{text}");
+    assert!(text.contains("Valve v2(zeta=5, d=0.02);"), "{text}");
     // the edited text still parses, and the new values are there
     let mut l2 = Library::new();
     assert!(l2.set_document("p.mo", &text).is_empty());

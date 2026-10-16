@@ -5,6 +5,7 @@
 //! other byte of it as it was.
 
 use crate::frontend::Library;
+use crate::frontend::edit::{EditOp, edit_class};
 use crate::params::{ModTree, matching, split_top};
 use anyhow::{Result, anyhow, bail};
 
@@ -42,6 +43,21 @@ pub fn apply_modifier(
              modified on its extends clause)"
         );
     };
+    // Plain `name = value` leaves go through the diagram editor's `SetModifier` op, so the
+    // inspector, the diagram editor and parameter import write modifiers the same way.
+    let mut leaves = Vec::new();
+    if flatten(args, "", &mut leaves) {
+        let ops: Vec<EditOp> = leaves
+            .into_iter()
+            .map(|(modifier, value)| EditOp::SetModifier {
+                name: component.to_string(),
+                modifier,
+                value: Some(value),
+            })
+            .collect();
+        let r = edit_class(lib, class, &ops)?;
+        return Ok((r.uri, r.text));
+    }
     let text = &*doc.text;
     let mut pos = comp.name_token.location.end as usize;
     if pos > text.len() || text.get(comp.name_token.location.start as usize..pos) != Some(component)
@@ -76,6 +92,31 @@ pub fn apply_modifier(
         out.push_str(&text[pos..]);
     }
     Ok((doc.uri.clone(), out))
+}
+
+/// The `(dotted name, value)` leaves of `t`; false when it holds something a `SetModifier`
+/// op cannot write (`each`/`final` prefixes, `redeclare`, a value with sub-modifiers).
+fn flatten(t: &ModTree, prefix: &str, out: &mut Vec<(String, String)>) -> bool {
+    for it in &t.items {
+        if it.opaque || !it.prefix.is_empty() {
+            return false;
+        }
+        let name = if prefix.is_empty() {
+            it.name.clone()
+        } else {
+            format!("{prefix}.{}", it.name)
+        };
+        match (&it.value, it.nested.items.is_empty()) {
+            (Some(v), true) => out.push((name, v.clone())),
+            (None, false) => {
+                if !flatten(&it.nested, &name, out) {
+                    return false;
+                }
+            }
+            _ => return false,
+        }
+    }
+    true
 }
 
 fn quote(s: &str) -> String {
