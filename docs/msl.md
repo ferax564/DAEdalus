@@ -7,8 +7,8 @@ extra sources (see [Command line](cli.md#libraries)).
 
 ## Coverage
 
-**489 of the 534** MSL 4.1.0 example models translate and simulate to the end, and
-**445** of them match the Modelica Association's reference results (see below). They
+**512 of the 534** MSL 4.1.0 example models translate and simulate to the end, and
+**488** of them match the Modelica Association's reference results (see below). They
 include:
 
 - `Mechanics` (Rotational, Translational, MultiBody), `Electrical` (Analog, Digital,
@@ -29,14 +29,16 @@ The remaining failures, and what is being done about them, are listed in the
 Simulating is not enough: the results have to be right. A nightly CI job simulates every
 MSL 4.1.0 example and compares its comparison signals with the Modelica Association's
 reference results (`MAP-LIB_ReferenceResults`, generated with Dymola), and fails if a model
-that passed in the committed baseline stops passing.
+that passed in the committed baseline stops passing. Each example runs with the tolerance its
+reference was generated with (the experiment tolerance times 0.1, as recorded in the
+reference's `creation.txt`), on the reference's output grid.
 
 | Result | Models |
 | --- | ---: |
-| Matches the reference results | 445 |
-| Simulates, but a signal differs | 44 |
-| Hits the time limit | 4 |
-| Does not translate or stops | 41 |
+| Matches the reference results | 488 |
+| Simulates, but a signal differs | 24 |
+| Hits the time limit | 3 |
+| Does not translate or stops | 19 |
 | **Total** | **534** |
 
 The [scoreboard](https://daedalus.apps.ezkeel.com/scoreboard.html) lists every example

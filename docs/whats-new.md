@@ -2,6 +2,29 @@
 
 The most recent additions, newest first. Each links to the page that covers it in full.
 
+## MSL: 488 of 534 examples match the reference results
+
+Up from 445. Fixes span the whole library:
+
+- **Events:** one event iteration solves the relations together with the equations they
+  switch, at fixed `pre()`, after the when-clauses fire; relations inside their
+  hysteresis band keep their value, and cycling modes are resolved by a mode search. This
+  ends the chattering of stuck clutches, brakes, lossy gears, bearing friction and tank
+  overflows.
+- **Solvers:** each state's absolute tolerance is `tolerance * |nominal|`; a Newton solve
+  that stalls on a fold of a piecewise-linear characteristic searches for a sign change;
+  BDF no longer fails on a first step below the time resolution.
+- **State selection:** `reinit(x, ...)` makes `x` a state (`stateSelect = always`), alias
+  classes keep the declared `stateSelect` of their members, and `stateSelect = prefer`
+  wins over default choices (machine currents, spring-damper states).
+- **Language:** `final` modifiers from outer modifications, redeclared records and model
+  modifiers, constraining-clause modifiers, functions nested in functions, records built
+  from arrays of records, event clocks that tick at initialization, run-time index slices
+  in algorithms, and minimum-norm least squares (`dgelsy`).
+
+See the [scoreboard](https://daedalus.apps.ezkeel.com/scoreboard.html) and
+[Modelica Standard Library](msl.md).
+
 ## Embedded C code and processor in the loop
 
 `daedalus codegen-c` turns a controller block into portable, allocation-free C99 that
