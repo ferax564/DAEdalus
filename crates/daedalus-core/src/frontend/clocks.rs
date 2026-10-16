@@ -850,7 +850,13 @@ impl<'a, 't> Flattener<'a, 't> {
                     let first = a.cmp(Cmp::Eq, idx, Arena::ZERO);
                     let h = a.if_(first, Arena::ZERO, since);
                     let acts = vec![WhenAction::Assign(n, inc), WhenAction::Assign(tl, now)];
-                    (c, idx, acts, Some(h))
+                    // An event clock whose condition already holds at initialization
+                    // ticks then (as the reference tool does), and afterwards whenever the
+                    // condition becomes true: `{initial() and c, c}`.
+                    let init = a.initial();
+                    let at_init = a.f2(Fn2::And, init, c);
+                    let cond = a.f2(Fn2::Or, at_init, c);
+                    (cond, idx, acts, Some(h))
                 }
             };
             for p in parts {

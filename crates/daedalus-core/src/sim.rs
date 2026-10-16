@@ -707,7 +707,23 @@ impl<'m> Simulation<'m> {
             self.rt.r[m.layout.rel0 + r] = 0.0;
         }
         self.rt.run(&m.ode);
-        // when-clauses activated by initial()
+        // when-clauses activated by initial(): the left limit of a continuous-time
+        // variable at the start time, pre(x), is its initial value.
+        let mut assigned = vec![false; m.layout.nv];
+        for w in &m.whens {
+            for acts in &w.actions {
+                for a in acts {
+                    if let Action::Assign(v, _) | Action::Reinit(v, _) = a {
+                        assigned[*v as usize] = true;
+                    }
+                }
+            }
+        }
+        for (v, var) in m.vars.iter().enumerate() {
+            if var.kind == VarKind::Continuous && v < m.layout.nv && !assigned[v] {
+                self.rt.r[m.layout.pre0 + v] = self.rt.r[v];
+            }
+        }
         let c1 = self.when_conds();
         self.rt.r[m.layout.initial] = 0.0;
         let c0 = self.when_conds();
@@ -723,9 +739,14 @@ impl<'m> Simulation<'m> {
             })
             .collect();
         let fired = self.fire(&c1, &edge);
+        if fired {
+            // The clauses fired by the initialization belong to it: the equations reading
+            // their results (`change(y)`, `Q = S or pre(Q)`) see the start values in pre()
+            // before the event iteration at the start time takes them over.
+            self.rt.run(&m.ode);
+        }
         self.cond_prev = c0;
         self.rt.r[m.layout.initial] = 0.0;
-        let _ = fired;
         // Event iteration at the start time (handles sample() at t0 and initial() clauses).
         self.event_iteration()?;
         self.check_newton("initialization")?;
