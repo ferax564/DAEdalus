@@ -483,8 +483,38 @@ impl<'m> Simulation<'m> {
         let mut fired: Vec<usize> = Vec::new();
         for &wi in &m.when_order {
             let w = &m.whens[wi];
+            // A condition reading what a clause fired before it in this pass assigned is
+            // evaluated with those values (Dymola's sorted when-equations): a pulse that
+            // raises an event clock's threshold at the instant the clock would tick
+            // suppresses the tick.
+            let mut fresh: Option<Vec<bool>> = None;
+            if !updates.is_empty()
+                && m.when_cond_deps
+                    .get(wi)
+                    .is_some_and(|d| d.iter().any(|d| fired.contains(d)))
+                && conds[wi].iter().zip(&prev[wi]).any(|(&c, &p)| c && !p)
+            {
+                for (v, x) in updates.drain(..) {
+                    self.rt.r[v] = x;
+                }
+                self.rt.run_ode();
+                for _ in 0..10 {
+                    if !self.rt.latch_relations() {
+                        break;
+                    }
+                    self.rt.run_ode();
+                }
+                self.rt.run(&m.when_prog);
+                fresh = Some(
+                    w.conds
+                        .iter()
+                        .map(|&s| self.rt.r[s as usize] != 0.0)
+                        .collect(),
+                );
+            }
             for (bi, acts) in w.actions.iter().enumerate() {
-                if conds[wi][bi] && !prev[wi][bi] {
+                let cond = fresh.as_ref().map_or(conds[wi][bi], |f| f[bi]);
+                if cond && !prev[wi][bi] {
                     any = true;
                     // A clause reading what an earlier clause of this event assigned sees
                     // the new value (when-equations are solved together).
@@ -529,7 +559,7 @@ impl<'m> Simulation<'m> {
                     }
                     break; // only the first active branch of an elsewhen chain
                 }
-                if conds[wi][bi] {
+                if cond {
                     break;
                 }
             }

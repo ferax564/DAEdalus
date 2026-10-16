@@ -173,6 +173,11 @@ pub struct Model {
     pub when_order: Vec<usize>,
     /// Per clause, the clauses whose assignments it reads.
     pub when_deps: Vec<Vec<usize>>,
+    /// Per clause, the clauses whose assignments its condition reads: when one of them
+    /// fires in the same pass, the condition is evaluated again with its new values
+    /// (sorted when-equations, as a pulse switching an event clock's threshold).
+    #[serde(default)]
+    pub when_cond_deps: Vec<Vec<usize>>,
     /// Computes eliminated alias variables.
     pub outputs: Vec<Ins>,
     pub asserts_prog: Vec<Ins>,
@@ -809,7 +814,7 @@ fn compile_prog(arena: &mut Arena, p: usize, sites: &mut Vec<SiteCode>) -> ProgC
 pub fn compile(mut sys: System) -> Model {
     let nv = sys.vars.len();
     let n_rel = sys.arena.relations.len();
-    let (when_order, when_deps) = when_dependencies(&sys);
+    let (when_order, when_deps, when_cond_deps) = when_dependencies(&sys);
     let layout = Layout {
         nv,
         pre0: nv,
@@ -1075,6 +1080,7 @@ pub fn compile(mut sys: System) -> Model {
         whens,
         when_order,
         when_deps,
+        when_cond_deps,
         outputs,
         asserts_prog,
         asserts,
@@ -2551,9 +2557,15 @@ impl<'m> Runtime<'m> {
 /// Data dependencies between when-clauses (see `Model::when_order`). Simultaneous
 /// when-equations see each other's new values: an AD converter's output read by a DA
 /// converter triggered by the same clock edge is the value converted at that edge.
-fn when_dependencies(sys: &System) -> (Vec<usize>, Vec<Vec<usize>>) {
+fn when_dependencies(sys: &System) -> (Vec<usize>, Vec<Vec<usize>>, Vec<Vec<usize>>) {
     let nw = sys.whens.len();
-    let identity = || ((0..nw).collect(), vec![Vec::new(); nw]);
+    let identity = || {
+        (
+            (0..nw).collect(),
+            vec![Vec::new(); nw],
+            vec![Vec::new(); nw],
+        )
+    };
     if nw < 2 {
         return identity();
     }
@@ -2589,10 +2601,37 @@ fn when_dependencies(sys: &System) -> (Vec<usize>, Vec<Vec<usize>>) {
             }
         }
     }
+    // The clauses whose assignments the expressions `es` of clause `wj` read, directly
+    // or through algebraic equations.
+    let readers = |wj: usize, es: &[ExprId]| -> Vec<usize> {
+        let mut out = Vec::new();
+        let mut stack: Vec<VarId> = sys.arena.vars_in(es).into_iter().collect();
+        let mut seen: FxHashSet<VarId> = stack.iter().copied().collect();
+        while let Some(v) = stack.pop() {
+            if let Some(ws) = writer.get(&v) {
+                for &wi in ws {
+                    if wi != wj && !out.contains(&wi) {
+                        out.push(wi);
+                    }
+                }
+            }
+            if let Some(rs) = reads_of.get(&v) {
+                for &r in rs {
+                    if seen.insert(r) {
+                        stack.push(r);
+                    }
+                }
+            }
+        }
+        out
+    };
     let mut deps: Vec<Vec<usize>> = vec![Vec::new(); nw];
+    let mut cond_deps: Vec<Vec<usize>> = vec![Vec::new(); nw];
     for (wj, wc) in sys.whens.iter().enumerate() {
         let mut es = Vec::new();
-        for (_, acts) in &wc.branches {
+        let mut cs = Vec::new();
+        for (c, acts) in &wc.branches {
+            cs.push(*c);
             for a in acts {
                 match a {
                     WhenAction::Assign(_, e)
@@ -2606,34 +2645,22 @@ fn when_dependencies(sys: &System) -> (Vec<usize>, Vec<Vec<usize>>) {
                 }
             }
         }
-        let mut stack: Vec<VarId> = sys.arena.vars_in(&es).into_iter().collect();
-        let mut seen: FxHashSet<VarId> = stack.iter().copied().collect();
-        while let Some(v) = stack.pop() {
-            if let Some(ws) = writer.get(&v) {
-                for &wi in ws {
-                    if wi != wj && !deps[wj].contains(&wi) {
-                        deps[wj].push(wi);
-                    }
-                }
-            }
-            if let Some(rs) = reads_of.get(&v) {
-                for &r in rs {
-                    if seen.insert(r) {
-                        stack.push(r);
-                    }
-                }
-            }
-        }
+        deps[wj] = readers(wj, &es);
+        cond_deps[wj] = readers(wj, &cs);
     }
-    if deps.iter().all(|d| d.is_empty()) {
+    if deps.iter().all(|d| d.is_empty()) && cond_deps.iter().all(|d| d.is_empty()) {
         return identity();
     }
-    // Kahn's algorithm, stable by clause index; clauses on a cycle keep their order.
-    let mut indeg: Vec<usize> = deps.iter().map(|d| d.len()).collect();
+    // Kahn's algorithm, stable by clause index; clauses on a cycle keep their order. A
+    // clause whose actions or condition read another's assignments comes after it.
+    let mut indeg: Vec<usize> = vec![0; nw];
     let mut users: Vec<Vec<usize>> = vec![Vec::new(); nw];
-    for (j, d) in deps.iter().enumerate() {
-        for &i in d {
-            users[i].push(j);
+    for j in 0..nw {
+        for &i in deps[j].iter().chain(cond_deps[j].iter()) {
+            if !users[i].contains(&j) {
+                users[i].push(j);
+                indeg[j] += 1;
+            }
         }
     }
     let mut done = vec![false; nw];
@@ -2649,7 +2676,7 @@ fn when_dependencies(sys: &System) -> (Vec<usize>, Vec<Vec<usize>>) {
         }
     }
     order.extend((0..nw).filter(|&k| !done[k]));
-    (order, deps)
+    (order, deps, cond_deps)
 }
 
 /// Order the actions of one when-branch so that an assignment comes before the actions
