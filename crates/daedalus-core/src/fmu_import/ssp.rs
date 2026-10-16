@@ -46,8 +46,10 @@ pub struct Ssd {
     pub name: String,
     pub components: Vec<SsdComponent>,
     pub connections: Vec<SsdConnection>,
-    /// System-level connectors: (name, kind) with kind `input`, `output`, ...
-    pub connectors: Vec<(String, String)>,
+    /// System-level connectors: (name, kind, type) with kind `input`, `output`, ...
+    /// and the type of its `ssc:Real` / `ssc:Integer` / `ssc:Boolean` / ... child
+    /// (`None` when the connector declares none).
+    pub connectors: Vec<(String, String, Option<Ty>)>,
     pub start_time: Option<f64>,
     pub stop_time: Option<f64>,
 }
@@ -139,9 +141,20 @@ pub fn read_ssd(xml: &str, dir: &Path) -> Result<Ssd> {
     }
     if let Some(cs) = child(sys, "Connectors") {
         for c in children(cs, "Connector") {
+            let ty =
+                c.children()
+                    .filter(|t| t.is_element())
+                    .find_map(|t| match t.tag_name().name() {
+                        "Real" => Some(Ty::Float64),
+                        "Integer" | "Enumeration" => Some(Ty::Int32),
+                        "Boolean" => Some(Ty::Boolean),
+                        "String" | "Binary" => Some(Ty::Other),
+                        _ => None,
+                    });
             ssd.connectors.push((
                 c.attribute("name").unwrap_or("").to_string(),
                 c.attribute("kind").unwrap_or("").to_string(),
+                ty,
             ));
         }
     }
@@ -358,15 +371,32 @@ pub fn import(ssp: &Path, opts: &SspImportOptions) -> Result<ImportedSsp> {
         }
         bail!("element '{el}' has no input or output '{conn}'")
     };
+    // Type of a component port a system connector is connected to (for connectors
+    // that declare no type).
+    let port_ty = |name: &str| -> Option<Ty> {
+        ssd.connections.iter().find_map(|c| {
+            let (el, conn) = match (&c.start_element, &c.end_element) {
+                (None, Some(e)) if c.start_connector == name => (e, &c.end_connector),
+                (Some(e), None) if c.end_connector == name => (e, &c.start_connector),
+                _ => return None,
+            };
+            let md = &classes.get(&comp_of.get(el.as_str())?.source)?.1;
+            md.vars.iter().find(|v| &v.name == conn).map(|v| v.ty)
+        })
+    };
     let mut sys_vars: HashMap<&str, String> = HashMap::new();
-    for (name, kind) in &ssd.connectors {
+    for (name, kind, ty) in &ssd.connectors {
         let id = wrapper::ident(name);
         let dir_kw = match kind.as_str() {
             "input" => "input",
             "output" => "output",
             _ => continue,
         };
-        let _ = writeln!(s, "  {dir_kw} Real {id} \"{}\";", mo_string(name));
+        // Strings and binaries are not exchanged.
+        let Some(mo_ty) = modelica_type(ty.or_else(|| port_ty(name))) else {
+            continue;
+        };
+        let _ = writeln!(s, "  {dir_kw} {mo_ty} {id} \"{}\";", mo_string(name));
         sys_vars.insert(name.as_str(), id);
     }
     let mut eqs = Vec::new();
@@ -461,6 +491,16 @@ pub fn import(ssp: &Path, opts: &SspImportOptions) -> Result<ImportedSsp> {
     out.model = model;
     out.text = s;
     Ok(out)
+}
+
+/// Modelica type of a system connector (`None`: not exchanged).
+fn modelica_type(t: Option<Ty>) -> Option<&'static str> {
+    match t {
+        Some(Ty::Boolean) => Some("Boolean"),
+        Some(Ty::Int32 | Ty::Int64) => Some("Integer"),
+        Some(Ty::Other) => None,
+        Some(Ty::Float64 | Ty::Float32) | None => Some("Real"),
+    }
 }
 
 fn value(t: Ty, x: f64) -> String {
@@ -696,4 +736,44 @@ pub fn parameter_idents(md: &ModelDescription) -> Vec<String> {
         .filter(|p| md.vars[p.var].causality == Causality::Parameter)
         .map(|p| p.ident)
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// System connectors keep their declared type (`ssc:Boolean`, `ssc:Integer`, ...).
+    #[test]
+    fn system_connector_types() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<ssd:SystemStructureDescription xmlns:ssc="http://ssp-standard.org/SSP1/SystemStructureCommon" xmlns:ssd="http://ssp-standard.org/SSP1/SystemStructureDescription" version="1.0" name="S">
+  <ssd:System name="S">
+    <ssd:Connectors>
+      <ssd:Connector name="on" kind="input"><ssc:Boolean/></ssd:Connector>
+      <ssd:Connector name="n" kind="output"><ssc:Integer/></ssd:Connector>
+      <ssd:Connector name="mode" kind="input"><ssc:Enumeration name="E"/></ssd:Connector>
+      <ssd:Connector name="x" kind="output"><ssc:Real unit="m"/></ssd:Connector>
+      <ssd:Connector name="label" kind="input"><ssc:String/></ssd:Connector>
+      <ssd:Connector name="u" kind="input"/>
+    </ssd:Connectors>
+  </ssd:System>
+</ssd:SystemStructureDescription>"#;
+        let ssd = read_ssd(xml, Path::new(".")).unwrap();
+        let types: Vec<(&str, Option<&str>)> = ssd
+            .connectors
+            .iter()
+            .map(|(n, _, t)| (n.as_str(), modelica_type(*t)))
+            .collect();
+        assert_eq!(
+            types,
+            [
+                ("on", Some("Boolean")),
+                ("n", Some("Integer")),
+                ("mode", Some("Integer")),
+                ("x", Some("Real")),
+                ("label", None),
+                ("u", Some("Real")),
+            ]
+        );
+    }
 }

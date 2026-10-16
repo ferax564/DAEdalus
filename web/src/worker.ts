@@ -102,13 +102,18 @@ async function runLive(w: Workspace, id: number, model: string, settings: unknow
       }
     }
     const r = JSON.parse(w.liveAdvance(target, run.pace > 0 ? 25 : 120));
-    if (r.done) {
+    if (r.error) {
       live = null;
-      return r.summary;
+      return { ok: false, error: r.error, model, vars: [], points: 0, log: [], warnings: [], translate_ms: 0, stats: null, model_stats: null, experiment: null };
     }
     t = r.t;
     run.t = t;
+    // Post the rows of this slice (the last one too) before the run is finished.
     postLive(w, run, t, st.stop_time);
+    if (r.done) {
+      live = null;
+      return JSON.parse(w.liveFinish());
+    }
     if (run.pace > 0) await sleep(Math.max(1, 33 - (performance.now() - slice0)));
     else await sleep(0);
   }
