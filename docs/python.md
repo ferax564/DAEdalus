@@ -6,6 +6,10 @@ no Dymola licence, no files written unless you ask. It covers what scripts usual
 with OMPython or Dymola's Python interface: load models, change parameters, simulate,
 read trajectories as NumPy arrays, linearize, and export FMUs.
 
+In plain terms: from a Python script or notebook you load a model, change its parameters, run it, and
+get the results as arrays you can plot or analyze. OMPython and Dymola's Python interface do the same
+job with other tools; this one needs no separate program.
+
 ```python
 import daedalus
 

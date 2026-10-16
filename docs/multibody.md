@@ -1,8 +1,9 @@
 # Multibody vehicles
 
 `library/MultiBodyVehicle` is a vehicle-dynamics library built on the Modelica Standard
-Library's `Modelica.Mechanics.MultiBody`: suspension corners from hardpoints, a tyre that
-can lift off, rig actuators and a full 6-DOF car. Its nine examples run from suspension
+Library's `Modelica.Mechanics.MultiBody`. It models a car's suspension from its real mounting points
+(the hardpoints), a tyre that can leave the road, the actuators on a test rig, and a full car with six
+degrees of freedom (three of position and three of rotation). Its nine examples run from suspension
 kinematics to a full car on a seven-post rig, each with a 3-D animation, and all nine
 match OpenModelica.
 

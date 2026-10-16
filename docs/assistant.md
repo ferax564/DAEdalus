@@ -3,7 +3,9 @@
 DAEdalus exposes its compiler to AI assistants as tools: browse the libraries, read and
 write classes, check, simulate, linearize, and read the structure report and the
 performance profile. In the workbench that is the **✦ Assistant**; on the command line
-it is `daedalus mcp`, a Model Context Protocol server for Claude Code and other clients.
+it is `daedalus mcp`, a Model Context Protocol server for Claude Code and other clients. The Model
+Context Protocol (MCP) is a standard way for AI tools to call tools such as these, so an assistant can
+act on your models rather than only describe them.
 
 <div class="pair">
 <figure><img src="img/assistant/tool_loop.webp" alt="The assistant simulating the stall test"><figcaption>"What stall speed does this converter reach?": the assistant simulates StallTest and reads the engine speed off the result, about 2160 rpm.</figcaption></figure>
