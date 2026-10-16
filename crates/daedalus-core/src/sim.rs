@@ -1686,7 +1686,14 @@ impl<'m> Simulation<'m> {
                 st.solver.interpolate(te, &mut st.xi);
                 self.rt.rhs(te, &st.xi, &mut st.x);
                 let snap = self.prof.as_deref_mut().map(|p| p.event_begin(&self.rt));
-                let store = o.store_events && st.event_rows < event_budget && rec.is_some();
+                // Replacing the right values of an event at the same instant adds no row,
+                // so it is allowed (and not charged) once the budget is spent.
+                let merge = same
+                    && rec
+                        .as_deref()
+                        .is_some_and(|r| r.res.time.len() == st.last_event_rows);
+                let store =
+                    o.store_events && rec.is_some() && (merge || st.event_rows < event_budget);
                 let mut merged_at = None;
                 if store && let Some(rec) = rec.as_deref_mut() {
                     // An event right after another one at the same instant (a friction
@@ -1695,13 +1702,13 @@ impl<'m> Simulation<'m> {
                     // values in between hold for no time, so its rows replace the right
                     // values of the first one instead of adding a spike.
                     // They keep its time: both are the same event instant.
-                    if same && rec.res.time.len() == st.last_event_rows {
+                    if merge {
                         merged_at = rec.pop();
                     } else {
                         rec.record(&mut self.rt);
+                        st.event_rows += 2;
                     }
-                    st.event_rows += 2;
-                    if st.event_rows >= event_budget {
+                    if !merge && st.event_rows >= event_budget {
                         self.log.push(format!(
                             "more than {} event points at t = {te}: later events are not stored \
                              (only output points)",
