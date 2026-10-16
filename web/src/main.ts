@@ -10,7 +10,7 @@ import { bundledLibrary, bundledResources, readPicked, type Picked } from "./lib
 import { drawIcon, newCtx, SVG_NS, systemExtent, IDENTITY, el } from "./graphics";
 import type { Animation3D, AnimData } from "./anim3d";
 import { initAssistant } from "./assistant";
-import { initPerformance, profileRequested, updatePerformance } from "./performance";
+import { initPerformance, profileRequested, redrawPerformance, updatePerformance } from "./performance";
 import * as experiments from "./experiments";
 import { StructureView, stateOverridesFor } from "./structure";
 import { DiagramEditor, DRAG_TYPE, editableUri } from "./diagram-edit";
@@ -24,6 +24,8 @@ import { renderDoc } from "./docview";
 import { DiffView } from "./diffview";
 import { librarySources, openLibraries, openPackage, reportConflicts, restoreInstalled, savePackage, type LibHost } from "./libmgr";
 import { importParams } from "./paramsui";
+import { applyThemeChoice, readThemeChoice, type ThemeChoice } from "./theme";
+import { applyLogChrome, diffViewEnabled, initialLogChrome, isMoreView, pushLogLine, toggleLogChrome, type LogChrome } from "./workbench-ui";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -51,6 +53,10 @@ const expanded = new Set<string>(["Daedalus", "Daedalus.Examples"]);
 let current: ClassInfo | null = null;
 let view: ViewKind | "text" | "doc" | "flat" | "structure" | "linear" | "diff" = "diagram";
 let mode: "modeling" | "simulation" | "analysis" = "modeling";
+/** False after a failed Check, so More views can mark Structure. */
+let lastCheckOk = true;
+/** Package browser: examples until the user picks All (`daedalus.browser`). */
+let browserMode: "examples" | "all" = "examples";
 let summary: SimSummary | null = null;
 /** Model the variables in `summary` belong to. */
 let summaryPath = "";
@@ -64,14 +70,28 @@ const resources = new Map<string, ArrayBuffer>();
 const baseline = new Map<string, string>();
 
 // ---------------------------------------------------------------- messages
+let logChrome: LogChrome = initialLogChrome();
+function renderLog() {
+  applyLogChrome($("messages"), $("log-status"), logChrome);
+}
 function log(msg: string, cls = "") {
   const d = document.createElement("div");
   if (cls) d.className = cls;
   d.textContent = msg;
   $("log").appendChild(d);
   $("log").scrollTop = $("log").scrollHeight;
+  logChrome = pushLogLine(logChrome, msg, cls);
+  renderLog();
 }
-$("msg-clear").onclick = () => ($("log").innerHTML = "");
+$("log-status").onclick = () => {
+  logChrome = toggleLogChrome(logChrome);
+  renderLog();
+};
+$("msg-clear").onclick = () => {
+  $("log").replaceChildren();
+  logChrome = { ...logChrome, lastText: "", lastClass: "" };
+  renderLog();
+};
 
 /** A message with a link that runs `action` (e.g. open the debugger). */
 function logLink(msg: string, cls: string, label: string, action: () => void) {
@@ -89,8 +109,9 @@ async function openDebugger(model: string, simulation: boolean) {
   view = "structure";
   if (mode !== "modeling") setMode("modeling");
   setActive($("view-tabs"), "data-view", view);
-  for (const id of ["view-graphic", "view-text", "view-doc", "view-flat"]) $(id).classList.add("hidden");
+  for (const id of ["view-graphic", "view-text", "view-doc", "view-flat", "view-linear", "view-diff"]) $(id).classList.add("hidden");
   $("view-structure").classList.remove("hidden");
+  syncViewChrome();
   await structureView.showInit(model, simulation);
 }
 
@@ -165,6 +186,7 @@ const editor = new DiagramEditor(diagram, {
     current = info;
     if (view === "diagram" || view === "icon") await diagram.show(info, view, true);
     else await showView();
+    syncViewChrome();
   },
 }, $("view-graphic"));
 
@@ -174,6 +196,7 @@ text.onChange = (t) => {
   const uri = current.source.uri;
   if (!baseline.has(uri) && docs.has(uri)) baseline.set(uri, docs.get(uri)!);
   docs.set(uri, t);
+  syncViewChrome();
   clearTimeout(editTimer);
   editTimer = window.setTimeout(async () => {
     // Syntax errors show in the editor itself (the linter); this refreshes the browser.
@@ -235,6 +258,20 @@ function setActive(container: HTMLElement, attr: string, value: string) {
   });
 }
 
+const MORE_LABEL: Record<string, string> = { flat: "Flat model", structure: "Structure", linear: "Linear", diff: "Diff" };
+/** More views highlights the open extra view, and Diff waits for an edit. */
+function syncViewChrome() {
+  const more = isMoreView(view);
+  $("views-menu-btn").classList.toggle("active", more);
+  $("views-menu-label").textContent = more ? MORE_LABEL[view] ?? "More views" : "More views";
+  const uri = current?.source?.uri;
+  const edited = !!(uri && baseline.has(uri) && docs.has(uri) && docs.get(uri) !== baseline.get(uri));
+  const diffBtn = document.querySelector<HTMLButtonElement>('#views-menu-pop button[data-view="diff"]');
+  if (diffBtn) diffBtn.disabled = !diffViewEnabled(edited);
+  $("views-fail-dot").classList.toggle("hidden", lastCheckOk);
+  document.getElementById("structure-fail-dot")?.classList.toggle("hidden", lastCheckOk);
+}
+
 async function showView() {
   setActive($("view-tabs"), "data-view", view);
   for (const id of ["view-graphic", "view-text", "view-doc", "view-flat", "view-structure", "view-linear", "view-diff"]) $(id).classList.add("hidden");
@@ -276,6 +313,7 @@ async function showView() {
     $("view-diff").classList.remove("hidden");
     await diffView.show(current);
   }
+  syncViewChrome();
 }
 
 // ---------------------------------------------------------------- documentation, diff, edits
@@ -387,9 +425,10 @@ const libHost: LibHost = {
 };
 
 $("view-tabs").addEventListener("click", (e) => {
-  const v = (e.target as HTMLElement).getAttribute("data-view");
+  const v = (e.target as HTMLElement).closest("button")?.getAttribute("data-view");
   if (v) {
     view = v as typeof view;
+    closeMenus();
     showView();
   }
 });
@@ -399,21 +438,63 @@ function escapeHtml(s: string) {
 }
 
 // ---------------------------------------------------------------- inspector
+let inspectorGen = 0;
 async function showInspector(c: ComponentInfo | null) {
+  const gen = ++inspectorGen;
   const host = $("inspector");
   if (!c) {
     host.innerHTML = `<p class="muted">Select a component in the diagram.</p>`;
     return;
   }
+  const editable = editableUri(current?.source?.uri);
+  const head = `<h4>${escapeHtml(c.name)}</h4>
+    <div class="muted">${escapeHtml(c.type_name)}</div>
+    <p>${escapeHtml(c.description)}</p>`;
+  if (editable && c.type_path) {
+    const listed = await api.parameters(c.type_path);
+    if (gen !== inspectorGen) return;
+    const mods = new Map(c.modifiers.map(([k, v]) => [k, v]));
+    host.innerHTML = head;
+    const table = document.createElement("table");
+    if (!listed.length) table.innerHTML = "<tr><td class='muted'>No parameters</td></tr>";
+    for (const p of listed) {
+      const tr = document.createElement("tr");
+      tr.title = p.description;
+      const name = document.createElement("td");
+      name.className = "k";
+      name.textContent = p.name;
+      const value = document.createElement("td");
+      const input = document.createElement("input");
+      input.className = "par";
+      input.value = mods.get(p.name) ?? "";
+      input.placeholder = p.default ?? "";
+      input.title = p.description || p.name;
+      input.onchange = () => {
+        const v = input.value.trim();
+        const old = (mods.get(p.name) ?? "").trim();
+        if (v === old) return;
+        void editor.apply([{ op: "set_modifier", name: c.name, modifier: p.name, value: v || null }]).then((r) => {
+          if (r) mods.set(p.name, v);
+        });
+      };
+      value.append(input);
+      const unit = document.createElement("td");
+      unit.className = "muted";
+      unit.textContent = p.unit;
+      const desc = document.createElement("td");
+      desc.className = "muted";
+      desc.textContent = p.description;
+      tr.append(name, value, unit, desc);
+      table.append(tr);
+    }
+    host.append(table, inspectorActions(c));
+    return;
+  }
   const t = c.type_path ? await src.get(c.type_path) : null;
+  if (gen !== inspectorGen) return;
   const rows: string[] = [];
   const params = new Map<string, { value: string; desc: string; modified: boolean }>();
   if (t) {
-    const chain = [t];
-    for (const e of t.extends) {
-      const b = await src.get(e);
-      if (b) chain.push(b);
-    }
     for (const k of t.components) {
       if (k.variability === "parameter" && !k.protected) params.set(k.name, { value: k.binding ?? "", desc: k.description, modified: false });
     }
@@ -428,29 +509,72 @@ async function showInspector(c: ComponentInfo | null) {
   for (const [k, p] of params) {
     rows.push(`<tr title="${escapeHtml(p.desc)}"><td class="k">${escapeHtml(k)}</td><td class="v"${p.modified ? ' style="font-weight:600"' : ""}>${escapeHtml(p.value) || "<span class='muted'>—</span>"}</td></tr>`);
   }
-  host.innerHTML = `<h4>${escapeHtml(c.name)}</h4>
-    <div class="muted">${escapeHtml(c.type_name)}</div>
-    <p>${escapeHtml(c.description)}</p>
-    <table>${rows.join("") || "<tr><td class='muted'>No parameters</td></tr>"}</table>
-    <p>${c.type_path ? `<button id="open-type">Open ${escapeHtml(c.type_path.split(".").pop()!)}</button> ` : ""}<button id="import-params" title="Set parameters of ${escapeHtml(c.name)} from a CSV (name,value[,unit]) or SSP .ssv file">Import parameters…</button></p>`;
-  const b = document.getElementById("open-type");
-  if (b) b.onclick = () => openClass(c.type_path!);
-  const ip = document.getElementById("import-params");
-  if (ip && current) {
+  host.innerHTML = `${head}
+    <table>${rows.join("") || "<tr><td class='muted'>No parameters</td></tr>"}</table>`;
+  host.append(inspectorActions(c));
+  if (!editable) {
+    const dup = document.createElement("p");
+    const b = document.createElement("button");
+    b.textContent = "Duplicate to my models";
+    b.title = "Copy this read-only class into MyModels.mo and edit the copy";
+    b.onclick = () => void editor.duplicate();
+    dup.append(b);
+    host.append(dup);
+  }
+}
+
+function inspectorActions(c: ComponentInfo): HTMLElement {
+  const p = document.createElement("p");
+  if (c.type_path) {
+    const open = document.createElement("button");
+    open.id = "open-type";
+    open.textContent = `Open ${c.type_path.split(".").pop()!}`;
+    open.onclick = () => openClass(c.type_path!);
+    p.append(open, " ");
+  }
+  const ip = document.createElement("button");
+  ip.id = "import-params";
+  ip.title = `Set parameters of ${c.name} from a CSV (name,value[,unit]) or SSP .ssv file`;
+  ip.textContent = "Import parameters…";
+  if (current) {
     const model = current.path;
     ip.onclick = () => importParams(model, c, { applyOps: async (ops) => !!(await editor.apply(ops)), log });
   }
+  p.append(ip);
+  return p;
 }
 
 // ---------------------------------------------------------------- package browser
 const KIND_GLYPH: Record<string, string> = { package: "▣", model: "◆", block: "▶", connector: "●", record: "≡", type: "T", function: "ƒ", class: "◇" };
+
+/** Examples mode: runnable classes, their packages, and the whole Daedalus.Examples branch. */
+let exampleSet: Set<string> | null = null;
+let exampleSetTree: ClassEntry[] | null = null;
+function examplesInTree(): Set<string> {
+  if (exampleSet && exampleSetTree === tree) return exampleSet;
+  const keep = new Set<string>();
+  const walk = (e: ClassEntry, underExamples: boolean): boolean => {
+    const inExamples = underExamples || e.path === "Daedalus.Examples";
+    let child = false;
+    for (const c of e.children) if (walk(c, inExamples)) child = true;
+    const hit = inExamples || e.runnable || child;
+    if (hit) keep.add(e.path);
+    return hit;
+  };
+  for (const e of tree) walk(e, false);
+  exampleSet = keep;
+  exampleSetTree = tree;
+  return keep;
+}
 
 function renderTree() {
   const filter = ($("filter") as HTMLInputElement).value.trim().toLowerCase();
   const host = $("browser");
   host.innerHTML = "";
   const icons: [SVGSVGElement, string][] = [];
-  const matches = (e: ClassEntry): boolean => !filter || e.name.toLowerCase().includes(filter) || e.children.some(matches);
+  const allowed = browserMode === "all" ? null : examplesInTree();
+  const inBrowser = (e: ClassEntry) => !allowed || allowed.has(e.path);
+  const matches = (e: ClassEntry): boolean => inBrowser(e) && (!filter || e.name.toLowerCase().includes(filter) || e.children.some(matches));
   const build = (entries: ClassEntry[], parent: HTMLElement) => {
     for (const e of entries) {
       if (!matches(e)) continue;
@@ -531,6 +655,20 @@ async function renderIcons(items: [SVGSVGElement, string][]) {
 }
 
 $("filter").addEventListener("input", () => renderTree());
+function syncBrowserChip() {
+  $("browser-examples").classList.toggle("active", browserMode === "examples");
+  $("browser-all").classList.toggle("active", browserMode === "all");
+}
+document.querySelectorAll<HTMLButtonElement>("#browser-pane [data-browser]").forEach((b) => {
+  b.onclick = () => {
+    browserMode = b.dataset.browser === "all" ? "all" : "examples";
+    setPref("browser", browserMode);
+    syncBrowserChip();
+    renderTree();
+  };
+});
+browserMode = pref("browser", "examples") === "all" ? "all" : "examples";
+syncBrowserChip();
 
 async function refreshTree() {
   tree = await api.classTree();
@@ -620,9 +758,23 @@ async function openClass(path: string, push = true) {
   pendingDash = null;
   tools.closeMenu();
   if (mode === "modeling") placePlot();
+  syncSidePanes();
+  updateCoach();
   if (mode === "analysis") analysis.refresh();
   await showView();
 }
+
+function updateCoach() {
+  const show =
+    pref("coach", "on") !== "off" &&
+    !!current?.path.startsWith("Daedalus.Examples.") &&
+    !(summary && summaryPath === current.path);
+  $("coach").classList.toggle("hidden", !show);
+}
+$("coach-dismiss").onclick = () => {
+  setPref("coach", "off");
+  updateCoach();
+};
 
 // ---------------------------------------------------------------- simulation
 function settings(): SimSettings {
@@ -779,6 +931,7 @@ async function simulate(opts: { pace?: number; names?: string[] } = {}) {
     } else s = await api.simulate(name, set);
     summary = s;
     summaryPath = name;
+    updateCoach();
     void updatePerformance(!!set.profile);
     if (!s.ok) {
       const err = s.error ?? "simulation failed";
@@ -836,10 +989,18 @@ $("live-stop").onclick = () => void api.liveControl({ stop: true });
 const ENGINE_KEY = "daedalus.engine";
 const ENGINE_TOKEN_KEY = "daedalus.engine.token";
 const engineBtn = $("btn-engine") as HTMLButtonElement;
+/** Shown on the Setup control. A missed engine is not written into the message log. */
+let engineMiss = "";
 function showEngine() {
   const st = engineState.status;
   engineBtn.classList.toggle("active", !!st);
-  engineBtn.textContent = st ? `Local engine · ${st.cores} cores` : "Local engine";
+  engineBtn.classList.toggle("miss", !st && !!engineMiss);
+  engineBtn.textContent = st ? `Local engine · ${st.cores} cores` : engineMiss ? "Local engine · unavailable" : "Local engine";
+  engineBtn.title = st
+    ? "Simulate on this computer with the local engine: native speed and every core"
+    : engineMiss || "Simulate on this computer with the local engine (run `daedalus serve`): native speed and every core";
+  $("setup-miss").classList.toggle("hidden", !!st || !engineMiss);
+  $("setup-miss").title = engineMiss;
 }
 function rememberedToken(): string | null {
   const q = new URLSearchParams(location.search).get("token");
@@ -854,7 +1015,8 @@ async function connectEngine(url: string, quiet = false) {
   let token = rememberedToken();
   if (!token && !quiet) token = window.prompt("Paste the token printed by daedalus serve")?.trim() || null;
   if (!token) {
-    if (!quiet) log("Local engine needs the token printed by `daedalus serve`.", "warn");
+    if (!quiet) engineMiss = "Local engine needs the token printed by `daedalus serve`.";
+    showEngine();
     return;
   }
   setEngineToken(token);
@@ -865,17 +1027,21 @@ async function connectEngine(url: string, quiet = false) {
       localStorage.setItem(ENGINE_KEY, url);
       localStorage.setItem(ENGINE_TOKEN_KEY, token);
     } catch {}
-    if (st) log(`Local engine connected at ${url} (${st.cores} cores, version ${st.version}): simulations run natively.`, "ok");
+    if (st) {
+      engineMiss = "";
+      log(`Local engine connected at ${url} (${st.cores} cores, version ${st.version}): simulations run natively.`, "ok");
+    }
   } catch (e) {
-    if (!quiet) log(`No local engine at ${url}. Start it with \`daedalus serve\` (${String(e)}); simulations stay in the browser.`, "warn");
+    engineMiss = `No local engine at ${url}. Start it with \`daedalus serve\` (${String(e)}). Simulations stay in the browser.`;
   } finally {
     engineBtn.disabled = false;
     showEngine();
   }
 }
 engineState.onLost = (reason) => {
+  engineMiss = `Local engine lost (${reason}). Simulations run in the browser again.`;
   showEngine();
-  log(`Local engine lost (${reason}); simulations run in the browser again.`, "warn");
+  log(engineMiss, "warn");
 };
 engineBtn.onclick = async () => {
   if (engineState.status) {
@@ -885,6 +1051,7 @@ engineBtn.onclick = async () => {
       localStorage.removeItem(ENGINE_KEY);
       localStorage.removeItem(ENGINE_TOKEN_KEY);
     } catch {}
+    engineMiss = "";
     log("Local engine disconnected; simulations run in the browser.");
     showEngine();
   } else {
@@ -913,6 +1080,8 @@ $("btn-check").onclick = async () => {
   btn.disabled = true;
   try {
     const r = await api.check(current.path);
+    lastCheckOk = r.ok;
+    syncViewChrome();
     if (r.ok) {
       const st = r.stats ?? {};
       log(
@@ -1235,7 +1404,7 @@ function setSimView(v: typeof simView) {
   $("plot-body").classList.toggle("hidden", v !== "plot");
   $("plot-tools").classList.toggle("hidden", v !== "plot");
   $("anim").classList.toggle("hidden", v !== "anim");
-  for (const id of ["plot-new", "plot-clear", "export-csv", "export-mat", "plot-units"]) $(id).classList.toggle("hidden", v !== "plot");
+  for (const id of ["plot-new", "plot-clear", "display-menu"]) $(id).classList.toggle("hidden", v !== "plot");
   $("plot-x").parentElement!.classList.toggle("hidden", v !== "plot");
   if (v === "plot") {
     anim?.stop();
@@ -1293,11 +1462,16 @@ async function loadAnimation(s: SimSummary, model: string) {
 }
 
 // ---------------------------------------------------------------- modes
+/** Analysis hides the variable tree until this model has a result, so one empty explanation is enough. */
+function syncSidePanes() {
+  const resultHere = !!(summary && current && summaryPath === current.path);
+  $("browser-pane").classList.toggle("hidden", mode !== "modeling");
+  $("vars-pane").classList.toggle("hidden", mode === "modeling" || (mode === "analysis" && !resultHere));
+}
 function setMode(m: typeof mode) {
   mode = m;
   setActive($("topbar"), "data-mode", m);
-  $("browser-pane").classList.toggle("hidden", m !== "modeling");
-  $("vars-pane").classList.toggle("hidden", m === "modeling");
+  syncSidePanes();
   $("model-pane").classList.toggle("hidden", m !== "modeling");
   $("plot-pane").classList.toggle("hidden", m !== "simulation");
   analysis.setVisible(m === "analysis");
@@ -1309,9 +1483,9 @@ function setMode(m: typeof mode) {
   } else if (m === "modeling") showView();
 }
 $("topbar").querySelectorAll<HTMLButtonElement>("button[data-mode]").forEach((b) => (b.onclick = () => setMode(b.dataset.mode as typeof mode)));
-// Phones: Packages and Messages start collapsed so the diagram is the first screen.
+// Phones: Packages starts collapsed so the diagram is the first screen. The log has its own one-line collapse.
 const narrow = window.matchMedia("(max-width: 900px)");
-const collapsible = ["browser-pane", "vars-pane", "messages"].map((id) => $(id));
+const collapsible = ["browser-pane", "vars-pane"].map((id) => $(id));
 function applyNarrow(on: boolean) {
   for (const pane of collapsible) {
     pane.classList.toggle("collapsed", on);
@@ -1329,26 +1503,77 @@ document.querySelectorAll<HTMLButtonElement>(".pane-toggle").forEach((btn) => {
     btn.setAttribute("aria-expanded", String(!collapsed));
   };
 });
-// The More menu (phones): opens the less-used toolbar controls; a tap outside or Escape closes it.
-const moreBtn = $("tools-menu-btn"), moreMenu = $("tools-more");
-const setMoreOpen = (open: boolean) => {
-  moreMenu.classList.toggle("open", open);
-  moreBtn.setAttribute("aria-expanded", String(open));
-};
-// The menu sits before its trigger in the DOM, so Tab from the trigger would skip it: focus its first control on open.
-moreBtn.onclick = (e) => {
-  e.stopPropagation();
-  const open = !moreMenu.classList.contains("open");
-  setMoreOpen(open);
-  if (open) moreMenu.querySelector<HTMLElement>("a[href], button:not([disabled]), input")?.focus();
-};
+// File, Setup, More views, and Display: a tap outside or Escape closes them.
+const MENUS: [string, string][] = [
+  ["file-menu-btn", "file-menu-pop"],
+  ["setup-menu-btn", "setup-menu-pop"],
+  ["views-menu-btn", "views-menu-pop"],
+  ["display-menu-btn", "display-menu-pop"],
+];
+function closeMenus() {
+  for (const [btn, pop] of MENUS) {
+    $(pop).classList.add("hidden");
+    $(btn).setAttribute("aria-expanded", "false");
+  }
+}
+function bindMenu(btnId: string, popId: string) {
+  const btn = $(btnId);
+  const pop = $(popId);
+  btn.onclick = (e) => {
+    e.stopPropagation();
+    const open = pop.classList.contains("hidden");
+    closeMenus();
+    if (!open) return;
+    pop.classList.remove("hidden");
+    btn.setAttribute("aria-expanded", "true");
+    pop.querySelector<HTMLElement>("a[href], button:not([disabled]), input, select")?.focus();
+  };
+}
+for (const [btn, pop] of MENUS) bindMenu(btn, pop);
 document.addEventListener("click", (e) => {
-  if (!moreMenu.contains(e.target as Node)) setMoreOpen(false);
+  const t = e.target as Node;
+  if (MENUS.some(([btn, pop]) => $(pop).contains(t) || $(btn).contains(t))) return;
+  closeMenus();
 });
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
-  if (moreMenu.contains(document.activeElement)) moreBtn.focus();
-  setMoreOpen(false);
+  const openBtn = MENUS.find(([, pop]) => !$(pop).classList.contains("hidden"));
+  if (!openBtn) return;
+  if ($(openBtn[1]).contains(document.activeElement)) $(openBtn[0]).focus();
+  closeMenus();
+});
+function syncSetupLabel() {
+  const sel = $("set-method") as HTMLSelectElement;
+  const text = sel.value ? sel.selectedOptions[0]?.textContent?.trim() || sel.value : "model default";
+  $("setup-label").textContent = `Setup · ${text}`;
+}
+$("set-method").addEventListener("change", syncSetupLabel);
+syncSetupLabel();
+$("btn-new-model").onclick = () => void editor.newModel();
+function syncThemeButtons(choice: ThemeChoice) {
+  document.querySelectorAll<HTMLButtonElement>("[data-theme-choice]").forEach((b) => b.classList.toggle("active", b.dataset.themeChoice === choice));
+}
+function setTheme(choice: ThemeChoice) {
+  setPref("theme", choice);
+  applyThemeChoice(document.documentElement, choice);
+  syncThemeButtons(choice);
+  redrawThemedCanvases();
+}
+function redrawThemedCanvases() {
+  plot.draw();
+  analysis.redraw();
+  redrawPerformance();
+}
+document.querySelectorAll<HTMLButtonElement>("[data-theme-choice]").forEach((b) => {
+  b.onclick = () => setTheme(b.dataset.themeChoice as ThemeChoice);
+});
+{
+  const choice = readThemeChoice(pref("theme", "system"));
+  applyThemeChoice(document.documentElement, choice);
+  syncThemeButtons(choice);
+}
+window.matchMedia?.("(prefers-color-scheme: dark)").addEventListener?.("change", () => {
+  if (!document.documentElement.dataset.theme) redrawThemedCanvases();
 });
 // The toolbar wraps on narrow windows, so panels fixed under it (the Assistant drawer) follow its real height.
 new ResizeObserver(() => document.documentElement.style.setProperty("--topbar-h", `${$("topbar").offsetHeight}px`)).observe($("topbar"));

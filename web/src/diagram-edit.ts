@@ -90,6 +90,7 @@ export class DiagramEditor {
     btn("edit", "✎ Edit", "Edit the diagram: drag classes from the package browser, drag between connectors to connect", () => this.toggle());
     btn("duplicate", "Duplicate to my models", "Copy this read-only class into MyModels.mo and edit the copy", () => void this.duplicate());
     btn("new", "New model", "Add an empty model to MyModels.mo", () => void this.newModel());
+    this.buttons.new.classList.add("hidden");
     btn("rotate", "⟳", "Rotate the selection by 90° (R)", () => void this.rotate(-90));
     btn("flipH", "⇋", "Flip horizontally (H)", () => void this.flip(true));
     btn("flipV", "⇵", "Flip vertically (V)", () => void this.flip(false));
@@ -158,6 +159,7 @@ export class DiagramEditor {
     const show = (id: string, on: boolean) => this.buttons[id].classList.toggle("hidden", !on);
     show("edit", diagramShown && ed);
     show("duplicate", diagramShown && !ed);
+    show("new", false);
     for (const id of ["rotate", "flipH", "flipV", "delete", "params"]) show(id, this.editing);
     show("undo", this.undoStack.length > 0 || this.redoStack.length > 0);
     show("redo", this.undoStack.length > 0 || this.redoStack.length > 0);

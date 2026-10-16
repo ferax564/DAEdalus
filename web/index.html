@@ -5,43 +5,73 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3E%3Crect width=%2716%27 height=%2716%27 rx=%273%27 fill=%27%231f4e79%27/%3E%3Cpath d=%27M3 12 L6 5 L9 10 L13 3%27 stroke=%27white%27 stroke-width=%271.6%27 fill=%27none%27/%3E%3C/svg%3E" />
     <title>DAEdalus Workbench</title>
+    <script>
+      try {
+        var theme = localStorage.getItem("daedalus.theme");
+        if (theme === "light" || theme === "dark") {
+          document.documentElement.dataset.theme = theme;
+          document.documentElement.style.colorScheme = theme;
+        }
+      } catch (e) {}
+    </script>
   </head>
   <body>
     <header id="topbar">
       <div class="brand"><span class="logo">Δ</span><span class="brand-name"> DAEdalus</span></div>
+      <div class="theme-switch" role="group" aria-label="Theme">
+        <button type="button" data-theme-choice="light">Light</button>
+        <button type="button" data-theme-choice="dark">Dark</button>
+        <button type="button" data-theme-choice="system">System</button>
+      </div>
       <nav class="modes" role="tablist" aria-label="Mode">
         <button data-mode="modeling" class="active" role="tab" aria-selected="true">Modeling</button>
         <button data-mode="simulation" role="tab" aria-selected="false">Simulation</button>
         <button data-mode="analysis" role="tab" aria-selected="false">Analysis</button>
       </nav>
+      <div class="head-model">
+        <span class="nav">
+          <button id="nav-back" title="Back to the previous class (Alt+←)" aria-label="Back" disabled>‹</button>
+          <button id="nav-fwd" title="Forward (Alt+→)" aria-label="Forward" disabled>›</button>
+        </span>
+        <span id="model-title" class="model-title">No class open</span>
+      </div>
       <div class="tools">
-        <!-- Less-used controls: on phones they open from the More menu (see styles.css). -->
-        <div id="tools-more" class="tools-more">
-          <a href="./scoreboard.html" title="How DAEdalus results compare with the MSL reference results" style="color: var(--muted)">Scoreboard</a>
-          <label class="file" title="Open .mo files, shape files, or a model package / library .zip">Open<input id="open-files" type="file" multiple accept=".mo,.stl,.obj,.zip" /></label>
-          <label class="file" title="Load a library folder">Folder<input id="open-dir" type="file" webkitdirectory /></label>
-          <button id="btn-libs" title="Install libraries (Buildings, ThermoSysPro, OpenIPSL, ...) and check the versions loaded">Libraries</button>
-          <button id="btn-save-zip" title="Save the open model with the files and resources it needs as a .zip">Save .zip</button>
-          <span class="sep"></span>
-          <label>Stop <input id="set-stop" type="number" step="any" placeholder="auto" /></label>
-          <label>Intervals <input id="set-n" type="number" min="1" placeholder="auto" /></label>
-          <label>Tol <input id="set-tol" type="text" placeholder="auto" size="6" /></label>
-          <label>Method
-            <select id="set-method">
-              <option value="">model default</option>
-              <optgroup label="Stiff"><option value="Bdf">BDF</option><option value="Radau">Radau IIA</option><option value="Esdirk">ESDIRK</option></optgroup>
-              <optgroup label="Switching"><option value="Auto">Auto (Dopri5/BDF)</option></optgroup>
-              <optgroup label="Non-stiff"><option value="Dopri5">Dopri5</option></optgroup>
-              <optgroup label="Fixed step"><option value="Rk4">RK4</option><option value="Euler">Euler</option></optgroup>
-            </select>
-          </label>
-          <button id="solver-hint" class="solver-hint hidden" type="button"></button>
-          <button id="btn-engine" title="Simulate on this computer with the local engine (run `daedalus serve`): native speed and every core">Local engine</button>
+        <div class="menu" id="file-menu">
+          <button id="file-menu-btn" type="button" aria-controls="file-menu-pop" aria-expanded="false" aria-haspopup="menu">File</button>
+          <div id="file-menu-pop" class="menu-pop hidden" role="menu">
+            <label class="file" title="Open .mo files, shape files, or a model package / library .zip">Open<input id="open-files" type="file" multiple accept=".mo,.stl,.obj,.zip" /></label>
+            <label class="file" title="Load a library folder">Folder<input id="open-dir" type="file" webkitdirectory /></label>
+            <button id="btn-new-model" type="button" title="Add an empty model to MyModels.mo">New model</button>
+            <button id="btn-libs" title="Install libraries (Buildings, ThermoSysPro, OpenIPSL, ...) and check the versions loaded">Libraries</button>
+            <button id="btn-save-zip" title="Save the open model with the files and resources it needs as a .zip">Save .zip</button>
+            <a href="./scoreboard.html" title="How DAEdalus results compare with the MSL reference results">Scoreboard</a>
+            <a id="docs-link" href="docs/" target="_blank" rel="noopener" title="Documentation, examples and feature guides">Docs</a>
+          </div>
         </div>
-        <button id="tools-menu-btn" class="tools-menu-btn" type="button" aria-controls="tools-more" aria-expanded="false">More ▾</button>
+        <div class="menu" id="setup-menu">
+          <button id="setup-menu-btn" type="button" aria-controls="setup-menu-pop" aria-expanded="false" aria-haspopup="dialog">
+            <span id="setup-label">Setup · model default</span><span id="setup-miss" class="fail-dot hidden" title="No local engine"></span>
+          </button>
+          <div id="setup-menu-pop" class="menu-pop hidden">
+            <label>Stop <input id="set-stop" type="number" step="any" placeholder="auto" /></label>
+            <label>Intervals <input id="set-n" type="number" min="1" placeholder="auto" /></label>
+            <label>Tol <input id="set-tol" type="text" placeholder="auto" size="6" /></label>
+            <label>Method
+              <select id="set-method">
+                <option value="">model default</option>
+                <optgroup label="Stiff"><option value="Bdf">BDF</option><option value="Radau">Radau IIA</option><option value="Esdirk">ESDIRK</option></optgroup>
+                <optgroup label="Switching"><option value="Auto">Auto (Dopri5/BDF)</option></optgroup>
+                <optgroup label="Non-stiff"><option value="Dopri5">Dopri5</option></optgroup>
+                <optgroup label="Fixed step"><option value="Rk4">RK4</option><option value="Euler">Euler</option></optgroup>
+              </select>
+            </label>
+            <button id="solver-hint" class="solver-hint hidden" type="button"></button>
+            <div id="setup-profile"></div>
+            <button id="btn-engine" title="Simulate on this computer with the local engine (run `daedalus serve`): native speed and every core">Local engine</button>
+          </div>
+        </div>
         <button id="btn-check" title="Translate and check the model">Check</button>
-        <button id="btn-sim" class="primary" title="Translate and simulate (Ctrl+Enter)">▶ Simulate</button>
-        <a id="docs-link" href="docs/" target="_blank" rel="noopener" title="Documentation, examples and feature guides">Docs</a>
+        <button id="btn-sim" class="primary" title="Translate and simulate (Ctrl+Enter)">Simulate</button>
       </div>
     </header>
     <main id="app">
@@ -49,6 +79,10 @@
         <section id="browser-pane" class="pane">
           <div class="pane-title">
             <button type="button" class="pane-toggle" aria-controls="browser" aria-expanded="true">Packages</button>
+            <span class="browser-mode" role="group" aria-label="Which packages to list">
+              <button type="button" id="browser-examples" data-browser="examples" title="Runnable models and Daedalus.Examples">Examples</button>
+              <button type="button" id="browser-all" data-browser="all" title="Every loaded class">All</button>
+            </span>
             <label class="sr-only" for="filter">Filter packages</label>
             <input id="filter" type="search" placeholder="Filter" />
           </div>
@@ -67,21 +101,25 @@
       <section id="center">
         <div id="model-pane" class="pane">
           <div class="tabs" id="view-tabs">
-            <span class="nav">
-              <button id="nav-back" title="Back to the previous class (Alt+←)" aria-label="Back" disabled>‹</button>
-              <button id="nav-fwd" title="Forward (Alt+→)" aria-label="Forward" disabled>›</button>
-            </span>
-            <span id="model-title" class="model-title">No class open</span>
             <span class="view-tablist" role="tablist" aria-label="Class view">
             <button data-view="icon" role="tab" aria-selected="false">Icon</button>
             <button data-view="diagram" class="active" role="tab" aria-selected="true">Diagram</button>
             <button data-view="text" role="tab" aria-selected="false" title="Modelica text. F12 or Ctrl/Cmd-click: go to definition · Shift+F12: find usages · F2: rename · Ctrl+Space: complete · Ctrl+Shift+O: outline">Text</button>
             <button data-view="doc" role="tab" aria-selected="false">Documentation</button>
-            <button data-view="flat" role="tab" aria-selected="false">Flat model</button>
-            <button data-view="structure" role="tab" aria-selected="false" title="BLT blocks, incidence, state selection and the state Jacobian">Structure</button>
-            <button data-view="linear" role="tab" aria-selected="false" title="Linear analysis: Bode, poles and zeros, step response, model reduction, LQR and PID tuning">Linear</button>
-            <button data-view="diff" role="tab" aria-selected="false" title="Differences from the version as loaded, or from a file">Diff</button>
+            <span class="menu view-more">
+              <button id="views-menu-btn" type="button" aria-controls="views-menu-pop" aria-expanded="false" aria-haspopup="menu"><span id="views-menu-label">More views</span><span id="views-fail-dot" class="fail-dot hidden" title="The last check failed"></span></button>
+              <div id="views-menu-pop" class="menu-pop hidden" role="menu">
+                <button data-view="flat" role="menuitem">Flat model</button>
+                <button data-view="structure" role="menuitem" title="BLT blocks, incidence, state selection and the state Jacobian">Structure <span id="structure-fail-dot" class="fail-dot hidden" title="The last check failed"></span></button>
+                <button data-view="linear" role="menuitem" title="Linear analysis: Bode, poles and zeros, step response, model reduction, LQR and PID tuning">Linear</button>
+                <button data-view="diff" role="menuitem" title="Differences from the version as loaded, or from a file" disabled>Diff</button>
+              </div>
             </span>
+            </span>
+          </div>
+          <div id="coach" class="coach hidden">
+            <span>Example model. Simulate, then click a component to plot it.</span>
+            <button id="coach-dismiss" type="button" title="Hide this hint" aria-label="Dismiss">✕</button>
           </div>
           <div id="views">
             <div id="view-graphic" class="view"></div>
@@ -108,23 +146,33 @@
         <div id="plot-pane" class="pane hidden">
           <div class="tabs">
             <span class="model-title">Results</span>
-            <span class="seg" id="sim-views"><button data-sim="plot" class="active">Plot</button><button data-sim="anim" id="anim-tab" class="hidden" title="3-D animation of the MultiBody shapes">Animation</button></span>
-            <button id="plot-new">New subplot</button>
-            <button id="plot-clear">Clear</button>
-            <label>x-axis <select id="plot-x"><option value="">time</option></select></label>
-            <span id="plot-units">
-              <label title="Unit of the x axis">x unit <select id="plot-xunit"></select></label>
-              <label title="Unit of the y axis of the active subplot">y unit <select id="plot-yunit"></select></label>
-              <label title="Default to Imperial / US units (ft, lbf, psi, mph, degF, hp ...)"><input type="checkbox" id="plot-imperial" /> Imperial</label>
+            <span class="tool-group seg" id="sim-views"><button data-sim="plot" class="active">Plot</button><button data-sim="anim" id="anim-tab" class="hidden" title="3-D animation of the MultiBody shapes">Animation</button></span>
+            <span class="tool-group">
+              <button id="plot-new">New subplot</button>
+              <button id="plot-clear">Clear</button>
+              <label>x-axis <select id="plot-x"><option value="">time</option></select></label>
             </span>
-            <span class="spacer"></span>
-            <span id="live-status" class="live-status"></span>
-            <button id="live-stop" class="hidden" title="Stop the running simulation (the rows so far are kept)">■ Stop</button>
-            <label title="Stream the results into the plot while the simulation runs"><input id="plot-live" type="checkbox" checked /> Live</label>
-            <button id="sim-diagram-btn" title="Show the diagram next to the plot: click a component or connection to plot its variables">Diagram</button>
-            <button id="dash-btn" title="Dashboard: sliders, gauges and displays for live, interactive runs">Dashboard</button>
-            <button id="export-csv">Export CSV</button>
-            <button id="export-mat">Export .mat</button>
+            <span class="tool-group">
+              <span id="live-status" class="live-status"></span>
+              <button id="live-stop" class="hidden" title="Stop the running simulation (the rows so far are kept)">■ Stop</button>
+              <label title="Stream the results into the plot while the simulation runs"><input id="plot-live" type="checkbox" checked /> Live</label>
+            </span>
+            <span class="tool-group">
+              <button id="sim-diagram-btn" title="Show the diagram next to the plot: click a component or connection to plot its variables">Diagram</button>
+              <button id="dash-btn" title="Dashboard: sliders, gauges and displays for live, interactive runs">Dashboard</button>
+            </span>
+            <div class="menu" id="display-menu">
+              <button id="display-menu-btn" type="button" aria-controls="display-menu-pop" aria-expanded="false">Display</button>
+              <div id="display-menu-pop" class="menu-pop hidden">
+                <span id="plot-units">
+                  <label title="Unit of the x axis">x unit <select id="plot-xunit"></select></label>
+                  <label title="Unit of the y axis of the active subplot">y unit <select id="plot-yunit"></select></label>
+                  <label title="Default to Imperial / US units (ft, lbf, psi, mph, degF, hp ...)"><input type="checkbox" id="plot-imperial" /> Imperial</label>
+                </span>
+                <button id="export-csv">Export CSV</button>
+                <button id="export-mat">Export .mat</button>
+              </div>
+            </div>
           </div>
           <div id="plot-tools" class="plot-tools"></div>
           <div id="plot-body">
@@ -139,16 +187,17 @@
         </div>
       </section>
       <aside id="right">
-        <section class="pane">
+        <section class="pane" id="inspector-pane">
           <div class="pane-title">Component</div>
           <div id="inspector" class="inspector"><p class="muted">Select a component in the diagram.</p></div>
         </section>
       </aside>
     </main>
-    <footer id="messages">
+    <footer id="messages" class="collapsed">
+      <button id="log-status" class="log-status" type="button" aria-expanded="false" aria-controls="log">No messages</button>
       <div class="pane-title">
-        <button type="button" class="pane-toggle" aria-controls="log" aria-expanded="true">Messages</button>
-        <button id="msg-clear">Clear</button>
+        <span>Messages</span>
+        <button id="msg-clear" type="button">Clear</button>
       </div>
       <div id="log"></div>
     </footer>

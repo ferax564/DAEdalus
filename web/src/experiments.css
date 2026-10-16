@@ -1,5 +1,8 @@
 /* Runs pane and sweep dialog (experiments.ts). */
 #runs-pane { flex: 1; min-height: 160px; }
+#runs-pane.collapsed { flex: none; min-height: 0; }
+#runs-pane.collapsed .runs-tools,
+#runs-pane.collapsed .runs-list { display: none; }
 .runs-info { font-weight: 400; text-transform: none; letter-spacing: 0; }
 .runs-tools { display: flex; flex-wrap: wrap; gap: 4px; padding: 6px 8px; border-bottom: 1px solid var(--line); }
 .runs-tools button { font-size: 11.5px; padding: 1px 7px; }
@@ -15,7 +18,7 @@
 .run-rename { width: 100%; }
 button.icon { border: none; background: none; padding: 0 3px; color: var(--muted); font-size: 13px; line-height: 1; }
 button.icon:hover { color: var(--accent); }
-button.icon.on { color: #e8a200; }
+button.icon.on { color: var(--warn); }
 .sweep-dialog { width: min(880px, 94vw); max-height: 90vh; padding: 0; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--fg); }
 .sweep-dialog::backdrop { background: rgba(0, 0, 0, 0.3); }
 .sw-head { display: flex; align-items: center; padding: 8px 14px; border-bottom: 1px solid var(--line); margin: 0; }
