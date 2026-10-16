@@ -88,8 +88,18 @@ fn dymola_script() {
     let r = read_mat(&std::fs::read(&p).unwrap()).unwrap();
     close(*r.time.last().unwrap(), 2.0, 1e-12);
     // simulateExtendedModel in a for loop with a tuple assignment
-    assert!(o.stdout.contains("T = 0.5: y(20) = 5"), "{}", o.stdout);
-    assert!(o.stdout.contains("T = 1: y(20) = 4.99"), "{}", o.stdout);
+    for t in ["0.5", "1"] {
+        let key = format!("T = {t}: y(20) = ");
+        let y: f64 = o
+            .stdout
+            .lines()
+            .find_map(|l| l.strip_prefix(key.as_str()))
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or_else(|| panic!("no `{key}` line in\n{}", o.stdout));
+        // y(20) = 5 (1 - exp(-20 / T)), within the integration tolerance
+        let tf: f64 = t.parse().unwrap();
+        close(y, 5.0 * (1.0 - (-20.0 / tf).exp()), 1e-6);
+    }
     // linearizeModel: dslin.mat layout and JSON
     let bytes = std::fs::read(dir.join("pendulum_lin.mat")).unwrap();
     assert!(bytes.windows(4).any(|w| w == b"ABCD"));

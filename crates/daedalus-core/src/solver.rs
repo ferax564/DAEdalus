@@ -432,6 +432,8 @@ pub struct Bdf {
     x: Vec<f64>,
     stats: SolverStats,
     probe: StepProbe,
+    /// Number of (re)starts: the initial one, then one per event.
+    starts: u32,
 }
 
 impl Bdf {
@@ -479,6 +481,7 @@ impl Bdf {
             x: vec![0.0; n],
             stats: SolverStats::default(),
             probe: StepProbe::default(),
+            starts: 0,
         }
     }
 
@@ -567,6 +570,7 @@ fn compute_r(order: usize, factor: f64) -> Vec<f64> {
 
 impl Integrator for Bdf {
     fn reset(&mut self, rt: &mut Runtime, t: f64, x: &[f64]) {
+        self.starts = self.starts.saturating_add(1);
         self.t = t;
         self.t_old = t;
         self.x.copy_from_slice(x);
@@ -848,6 +852,16 @@ impl Integrator for Bdf {
             if factors[k] > factors[best] {
                 best = k;
             }
+        }
+        // At order 1 after an event restart, when order 2 allows the largest step as well
+        // (the factor is capped at 10), take order 2. Otherwise a smooth restart grows
+        // the step tenfold at order 1, and the global error of those long first-order
+        // steps exceeds the tolerance. The initial start keeps scipy's choice: its first
+        // step comes from the initial-step heuristic, and promoting there made the
+        // sensitive BevelGear1D twice less accurate.
+        let cap = 10.0 / safety;
+        if order == 1 && best == 1 && self.starts > 1 && factors[2] >= cap {
+            best = 2;
         }
         self.order = (order as isize + best as isize - 1) as usize;
         let factor = (safety * factors[best]).min(10.0);

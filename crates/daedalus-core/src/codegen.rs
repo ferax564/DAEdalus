@@ -159,6 +159,12 @@ pub struct Model {
     pub zc: Vec<Ins>,
     pub zc_g: Vec<Slot>,
     pub zc_raw: Vec<Slot>,
+    /// Per relation, a slot that is 0 while the relation cannot affect anything
+    /// because it sits behind a false operand of `and` (or a true one of `or`), whose
+    /// value only changes at events. Such a relation is not evaluated by a
+    /// short-circuiting tool and does not trigger an event. `None`: always live.
+    #[serde(default)]
+    pub zc_live: Vec<Option<Slot>>,
     pub rel_ops: Vec<Cmp>,
     /// Readable text of each relation (for diagnostics).
     pub rel_text: Vec<String>,
@@ -173,6 +179,11 @@ pub struct Model {
     pub when_order: Vec<usize>,
     /// Per clause, the clauses whose assignments it reads.
     pub when_deps: Vec<Vec<usize>>,
+    /// Per clause, the clauses whose assignments its condition reads: when one of them
+    /// fires in the same pass, the condition is evaluated again with its new values
+    /// (sorted when-equations, as a pulse switching an event clock's threshold).
+    #[serde(default)]
+    pub when_cond_deps: Vec<Vec<usize>>,
     /// Computes eliminated alias variables.
     pub outputs: Vec<Ins>,
     pub asserts_prog: Vec<Ins>,
@@ -222,6 +233,8 @@ struct Emitter<'a> {
     /// Result slots of branched `if` expressions (written in two places).
     branched: FxHashSet<Slot>,
     site_of: FxHashMap<(u32, Vec<Slot>), u32>,
+    /// Expressions emitted as roots (collected for [`relation_guards`]).
+    roots: Option<Vec<ExprId>>,
 }
 
 impl Model {
@@ -466,6 +479,9 @@ impl Emitter<'_> {
         memo: &mut FxHashMap<ExprId, Slot>,
         out: &mut Vec<Ins>,
     ) -> Slot {
+        if let Some(r) = &mut self.roots {
+            r.push(root);
+        }
         let mut stack = vec![(root, false)];
         let mut ch = Vec::new();
         while let Some((id, expanded)) = stack.pop() {
@@ -783,6 +799,7 @@ fn compile_prog(arena: &mut Arena, p: usize, sites: &mut Vec<SiteCode>) -> ProgC
         branch_log: Vec::new(),
         branched: FxHashSet::default(),
         site_of: FxHashMap::default(),
+        roots: None,
     };
     let mut memo = FxHashMap::default();
     let mut cond = Vec::new();
@@ -809,7 +826,7 @@ fn compile_prog(arena: &mut Arena, p: usize, sites: &mut Vec<SiteCode>) -> ProgC
 pub fn compile(mut sys: System) -> Model {
     let nv = sys.vars.len();
     let n_rel = sys.arena.relations.len();
-    let (when_order, when_deps) = when_dependencies(&sys);
+    let (when_order, when_deps, when_cond_deps) = when_dependencies(&sys);
     let layout = Layout {
         nv,
         pre0: nv,
@@ -840,6 +857,7 @@ pub fn compile(mut sys: System) -> Model {
         branch_log: Vec::new(),
         branched: FxHashSet::default(),
         site_of: FxHashMap::default(),
+        roots: None,
     };
     let mut newton = Vec::new();
     // Parameters.
@@ -880,6 +898,7 @@ pub fn compile(mut sys: System) -> Model {
     compile_blocks(&mut em, &sys.init_blocks, &sys.vars, &mut newton, &mut init);
     // Simulation (latched relations).
     em.raw_rel = false;
+    em.roots = Some(Vec::new());
     let mut ode = Vec::new();
     compile_blocks(&mut em, &sys.blocks, &sys.vars, &mut newton, &mut ode);
     // Zero crossings.
@@ -1040,6 +1059,17 @@ pub fn compile(mut sys: System) -> Model {
             .collect()
     };
     let mut layout = layout;
+    // Short-circuit guards: the relations only evaluated behind a false operand of
+    // `and` / `or` do not trigger events.
+    let mut zc_live = Vec::new();
+    {
+        let roots = em.roots.take().unwrap_or_default();
+        let guards = relation_guards(em.arena, &sys.vars, &roots, n_rel);
+        let mut memo = FxHashMap::default();
+        for g in guards {
+            zc_live.push(g.map(|g| em.emit(g, &mut memo, &mut zc)));
+        }
+    }
     layout.n_regs = em.next as usize;
     let consts = em.const_list.clone();
     let sites = std::mem::take(&mut em.sites);
@@ -1067,6 +1097,7 @@ pub fn compile(mut sys: System) -> Model {
         zc,
         zc_g,
         zc_raw,
+        zc_live,
         rel_ops,
         rel_text,
         sample_rels,
@@ -1075,6 +1106,7 @@ pub fn compile(mut sys: System) -> Model {
         whens,
         when_order,
         when_deps,
+        when_cond_deps,
         outputs,
         asserts_prog,
         asserts,
@@ -2521,6 +2553,19 @@ impl<'m> Runtime<'m> {
         self.run(&m.zc);
     }
 
+    /// Whether relation `i` (after [`Runtime::eval_zc`]) has a raw value different from
+    /// its latched one and is live (not masked by a short-circuit guard).
+    #[inline]
+    pub fn rel_crossed(&self, i: usize) -> bool {
+        let m = self.m;
+        self.r[m.zc_raw[i] as usize] != self.r[m.layout.rel0 + i]
+            && m.zc_live
+                .get(i)
+                .copied()
+                .flatten()
+                .is_none_or(|s| self.r[s as usize] != 0.0)
+    }
+
     /// Latch relations from their raw values; returns whether any changed.
     pub fn latch_relations(&mut self) -> bool {
         let m = self.m;
@@ -2551,9 +2596,15 @@ impl<'m> Runtime<'m> {
 /// Data dependencies between when-clauses (see `Model::when_order`). Simultaneous
 /// when-equations see each other's new values: an AD converter's output read by a DA
 /// converter triggered by the same clock edge is the value converted at that edge.
-fn when_dependencies(sys: &System) -> (Vec<usize>, Vec<Vec<usize>>) {
+fn when_dependencies(sys: &System) -> (Vec<usize>, Vec<Vec<usize>>, Vec<Vec<usize>>) {
     let nw = sys.whens.len();
-    let identity = || ((0..nw).collect(), vec![Vec::new(); nw]);
+    let identity = || {
+        (
+            (0..nw).collect(),
+            vec![Vec::new(); nw],
+            vec![Vec::new(); nw],
+        )
+    };
     if nw < 2 {
         return identity();
     }
@@ -2589,10 +2640,37 @@ fn when_dependencies(sys: &System) -> (Vec<usize>, Vec<Vec<usize>>) {
             }
         }
     }
+    // The clauses whose assignments the expressions `es` of clause `wj` read, directly
+    // or through algebraic equations.
+    let readers = |wj: usize, es: &[ExprId]| -> Vec<usize> {
+        let mut out = Vec::new();
+        let mut stack: Vec<VarId> = sys.arena.vars_in(es).into_iter().collect();
+        let mut seen: FxHashSet<VarId> = stack.iter().copied().collect();
+        while let Some(v) = stack.pop() {
+            if let Some(ws) = writer.get(&v) {
+                for &wi in ws {
+                    if wi != wj && !out.contains(&wi) {
+                        out.push(wi);
+                    }
+                }
+            }
+            if let Some(rs) = reads_of.get(&v) {
+                for &r in rs {
+                    if seen.insert(r) {
+                        stack.push(r);
+                    }
+                }
+            }
+        }
+        out
+    };
     let mut deps: Vec<Vec<usize>> = vec![Vec::new(); nw];
+    let mut cond_deps: Vec<Vec<usize>> = vec![Vec::new(); nw];
     for (wj, wc) in sys.whens.iter().enumerate() {
         let mut es = Vec::new();
-        for (_, acts) in &wc.branches {
+        let mut cs = Vec::new();
+        for (c, acts) in &wc.branches {
+            cs.push(*c);
             for a in acts {
                 match a {
                     WhenAction::Assign(_, e)
@@ -2606,34 +2684,22 @@ fn when_dependencies(sys: &System) -> (Vec<usize>, Vec<Vec<usize>>) {
                 }
             }
         }
-        let mut stack: Vec<VarId> = sys.arena.vars_in(&es).into_iter().collect();
-        let mut seen: FxHashSet<VarId> = stack.iter().copied().collect();
-        while let Some(v) = stack.pop() {
-            if let Some(ws) = writer.get(&v) {
-                for &wi in ws {
-                    if wi != wj && !deps[wj].contains(&wi) {
-                        deps[wj].push(wi);
-                    }
-                }
-            }
-            if let Some(rs) = reads_of.get(&v) {
-                for &r in rs {
-                    if seen.insert(r) {
-                        stack.push(r);
-                    }
-                }
-            }
-        }
+        deps[wj] = readers(wj, &es);
+        cond_deps[wj] = readers(wj, &cs);
     }
-    if deps.iter().all(|d| d.is_empty()) {
+    if deps.iter().all(|d| d.is_empty()) && cond_deps.iter().all(|d| d.is_empty()) {
         return identity();
     }
-    // Kahn's algorithm, stable by clause index; clauses on a cycle keep their order.
-    let mut indeg: Vec<usize> = deps.iter().map(|d| d.len()).collect();
+    // Kahn's algorithm, stable by clause index; clauses on a cycle keep their order. A
+    // clause whose actions or condition read another's assignments comes after it.
+    let mut indeg: Vec<usize> = vec![0; nw];
     let mut users: Vec<Vec<usize>> = vec![Vec::new(); nw];
-    for (j, d) in deps.iter().enumerate() {
-        for &i in d {
-            users[i].push(j);
+    for j in 0..nw {
+        for &i in deps[j].iter().chain(cond_deps[j].iter()) {
+            if !users[i].contains(&j) {
+                users[i].push(j);
+                indeg[j] += 1;
+            }
         }
     }
     let mut done = vec![false; nw];
@@ -2649,7 +2715,7 @@ fn when_dependencies(sys: &System) -> (Vec<usize>, Vec<Vec<usize>>) {
         }
     }
     order.extend((0..nw).filter(|&k| !done[k]));
-    (order, deps)
+    (order, deps, cond_deps)
 }
 
 /// Order the actions of one when-branch so that an assignment comes before the actions
@@ -2706,4 +2772,134 @@ fn order_actions(arena: &Arena, acts: &[WhenAction]) -> (Vec<usize>, bool) {
         visit(k, &deps, &mut state, &mut order);
     }
     (order, true)
+}
+
+/// The short-circuit guard of each event relation in the simulation code: `Some(g)`
+/// when every use of the relation is the right operand of an `and` whose left operand
+/// (the disjunction `g` over the uses) is false, or of an `or` whose left one is true.
+/// The left operands must be discrete-time expressions, so that `g` only changes at
+/// events. `roots` are the expressions the simulation code was emitted from.
+fn relation_guards(
+    arena: &mut Arena,
+    vars: &[Variable],
+    roots: &[ExprId],
+    n_rel: usize,
+) -> Vec<Option<ExprId>> {
+    const MAX_TERMS: usize = 8;
+    let n = arena.len();
+    // None: not reached; Some(None): unguarded; Some(Some(gs)): any of gs.
+    let mut st: Vec<Option<Option<Vec<ExprId>>>> = vec![None; n];
+    for &r in roots {
+        st[r as usize] = Some(None);
+    }
+    let mut disc: FxHashMap<ExprId, bool> = FxHashMap::default();
+    let mut rel_state: Vec<Option<Option<Vec<ExprId>>>> = vec![None; n_rel];
+    let mut ch = Vec::new();
+    for id in (0..n as ExprId).rev() {
+        let Some(s) = st[id as usize].clone() else {
+            continue;
+        };
+        let mut pushes: Vec<(ExprId, Option<ExprId>)> = Vec::new();
+        match arena.node(id) {
+            Node::Rel(r) => {
+                rel_state[r as usize] = Some(s);
+                continue;
+            }
+            Node::F2(f @ (Fn2::And | Fn2::Or), a, b) => {
+                pushes.push((a, None));
+                let k = if is_discrete(arena, vars, a, &mut disc) {
+                    Some(if f == Fn2::And {
+                        a
+                    } else {
+                        arena.f1(Fn1::Not, a)
+                    })
+                } else {
+                    None
+                };
+                pushes.push((b, k));
+            }
+            _ => {
+                ch.clear();
+                arena.children(id, &mut ch);
+                pushes.extend(ch.iter().map(|&c| (c, None)));
+            }
+        }
+        for (c, k) in pushes {
+            if c >= id {
+                // Not in creation order: give up (every relation stays live).
+                return vec![None; n_rel];
+            }
+            let add: Option<Vec<ExprId>> = match (&s, k) {
+                (None, None) => None,
+                (None, Some(k)) => Some(vec![k]),
+                (Some(gs), None) => Some(gs.clone()),
+                (Some(gs), Some(k)) => Some(gs.iter().map(|&g| arena.f2(Fn2::And, g, k)).collect()),
+            };
+            let cur = &mut st[c as usize];
+            *cur = match (cur.take(), add) {
+                (None, a) => Some(a),
+                (Some(None), _) | (_, None) => Some(None),
+                (Some(Some(mut x)), Some(y)) => {
+                    for g in y {
+                        if !x.contains(&g) {
+                            x.push(g);
+                        }
+                    }
+                    if x.len() > MAX_TERMS {
+                        Some(None)
+                    } else {
+                        Some(Some(x))
+                    }
+                }
+            };
+        }
+    }
+    rel_state
+        .into_iter()
+        .map(|s| match s {
+            Some(Some(gs)) => gs.into_iter().reduce(|a, b| arena.f2(Fn2::Or, a, b)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Whether `e` only changes at events: no time, no continuous variable (comparisons
+/// are of discrete operands then).
+fn is_discrete(
+    arena: &Arena,
+    vars: &[Variable],
+    e: ExprId,
+    memo: &mut FxHashMap<ExprId, bool>,
+) -> bool {
+    if let Some(&b) = memo.get(&e) {
+        return b;
+    }
+    let ok_var = |v: VarId| {
+        matches!(
+            vars[v as usize].kind,
+            VarKind::Constant | VarKind::Parameter | VarKind::Discrete
+        )
+    };
+    let b = match arena.node(e) {
+        Node::Const(_) | Node::Rel(_) | Node::Initial | Node::Terminal => true,
+        Node::Var(v) | Node::Pre(v) => ok_var(v),
+        Node::Neg(a) | Node::F1(_, a) => is_discrete(arena, vars, a, memo),
+        Node::Add(a, b)
+        | Node::Sub(a, b)
+        | Node::Mul(a, b)
+        | Node::Div(a, b)
+        | Node::Pow(a, b)
+        | Node::F2(_, a, b)
+        | Node::Cmp(_, a, b) => {
+            is_discrete(arena, vars, a, memo) && is_discrete(arena, vars, b, memo)
+        }
+        Node::If(c, a, b) => {
+            is_discrete(arena, vars, c, memo)
+                && is_discrete(arena, vars, a, memo)
+                && is_discrete(arena, vars, b, memo)
+        }
+        _ => false,
+    };
+    memo.insert(e, b);
+    b
 }

@@ -1354,6 +1354,12 @@ impl<'a, 't> Flattener<'a, 't> {
     /// Euler for a clocked partition with `der()`: `x = previous(x) +
     /// interval()*previous(der(x))` (explicit) or `x = previous(x) + interval()*der(x)`
     /// (implicit), with `der(x)` a new clocked unknown.
+    ///
+    /// A partition of higher index (an inverse plant model fed by a filter, where the
+    /// plant's states are fixed by the filter output) is index-reduced first, as the
+    /// continuous-time partition would be: Pantelides' algorithm differentiates the
+    /// constraint equations, and a structural dummy-derivative choice keeps as states
+    /// only as many variables as are independent; only those are integrated.
     fn discretize(
         &mut self,
         es: &mut Vec<Equation>,
@@ -1373,36 +1379,42 @@ impl<'a, 't> Flattener<'a, 't> {
                 });
             }
         }
+        // The derivative variable of each differentiated variable (in creation order).
         let mut dvar: FxHashMap<VarId, VarId> = FxHashMap::default();
+        let mut diffed: Vec<VarId> = Vec::new();
         for &x in &states {
-            let mut v = Variable::new(
-                format!("der({})", self.model.var_name(x)),
-                VarKind::Discrete,
-                VarType::Real,
-            );
-            v.generated = true;
-            v.start = Some(Arena::ZERO);
-            let d = self.model.add_var(v);
+            let d = self.clocked_der_var(x);
             dvar.insert(x, d);
+            diffed.push(x);
             vars.push(d);
         }
         for e in es.iter_mut() {
             let m = &dvar;
             let a = &mut self.model.arena;
-            let f = |n: Node| match n {
-                Node::Der(v) => m.get(&v).copied(),
-                _ => None,
-            };
             let mut vmap: FxHashMap<VarId, ExprId> = FxHashMap::default();
-            for (&x, &d) in m {
-                let _ = x;
+            for &d in m.values() {
                 vmap.insert(d, a.var(d));
             }
-            e.lhs = a.substitute(e.lhs, &|n| f(n).map(|d| vmap[&d]));
-            e.rhs = a.substitute(e.rhs, &|n| f(n).map(|d| vmap[&d]));
+            let f = |n: Node| match n {
+                Node::Der(v) => m.get(&v).map(|d| vmap[d]),
+                _ => None,
+            };
+            e.lhs = a.substitute(e.lhs, &f);
+            e.rhs = a.substitute(e.rhs, &f);
         }
+        let n_diff_eqs = self.clocked_pantelides(es, vars, &mut dvar, &mut diffed)?;
+        // Dummy derivatives: as many differentiated variables as differentiated equations
+        // are not integrated (they follow from the constraints).
+        let dummies = if n_diff_eqs == 0 {
+            Vec::new()
+        } else {
+            self.choose_dummies(es, vars, &dvar, &diffed, n_diff_eqs)?
+        };
         let o = self.model.origin("clocked discretisation");
-        for &x in &states {
+        for &x in &diffed {
+            if dummies.contains(&x) {
+                continue;
+            }
             let d = dvar[&x];
             let a = &mut self.model.arena;
             let px = a.pre(x);
@@ -1417,6 +1429,300 @@ impl<'a, 't> Flattener<'a, 't> {
             });
         }
         Ok(())
+    }
+
+    /// A new clocked unknown for `der(x)`.
+    fn clocked_der_var(&mut self, x: VarId) -> VarId {
+        let mut v = Variable::new(
+            format!("der({})", self.model.var_name(x)),
+            VarKind::Discrete,
+            VarType::Real,
+        );
+        v.generated = true;
+        v.start = Some(Arena::ZERO);
+        self.model.add_var(v)
+    }
+
+    /// Pantelides' algorithm on a clocked continuous-time partition whose derivatives are
+    /// already unknowns (`dvar`). The unknowns of the matching are the highest
+    /// derivatives; an equation that cannot be matched is differentiated together with
+    /// the equations of its structurally singular subset. The inputs of the partition
+    /// (sampled values, read through `pre`) are constant over the interval. Returns the
+    /// number of equations differentiated.
+    fn clocked_pantelides(
+        &mut self,
+        es: &mut Vec<Equation>,
+        vars: &mut Vec<VarId>,
+        dvar: &mut FxHashMap<VarId, VarId>,
+        diffed: &mut Vec<VarId>,
+    ) -> Result<usize> {
+        let mut unknown: FxHashSet<VarId> = vars.iter().copied().collect();
+        let row = |this: &Self,
+                   e: &Equation,
+                   unknown: &FxHashSet<VarId>,
+                   dvar: &FxHashMap<VarId, VarId>| {
+            let mut r: Vec<VarId> = Vec::new();
+            for side in [e.lhs, e.rhs] {
+                this.model.arena.visit_leaves(side, &mut |n| {
+                    if let Node::Var(v) = n
+                        && unknown.contains(&v)
+                        && !dvar.contains_key(&v)
+                        && !r.contains(&v)
+                    {
+                        r.push(v);
+                    }
+                });
+            }
+            r
+        };
+        let mut owner: FxHashMap<VarId, usize> = FxHashMap::default();
+        let mut derived: Vec<Option<usize>> = vec![None; es.len()];
+        let mut n_diff = 0usize;
+        fn augment(
+            e: usize,
+            adj: &[Vec<VarId>],
+            owner: &mut FxHashMap<VarId, usize>,
+            seen_v: &mut FxHashSet<VarId>,
+            seen_e: &mut Vec<usize>,
+        ) -> bool {
+            seen_e.push(e);
+            for &v in &adj[e] {
+                if !seen_v.insert(v) {
+                    continue;
+                }
+                let free = match owner.get(&v) {
+                    None => true,
+                    Some(&o) => augment(o, adj, owner, seen_v, seen_e),
+                };
+                if free {
+                    owner.insert(v, e);
+                    return true;
+                }
+            }
+            false
+        }
+        let n0 = es.len();
+        for k in 0..n0 {
+            let mut i = k;
+            for _level in 0..6 {
+                let adj: Vec<Vec<VarId>> =
+                    es.iter().map(|e| row(self, e, &unknown, dvar)).collect();
+                // Matches of variables that have since been differentiated are dropped.
+                owner.retain(|v, _| !dvar.contains_key(v));
+                let mut seen_v = FxHashSet::default();
+                let mut seen_e = Vec::new();
+                if augment(i, &adj, &mut owner, &mut seen_v, &mut seen_e) {
+                    break;
+                }
+                if seen_v.is_empty() && adj[i].is_empty() && es.len() == n0 {
+                    // Nothing to differentiate towards: leave it to the solver's diagnosis.
+                    return Ok(n_diff);
+                }
+                if es.len() > 8 * n0 + 64 {
+                    bail!("clocked partition: index reduction does not terminate");
+                }
+                // Differentiate the variables and equations of the singular subset.
+                for &v in &seen_v {
+                    if !dvar.contains_key(&v) {
+                        let d = self.clocked_der_var(v);
+                        dvar.insert(v, d);
+                        diffed.push(v);
+                        vars.push(d);
+                        unknown.insert(d);
+                    }
+                }
+                seen_e.sort();
+                seen_e.dedup();
+                for &l in &seen_e {
+                    if derived[l].is_some() {
+                        continue;
+                    }
+                    let e = es[l];
+                    let lhs = self.clocked_time_derivative(e.lhs, &unknown, dvar, diffed, vars);
+                    for &d in dvar.values() {
+                        unknown.insert(d);
+                    }
+                    let rhs = self.clocked_time_derivative(e.rhs, &unknown, dvar, diffed, vars);
+                    for &d in dvar.values() {
+                        unknown.insert(d);
+                    }
+                    es.push(Equation {
+                        lhs,
+                        rhs,
+                        origin: e.origin,
+                    });
+                    derived.push(None);
+                    derived[l] = Some(es.len() - 1);
+                    n_diff += 1;
+                }
+                // Carry the matching over to the derivatives.
+                let moved: Vec<(VarId, usize)> = owner
+                    .iter()
+                    .filter(|(v, _)| dvar.contains_key(v))
+                    .map(|(&v, &e)| (v, e))
+                    .collect();
+                for (v, e) in moved {
+                    owner.remove(&v);
+                    if let Some(de) = derived[e] {
+                        owner.insert(dvar[&v], de);
+                    }
+                }
+                match derived[i] {
+                    Some(d) => i = d,
+                    None => break,
+                }
+            }
+        }
+        Ok(n_diff)
+    }
+
+    /// d/dt of a partition expression: unknowns `v` become their derivative variables
+    /// (created on demand), `time` becomes 1, everything else (parameters, sampled
+    /// inputs read through `pre`) is constant over the interval.
+    fn clocked_time_derivative(
+        &mut self,
+        x: ExprId,
+        unknown: &FxHashSet<VarId>,
+        dvar: &mut FxHashMap<VarId, VarId>,
+        diffed: &mut Vec<VarId>,
+        vars: &mut Vec<VarId>,
+    ) -> ExprId {
+        let mut need: Vec<VarId> = Vec::new();
+        self.model.arena.visit_leaves(x, &mut |n| {
+            if let Node::Var(v) = n
+                && unknown.contains(&v)
+                && !dvar.contains_key(&v)
+                && !need.contains(&v)
+            {
+                need.push(v);
+            }
+        });
+        for v in need {
+            let d = self.clocked_der_var(v);
+            dvar.insert(v, d);
+            diffed.push(v);
+            vars.push(d);
+        }
+        let map: FxHashMap<VarId, VarId> = dvar.clone();
+        let mut memo = FxHashMap::default();
+        let mut seed = |ar: &mut Arena, n: Node| -> Option<ExprId> {
+            match n {
+                Node::Var(v) => map.get(&v).map(|&d| ar.var(d)),
+                Node::Time => Some(Arena::ONE),
+                _ => None,
+            }
+        };
+        self.model.arena.forward_diff(x, &mut seed, &mut memo)
+    }
+
+    /// Choose `m` of the differentiated variables as dummies (not integrated) so that
+    /// the discretised partition is structurally regular; variables with a higher
+    /// `stateSelect` and derivative variables are kept as states last... first.
+    fn choose_dummies(
+        &mut self,
+        es: &[Equation],
+        vars: &[VarId],
+        dvar: &FxHashMap<VarId, VarId>,
+        diffed: &[VarId],
+        m: usize,
+    ) -> Result<Vec<VarId>> {
+        let index: FxHashMap<VarId, usize> =
+            vars.iter().enumerate().map(|(i, &v)| (v, i)).collect();
+        let mut adj: Vec<Vec<usize>> = Vec::new();
+        for e in es {
+            let mut r = Vec::new();
+            for side in [e.lhs, e.rhs] {
+                self.model.arena.visit_leaves(side, &mut |n| {
+                    if let Node::Var(v) = n
+                        && let Some(&i) = index.get(&v)
+                        && !r.contains(&i)
+                    {
+                        r.push(i);
+                    }
+                });
+            }
+            adj.push(r);
+        }
+        // Rows of the integration formulas, one per kept state: x and der(x).
+        let euler: Vec<Vec<usize>> = diffed
+            .iter()
+            .map(|x| {
+                let mut r = Vec::new();
+                if let Some(&i) = index.get(x) {
+                    r.push(i);
+                }
+                r
+            })
+            .collect();
+        // Least preferred as a state first: lower stateSelect, then variables that are
+        // derivatives or were differentiated by the index reduction (created later).
+        let mut order: Vec<usize> = (0..diffed.len()).collect();
+        let sel = |v: VarId| self.model.vars[v as usize].state_select;
+        order.sort_by(|&a, &b| sel(diffed[a]).cmp(&sel(diffed[b])).then(b.cmp(&a)));
+        let n = vars.len();
+        let regular = |dummy: &[usize]| -> bool {
+            let mut rows: Vec<&Vec<usize>> = adj.iter().collect();
+            for (k, r) in euler.iter().enumerate() {
+                if !dummy.contains(&k) {
+                    rows.push(r);
+                }
+            }
+            if rows.len() != n {
+                return false;
+            }
+            let mut owner: Vec<Option<usize>> = vec![None; n];
+            fn aug(
+                e: usize,
+                rows: &[&Vec<usize>],
+                owner: &mut [Option<usize>],
+                seen: &mut [bool],
+            ) -> bool {
+                for &v in rows[e] {
+                    if seen[v] {
+                        continue;
+                    }
+                    seen[v] = true;
+                    if owner[v].is_none() || aug(owner[v].unwrap(), rows, owner, seen) {
+                        owner[v] = Some(e);
+                        return true;
+                    }
+                }
+                false
+            }
+            (0..rows.len()).all(|e| aug(e, &rows, &mut owner, &mut vec![false; n]))
+        };
+        // Depth-first over combinations in preference order.
+        let mut pick: Vec<usize> = Vec::new();
+        let mut tries = 0usize;
+        fn search(
+            start: usize,
+            m: usize,
+            order: &[usize],
+            pick: &mut Vec<usize>,
+            tries: &mut usize,
+            regular: &dyn Fn(&[usize]) -> bool,
+        ) -> bool {
+            if pick.len() == m {
+                *tries += 1;
+                return regular(pick);
+            }
+            if *tries > 20000 {
+                return false;
+            }
+            for j in start..order.len() {
+                pick.push(order[j]);
+                if search(j + 1, m, order, pick, tries, regular) {
+                    return true;
+                }
+                pick.pop();
+            }
+            false
+        }
+        let _ = dvar;
+        if !search(0, m, &order, &mut pick, &mut tries, &regular) {
+            bail!("clocked partition: no regular choice of states after index reduction");
+        }
+        Ok(pick.into_iter().map(|k| diffed[k]).collect())
     }
 
     /// `sample(start, interval)` that also returns its tick counter.
