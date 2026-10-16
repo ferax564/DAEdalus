@@ -1767,6 +1767,9 @@ pub struct Runtime<'m> {
     entry: Vec<f64>,
     piv: Vec<usize>,
     pub error: Option<NewtonError>,
+    /// Relative residual at which a nonlinear block counts as solved (1e-12 unless the
+    /// integration tolerance is tighter than 1e-9; see `set_integration_tolerance`).
+    pub newton_rtol: f64,
     /// Set while the initial equations are solved (see `newton_init`).
     pub init_mode: bool,
     /// Largest Newton step relative to `1 + |tear|` (0: unlimited).
@@ -1815,6 +1818,7 @@ impl<'m> Runtime<'m> {
             entry: Vec::new(),
             piv: Vec::new(),
             error: None,
+            newton_rtol: 1e-12,
             init_mode: false,
             step_cap: 0.0,
             ignore_bounds: false,
@@ -1926,6 +1930,19 @@ impl<'m> Runtime<'m> {
                 jumps.push(t + b.d);
             }
         }
+    }
+
+    /// Ties the nonlinear blocks' residual tolerance to a very tight integration
+    /// tolerance: a block solved to 1e-12 of its tears' size (vAK ~ 30 V) leaves current
+    /// residuals of ~3e-11 A, which an integration at tolerance 1e-12 (a state `L.i` with
+    /// atol 1e-12) sees as noise in the derivatives: its corrector stops converging and
+    /// the step collapses (SimpleTriacCircuit). Default tolerances are unaffected.
+    pub fn set_integration_tolerance(&mut self, rtol: f64) {
+        self.newton_rtol = if rtol.is_finite() && rtol > 0.0 {
+            (1e-3 * rtol).clamp(1e-15, 1e-12)
+        } else {
+            1e-12
+        };
     }
 
     /// Copies the current values of every algebraic-loop tear into `out`.
@@ -2126,7 +2143,7 @@ impl<'m> Runtime<'m> {
                         .zip(rw)
                         .all(|(&s, w)| (self.r[s as usize] * w).abs() <= 1e-10)
             };
-            if (norm <= 1e-12 * scale && fresh_ok) || (it > 0 && linear && norm <= 1e-9 * scale) {
+            if (norm <= self.newton_rtol * scale && fresh_ok) || (it > 0 && linear && norm <= 1e-9 * scale) {
                 return;
             }
             if !norm.is_finite() && it > 0 {

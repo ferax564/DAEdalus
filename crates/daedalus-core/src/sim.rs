@@ -1198,6 +1198,7 @@ impl<'m> Simulation<'m> {
             max_step = dt;
         }
         let rtol = o.tolerance;
+        self.rt.set_integration_tolerance(rtol);
         // Absolute tolerance per state from its nominal value, as Dymola and
         // OpenModelica do: a state of size 1e-4 (`nominal = 1e-4`) is integrated to
         // 1e-4 * tolerance, not to the tolerance itself.
