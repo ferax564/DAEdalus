@@ -63,6 +63,8 @@ COMMANDS:
   hil         close the loop between a plant (bench) model simulated here and
               generated controller code running on the host, on an emulated
               Arduino or ESP32, or on a real board over its serial port
+  autotune    tune controller gains on a closed-loop model against a step-response
+              spec (ITAE, overshoot, effort, settling); see EMBEDDED OPTIONS
   mcp         serve the libraries to an AI assistant over the Model Context
               Protocol (stdio): browse, edit, check, simulate, linearize.
               `daedalus mcp [sources...] [-L DIR] [--workspace DIR]`
@@ -177,7 +179,7 @@ SWEEP OPTIONS:
   --retranslate           translate every run again (default only for
                           non-free, Integer and Boolean parameters)
 
-EMBEDDED OPTIONS (codegen-c, hil; see docs/embedded.md):
+EMBEDDED OPTIONS (codegen-c, hil, autotune; see docs/embedded.md):
   --step H                codegen-c: the fixed step (sample time) in seconds
   --real float|double     codegen-c: arithmetic type (default float)
   --integrator rk4|euler  codegen-c: for continuous states (default rk4)
@@ -193,6 +195,14 @@ EMBEDDED OPTIONS (codegen-c, hil; see docs/embedded.md):
   --map PORT=VAR          hil: wire a controller port to another bench variable
                           (default: same names); --vars records bench variables
   --stop T, -o FILE.csv   hil: stop time and result file
+  --gain NAME=LO:HI[:X0]  autotune: a gain to tune with its bounds (repeat)
+  --reference R --measurement Y [--control U]
+                          autotune: set-point, controlled and control variables
+  --window T0,T1          autotune: the step to score (default the whole run)
+  --criterion itae|iae|ise  --overshoot PCT (default 5)  --max-control UMAX
+  --settling TS  --max-iter N
+                          autotune: what to minimize and the limits to respect;
+                          -o FILE.json writes the result
 
 ANALYSIS COMMANDS (text summary on stdout; -o FILE.json or FILE.csv writes data):
   sensitivity  local sensitivities dy/dp along the trajectory:
@@ -1084,6 +1094,30 @@ fn run() -> anyhow::Result<()> {
                 None => print!("{text}"),
             }
             Ok(())
+        }
+        "autotune" => {
+            let m = with_all_files(&mut lib, |l| daedalus_core::translate(l, &model, &opts))?;
+            for w in &m.warnings {
+                eprintln!("warning: {w}");
+            }
+            let mut o = SimOptions::from_model(&m);
+            if set_start {
+                o.start_time = so.start_time;
+            }
+            if set_stop {
+                o.stop_time = so.stop_time;
+            }
+            if set_tol {
+                o.tolerance = so.tolerance;
+            }
+            if set_method {
+                o.method = so.method;
+            }
+            if so.interval > 0.0 {
+                o.interval = so.interval;
+            }
+            o.params = so.params.clone();
+            embedded::tune(&m, &o, &emb, output.as_deref())
         }
         "codegen-c" => {
             let m = with_all_files(&mut lib, |l| daedalus_core::translate(l, &model, &opts))?;

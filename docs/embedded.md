@@ -14,6 +14,9 @@ compares it with the all-Modelica loop.
 | Processor in the loop (PIL) | generated C on an ATmega328P in simavr, or an ESP32 in QEMU | DAEdalus | `daedalus hil ... --exec "simavr_bridge pid.elf"` |
 | Hardware board | generated C on a real Arduino or ESP32 | DAEdalus | `daedalus hil ... --serial /dev/ttyACM0` |
 
+The gains themselves can be tuned on the closed loop first with `daedalus autotune`
+(see [Tuning the gains](#tuning-the-gains)).
+
 ## The generated code
 
 ```sh
@@ -108,6 +111,47 @@ daedalus hil library/Daedalus -m Daedalus.Examples.Embedded.MotorBench \
 
 The result has one row per sample: time, the controller's inputs and outputs, the cycles
 the step took on the target, and any bench variables given with `--vars`.
+
+### Tuning the gains
+
+`daedalus autotune` tunes controller parameters on the closed loop against a step-response
+specification: it minimizes an error integral (ITAE by default) over a window around a
+set-point step while keeping overshoot, control effort and settling time within limits.
+It simulates the nonlinear loop, so sampling, output limits and anti-windup are part of
+the tuning, and searches the gains on a log scale between their bounds:
+
+```sh
+daedalus autotune library/Daedalus -m Daedalus.Examples.Embedded.ClosedLoop \
+  --gain pid.kp=0.004:0.4 --gain pid.ki=0.04:4 --gain pid.kd=0.00005:0.005 \
+  --reference bench.r --measurement bench.y --control pid.u \
+  --window 0.1,1.5 --overshoot 2
+```
+
+```text
+autotune of Daedalus.Examples.Embedded.ClosedLoop: 192 runs, 98 iterations; meets the specification
+
+gain                             before          tuned
+pid.kp                      4.000000e-2    1.932174e-1
+pid.ki                      4.000000e-1     3.656807e0
+pid.kd                      5.000000e-4    6.751172e-5
+
+response                         before          tuned   limit
+ITAE                             2.7004         0.2348
+overshoot (%)                    0.0240         2.0000   2
+rise time 10-90 % (s)            0.2560         0.0470
+settling time 2 % (s)            1.2000         0.0800
+final error (%)                  0.5048         0.0000
+max |control|                    5.4973        12.0000
+
+modifier: (pid(kp = 0.1932174, ki = 3.6568069, kd = 6.7511716e-5))
+```
+
+The window here covers the set-point step at 0.1 s and the load step at 1 s, so the
+tuning trades tracking against disturbance rejection; the run takes under a second. Bake
+the tuned gains into the firmware with `codegen-c -p kp=0.193 -p ki=3.66 -p kd=6.75e-5`.
+`--max-control` limits the controller output, `--settling` the 2 % settling time, and
+`--criterion iae|ise` changes what is minimized. A good starting point for the bounds
+is the hand-tuned gain divided and multiplied by 10.
 
 ### Arduino Uno in simavr
 

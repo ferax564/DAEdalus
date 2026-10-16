@@ -1,5 +1,7 @@
 //! `codegen-c` (embedded C code) and `hil` (software / processor in the loop).
 
+use daedalus_core::autotune;
+use daedalus_core::calibrate::Tuner;
 use daedalus_core::codegen::Model;
 use daedalus_core::embedded::{self, Integrator, Manifest, RealType};
 use daedalus_core::embedded_hil::{self, LoopOptions, StreamLink};
@@ -9,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Duration;
 
-pub const COMMANDS: &[&str] = &["codegen-c", "hil"];
+pub const COMMANDS: &[&str] = &["codegen-c", "hil", "autotune"];
 
 #[derive(Default)]
 pub struct Args {
@@ -24,6 +26,7 @@ pub struct Args {
     pub baud: Option<u32>,
     pub map: Vec<(String, String)>,
     pub timeout: Option<f64>,
+    pub tune: Option<autotune::Spec>,
 }
 
 /// Remove this module's options from `args` (only for its commands).
@@ -62,6 +65,46 @@ pub fn take_args(args: Vec<String>) -> anyhow::Result<(Vec<String>, Args)> {
             "--serial" => a.serial = Some(val()?),
             "--baud" => a.baud = Some(val()?.parse()?),
             "--reply-timeout" => a.timeout = Some(val()?.parse()?),
+            "--gain" => {
+                let v = val()?;
+                let (name, range) = v.split_once('=').ok_or_else(|| {
+                    anyhow::anyhow!("--gain expects NAME=LO:HI[:START], got '{v}'")
+                })?;
+                let nums: Vec<f64> = range
+                    .split(':')
+                    .map(|x| x.trim().parse::<f64>())
+                    .collect::<Result<_, _>>()
+                    .map_err(|_| anyhow::anyhow!("--gain {v}: bounds must be numbers"))?;
+                anyhow::ensure!(
+                    nums.len() == 2 || nums.len() == 3,
+                    "--gain expects NAME=LO:HI[:START], got '{v}'"
+                );
+                spec(&mut a).gains.push(Tuner {
+                    name: name.trim().to_string(),
+                    lo: Some(nums[0]),
+                    hi: Some(nums[1]),
+                    start: nums.get(2).copied(),
+                });
+            }
+            "--reference" => spec(&mut a).reference = val()?,
+            "--measurement" => spec(&mut a).measurement = val()?,
+            "--control" => spec(&mut a).control = Some(val()?),
+            "--window" => {
+                let v = val()?;
+                let (t0, t1) = v
+                    .split_once(',')
+                    .ok_or_else(|| anyhow::anyhow!("--window expects T0,T1"))?;
+                spec(&mut a).window = Some((t0.trim().parse()?, t1.trim().parse()?));
+            }
+            "--criterion" => {
+                let v = val()?;
+                spec(&mut a).criterion = autotune::Criterion::parse(&v)
+                    .ok_or_else(|| anyhow::anyhow!("unknown criterion '{v}' (itae | iae | ise)"))?;
+            }
+            "--overshoot" => spec(&mut a).max_overshoot = val()?.parse()?,
+            "--max-control" => spec(&mut a).max_control = Some(val()?.parse()?),
+            "--settling" => spec(&mut a).max_settling = Some(val()?.parse()?),
+            "--max-iter" => spec(&mut a).max_iter = val()?.parse()?,
             "--map" => {
                 for kv in val()?.split(',') {
                     let (k, v) = kv.split_once('=').ok_or_else(|| {
@@ -74,6 +117,43 @@ pub fn take_args(args: Vec<String>) -> anyhow::Result<(Vec<String>, Args)> {
         }
     }
     Ok((rest, a))
+}
+
+fn spec(a: &mut Args) -> &mut autotune::Spec {
+    a.tune.get_or_insert_with(|| autotune::Spec {
+        gains: Vec::new(),
+        reference: String::new(),
+        measurement: String::new(),
+        control: None,
+        window: None,
+        criterion: autotune::Criterion::Itae,
+        max_overshoot: 5.0,
+        max_control: None,
+        max_settling: None,
+        max_iter: 120,
+    })
+}
+
+/// `daedalus autotune`: tune controller gains on the closed loop.
+pub fn tune(m: &Model, so: &SimOptions, a: &Args, output: Option<&str>) -> anyhow::Result<()> {
+    let spec = a
+        .tune
+        .as_ref()
+        .filter(|s| !s.gains.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("give the gains to tune with --gain NAME=LO:HI"))?;
+    anyhow::ensure!(
+        !spec.reference.is_empty() && !spec.measurement.is_empty(),
+        "give the set-point and the controlled variable with --reference and --measurement"
+    );
+    let t0 = std::time::Instant::now();
+    let out = autotune::tune(m, so, spec).map_err(|e| anyhow::anyhow!(e))?;
+    print!("{}", out.report(spec));
+    eprintln!("{:.1} s wall-clock", t0.elapsed().as_secs_f64());
+    if let Some(path) = output {
+        std::fs::write(path, serde_json::to_string_pretty(&out)? + "\n")?;
+        eprintln!("wrote {path}");
+    }
+    Ok(())
 }
 
 /// `daedalus codegen-c`: write `<prefix>.h/.c/.json`, a host driver and, with `--hil`,

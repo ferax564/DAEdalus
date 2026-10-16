@@ -3,6 +3,7 @@
 #[cfg(feature = "archive")]
 pub mod archive;
 pub mod adjoint;
+pub mod autotune;
 pub mod backend;
 pub mod calibrate;
 pub mod casadi;

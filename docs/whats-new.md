@@ -8,7 +8,9 @@ The most recent additions, newest first. Each links to the page that covers it i
 steps it at a fixed rate, and `daedalus hil` closes the loop between that code and a
 plant simulated by DAEdalus: on your computer, on an Arduino Uno emulated in simavr, on an
 ESP32 emulated in QEMU, or on a real board over its serial port. CI runs the whole ladder
-on every change. See [Embedded C and processor in the loop](embedded.md).
+on every change. `daedalus autotune` tunes the controller's gains on the closed loop
+against a step-response specification first. See
+[Embedded C and processor in the loop](embedded.md).
 
 ## Scientific machine learning
 
