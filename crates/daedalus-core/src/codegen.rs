@@ -2073,11 +2073,11 @@ impl<'m> Runtime<'m> {
             // are also small relative to how strongly the tears move them: an absolute
             // test alone misreads rows with tiny coefficients (`iS + Ccs*der(vcs)`,
             // Ccs ~ 1e-12) as solved and returns stale tears, which blanks those entries
-            // of the integrator's finite-difference Jacobian. Only for plain linear blocks,
-            // where an extra step from a solution is exact: in a switching block it can
-            // sit on a relation's boundary (`i = v*Goff` against `abs(i) <= abs(v)*Goff`),
-            // and re-stepping it moves the mode with the rounding.
-            let fresh_ok = it > 0 || !b.plain_linear || {
+            // of the integrator's finite-difference Jacobian. In a switching block a stale
+            // tear also moves relations that hold identically in the current mode: the
+            // quenched arc `i = v*Goff` with `i ~ 1e-8` passes the absolute test with `v`
+            // off by 1e-4 relative, and `abs(i) <= abs(v)*Goff` then chatters on it.
+            let fresh_ok = it > 0 || {
                 let rw = &self.row_w[bi];
                 rw.len() == n
                     && b.residuals
