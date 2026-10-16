@@ -131,6 +131,24 @@ pub struct Experiment {
     pub algorithm: Option<String>,
 }
 
+/// A position in a source file: the parser's source id (a hash of the document URI, see
+/// `rumoca_core::source_id_for_name`) and a 1-based line and column.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SrcLoc {
+    pub source: u64,
+    pub line: u32,
+    pub col: u32,
+}
+
+/// Where a variable's `start` attribute was written: the instance whose modification
+/// (or declaration) set it, and its position.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StartSrc {
+    /// Instance path of the scope the modifier was written in (`""`: the model itself).
+    pub scope: String,
+    pub loc: Option<SrcLoc>,
+}
+
 #[derive(Clone, Default)]
 pub struct FlatModel {
     pub name: String,
@@ -146,6 +164,10 @@ pub struct FlatModel {
     pub warnings: Vec<String>,
     /// Instances of FMU wrapper blocks (see [`crate::external`]).
     pub externals: Vec<crate::external::ExternalComponent>,
+    /// Source position of an origin (index into `origins`), where the frontend knows it.
+    pub origin_locs: rustc_hash::FxHashMap<u32, SrcLoc>,
+    /// Where the `start` attribute of a variable comes from (equation debugger).
+    pub start_src: rustc_hash::FxHashMap<VarId, StartSrc>,
 }
 
 impl FlatModel {
@@ -157,6 +179,13 @@ impl FlatModel {
     pub fn origin(&mut self, s: impl Into<String>) -> u32 {
         self.origins.push(s.into());
         (self.origins.len() - 1) as u32
+    }
+
+    /// Record the source position of origin `o`.
+    pub fn set_origin_loc(&mut self, o: u32, loc: Option<SrcLoc>) {
+        if let Some(l) = loc {
+            self.origin_locs.insert(o, l);
+        }
     }
 
     pub fn var_name(&self, v: VarId) -> &str {

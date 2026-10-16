@@ -122,6 +122,8 @@ export const api = {
   ideSymbols: (uri: string, text: string) => call<IdeSymbol[]>("ide", "symbols", uri, text, 0),
   /** Structure report (see structure.ts); `opts.stateOverrides` are `[name, tier]` pairs. */
   structure: (model: string, opts: Record<string, unknown>) => call<unknown>("structure", model, opts),
+  /** Equation / initialization debugger (see debug.ts): `{var}`, `{equation}` or `{init: true}`. */
+  debug: (model: string, opts: Record<string, unknown>) => call<unknown>("debug", model, opts),
   /** Performance profile and event log of the last simulation (null unless profiled). */
   profile: () => call<Profile | null>("profile"),
   // graphical editing (see diagram-edit.ts): each returns the edited document's new text

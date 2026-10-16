@@ -371,6 +371,9 @@ self.onmessage = async (ev: MessageEvent<Req>) => {
       case "structure":
         result = JSON.parse(w.structure(args[0] as string, JSON.stringify(args[1] ?? {})));
         break;
+      case "debug":
+        result = JSON.parse(w.debug(args[0] as string, JSON.stringify(args[1] ?? {})));
+        break;
       case "profile":
         result = JSON.parse(w.profile());
         break;

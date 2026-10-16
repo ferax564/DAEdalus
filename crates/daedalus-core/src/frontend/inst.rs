@@ -22,6 +22,15 @@ mod clocks;
 
 pub type InstId = u32;
 
+/// Source position of an AST node, for the equation debugger.
+fn src_loc(l: Option<&rumoca_core::Location>) -> Option<SrcLoc> {
+    l.filter(|l| l.start_line > 0).map(|l| SrcLoc {
+        source: l.source.0,
+        line: l.start_line,
+        col: l.start_column,
+    })
+}
+
 /// Lexical environment for class lookups, carrying redeclared class overrides.
 pub struct Env {
     pub class: ClassId,
@@ -1908,6 +1917,7 @@ impl<'a, 't> Flattener<'a, 't> {
                     "declaration of {}",
                     self.model.vars[var as usize].name
                 ));
+                self.model.set_origin_loc(o, src_loc(s.expr.get_location()));
                 self.model.equations.push(Equation {
                     lhs,
                     rhs: e,
@@ -1921,6 +1931,12 @@ impl<'a, 't> Flattener<'a, 't> {
                 "start" | "nominal" | "min" | "max" => {
                     let val = self.translate_scoped(s, &mut ctx)?;
                     let e = self.element_of(val, index, count, sm.each)?;
+                    if attr == "start" {
+                        let scope = s.scope.inst.map(|i| self.insts[i as usize].prefix.clone());
+                        let loc = src_loc(s.expr.get_location());
+                        let scope = scope.unwrap_or_default();
+                        self.model.start_src.insert(var, StartSrc { scope, loc });
+                    }
                     let v = &mut self.model.vars[var as usize];
                     match attr.as_str() {
                         "start" => v.start = Some(e),
@@ -2412,6 +2428,7 @@ impl<'a, 't> Flattener<'a, 't> {
                 let l = self.materialize(l)?;
                 let r = self.materialize(r)?;
                 let o = self.eq_origin(scope, "equation");
+                self.model.set_origin_loc(o, src_loc(eq.get_location()));
                 self.push_residuals(l, r, out, o)?;
             }
             ast::Equation::Connect { lhs, rhs } => {
@@ -2484,6 +2501,7 @@ impl<'a, 't> Flattener<'a, 't> {
                         );
                     }
                     let o = self.eq_origin(scope, "if-equation");
+                    self.model.set_origin_loc(o, src_loc(eq.get_location()));
                     for k in 0..n {
                         let mut res = {
                             let e = ev[k];

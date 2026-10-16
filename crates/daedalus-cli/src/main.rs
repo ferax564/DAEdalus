@@ -69,6 +69,17 @@ COMMANDS:
               (or --at T): sparsity, condition, eigenvalues, time constants,
               participation factors, stiffness, algebraic-loop Jacobians
 {MANAGE}
+  debug       equation and initialization debugger: --var NAME (repeatable)
+              traces a variable from its equation as written (component,
+              file:line) through alias substitution, index reduction, state
+              selection, solving and tearing; --equation N does the same for
+              equation N of `structure`; --init (the default) reports the
+              initial system, the start values used (fixed, defaulted or guess,
+              and the modifier that set them) and, on failure, the failing
+              block's residuals and largest Newton updates; a structurally
+              singular model gets its over- and underdetermined subsets;
+              unconnected connectors are listed; --format text | json
+
 SOURCES:
   .mo files or directories (loaded recursively), or model packages (.zip). The
   bundled Daedalus library is found via --lib or the DAEDALUS_LIB environment
@@ -263,6 +274,9 @@ fn run() -> anyhow::Result<()> {
     let mut print_events = false;
     let mut set_jac = false;
     let mut free: Vec<String> = Vec::new();
+    let mut debug_vars: Vec<String> = Vec::new();
+    let mut debug_eqs: Vec<usize> = Vec::new();
+    let mut debug_init = false;
     let mut targets: Vec<(String, f64)> = Vec::new();
     let mut check_units = false;
     let mut list_all = false;
@@ -411,6 +425,9 @@ fn run() -> anyhow::Result<()> {
                     .ok_or_else(|| anyhow::anyhow!("expected --lqr Q,R"))?;
                 lti.lqr = Some((q.trim().parse()?, r.trim().parse()?));
             }
+            "--var" => debug_vars.push(next(&mut i)?),
+            "--equation" => debug_eqs.push(next(&mut i)?.parse()?),
+            "--init" => debug_init = true,
             "--jacobian" => {
                 let j = next(&mut i)?;
                 so.jacobian = daedalus_core::sim::JacobianMode::parse(&j)
@@ -641,6 +658,7 @@ fn run() -> anyhow::Result<()> {
             o.max_event_rows = so.max_event_rows;
             o.params = so.params.clone();
             let o_method = o.method;
+            let o_dbg = o.clone();
             o.profile = profile.is_some() || print_events;
             let (r, prof) = daedalus_core::sim::simulate_profiled(&m, o);
             if let Some(p) = &prof {
@@ -661,6 +679,19 @@ fn run() -> anyhow::Result<()> {
                     if let (Some(out), Some(p)) = (&output, &e.partial) {
                         write_result(p, out, vars.as_deref())?;
                         eprintln!("partial results written to {out}");
+                    }
+                    // Explain the failure: the initialization report, or the nonlinear
+                    // block that failed during the run.
+                    let mut o2 = o_dbg.clone();
+                    o2.profile = false;
+                    if e.partial.is_none() {
+                        let rep =
+                            daedalus_core::debug::init_report(&lib, &model, &opts, Some(o2), &[]);
+                        eprint!("{}", rep.to_text());
+                    } else if let Some(f) =
+                        daedalus_core::debug::simulation_failure(&lib, &model, &opts, o2)
+                    {
+                        eprint!("{}", f.to_text());
                     }
                     anyhow::bail!(e.message);
                 }
@@ -888,6 +919,91 @@ fn run() -> anyhow::Result<()> {
                     std::fs::write(path, serde_json::to_string_pretty(&res)? + "\n")?;
                     eprintln!("wrote {path}");
                 }
+            }
+            Ok(())
+        }
+        "debug" => {
+            let json = format.as_str() == "json";
+            let mut out = String::new();
+            let mut values = Vec::new();
+            if !debug_vars.is_empty() || !debug_eqs.is_empty() {
+                let d = with_all_files(&mut lib, |l| {
+                    daedalus_core::debug::Debugger::new(l, &model, &opts).map_err(|f| {
+                        let mut msg = f.error.clone();
+                        if let Some(sd) = &f.structural {
+                            msg.push('\n');
+                            msg.push_str(&sd.to_text());
+                        }
+                        anyhow::anyhow!(msg)
+                    })
+                })?;
+                for v in &debug_vars {
+                    let t = d.trace_var(v).map_err(|e| anyhow::anyhow!(e))?;
+                    if json {
+                        values.push(serde_json::to_value(&t)?);
+                    } else {
+                        out.push_str(&t.to_text());
+                        out.push('\n');
+                    }
+                }
+                for &e in &debug_eqs {
+                    let t = d.trace_eq(e).map_err(|e| anyhow::anyhow!(e))?;
+                    if json {
+                        values.push(serde_json::to_value(&t)?);
+                    } else {
+                        out.push_str(&t.to_text());
+                        out.push('\n');
+                    }
+                }
+            }
+            if debug_init || (debug_vars.is_empty() && debug_eqs.is_empty()) {
+                // Load the whole library when the lazily loaded part does not flatten.
+                let _ = with_all_files(&mut lib, |l| l.flatten(&model).map(|_| ()));
+                let so2 = if set_start || set_stop || set_tol || set_method {
+                    let m =
+                        with_all_files(&mut lib, |l| daedalus_core::translate(l, &model, &opts))
+                            .ok();
+                    m.map(|m| {
+                        let mut o = SimOptions::from_model(&m);
+                        if set_start {
+                            o.start_time = so.start_time;
+                        }
+                        if set_stop {
+                            o.stop_time = so.stop_time;
+                        }
+                        if set_tol {
+                            o.tolerance = so.tolerance;
+                        }
+                        if set_method {
+                            o.method = so.method;
+                        }
+                        o
+                    })
+                } else {
+                    None
+                };
+                let rep = daedalus_core::debug::init_report(&lib, &model, &opts, so2, &so.params);
+                if json {
+                    values.push(serde_json::to_value(&rep)?);
+                } else {
+                    out.push_str(&rep.to_text());
+                }
+            }
+            let text = if json {
+                serde_json::to_string_pretty(&if values.len() == 1 {
+                    values.pop().unwrap()
+                } else {
+                    serde_json::Value::Array(values)
+                })? + "\n"
+            } else {
+                out
+            };
+            match &output {
+                Some(path) => {
+                    std::fs::write(path, text)?;
+                    eprintln!("wrote {path}");
+                }
+                None => print!("{text}"),
             }
             Ok(())
         }

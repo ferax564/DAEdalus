@@ -336,6 +336,53 @@ In the workbench:
   checked values as a modifier and a record, and applies them to the declaration
   with the diagram editor's modifier edit (undo and redo work as for diagram edits).
 
+## Equation and initialization debugger
+
+```sh
+# How is x computed? Equation, BLT block, tearing role and every symbolic
+# transformation (alias substitution, differentiation for index reduction,
+# dummy derivative, solve-for, tearing), each with component and file:line
+./target/release/daedalus debug model.mo -m MyModel --var body.v --var 'der(x)'
+./target/release/daedalus debug model.mo -m MyModel --equation 12
+
+# Initialization: unknowns, start values used (fixed / guess, set where),
+# blocks, and for a failing block the residuals at the last iterate and the
+# variables with the largest Newton update
+./target/release/daedalus debug model.mo -m MyModel --init [--format json]
+```
+
+Each transformation step names the equation as written, the component
+instance it came from and its source position, so a chain reads like
+"`r.v = r.p.v - r.n.v` (in r, Resistor.mo:12) → substituted alias
+`r.p.v = c.n.v` (connection) → solved for `r.i` in block 7". The start value
+of every iteration variable says whether it is fixed or only a guess, which
+instance set it (`b(x0 = 2)` at the modification site) and whether it was
+inherited from an alias.
+
+When translation fails, `debug` explains the structural problem locally
+instead of only counting equations: a matching-based search finds the
+smallest under- or over-determined subset and lists its equations and
+unknowns with component paths (for example "`leak.w` is not determined by
+any equation; component `leak`"). It also warns about physical connectors
+that are left unconnected: a component placed in the model none of whose
+(two or more) physical connectors is connected, or the open end of a two-pin
+electrical component, through which no current can flow. Connectors whose
+unconnected flow is simply zero by the language rules (an open output
+terminal, a free flange, a lone ground, the disabled thermal ports inside a
+machine) are reported as notes only. Over the 521 example models of the
+Modelica Standard Library 4.1.0 and the Daedalus library that flatten, this
+gives 2 warnings, both real (the `earth` resistor of the transformer examples
+whose `p` pin is left open), and no false positive.
+
+`simulate` prints the same initialization report when the initial solve
+fails, and when a nonlinear block fails during the run it names the block,
+the time, the iteration count and residual norm and the residuals of its
+equations. In the workbench the **Structure** tab has a **Transformation
+chain** card (click any variable or equation in the blocks or states to see
+its chain, positions open the Text view at that line) and an
+**Initialization** card; failed checks and simulations in the messages panel
+have a link that opens it on the failing model.
+
 ## Python
 
 The `daedalus` Python package (`crates/daedalus-py`, PyO3 + maturin, one abi3

@@ -175,6 +175,8 @@ pub fn eliminate(w: &mut Work) -> usize {
         let mut bound: FxHashMap<VarId, ExprId> = FxHashMap::default();
         let mut used = vec![false; w.eqs.len()];
         let mut any = false;
+        // Equations used, for the trace: (equation, a, b).
+        let mut found: Vec<(usize, VarId, Option<VarId>)> = Vec::new();
         for (i, eq) in w.eqs.iter().enumerate() {
             match w.classify(eq.lhs, eq.rhs) {
                 Some(Found::Pair(x, y, s)) => {
@@ -190,6 +192,7 @@ pub fn eliminate(w: &mut Work) -> usize {
                     parent.insert(rx, (ry, sx * s * sy));
                     used[i] = true;
                     any = true;
+                    found.push((i, x, Some(y)));
                 }
                 Some(Found::Bound(x, e)) => {
                     if e == usize::MAX as ExprId
@@ -205,12 +208,25 @@ pub fn eliminate(w: &mut Work) -> usize {
                     bound.insert(x, e);
                     used[i] = true;
                     any = true;
+                    found.push((i, x, None));
                 }
                 None => {}
             }
         }
         if !any {
             break;
+        }
+        if let Some(t) = &mut w.trace {
+            for &(i, a, b) in &found {
+                let e = &w.eqs[i];
+                t.alias_eqs.push(super::trace::AliasEq {
+                    src: e.src,
+                    lhs: e.lhs,
+                    rhs: e.rhs,
+                    a,
+                    b,
+                });
+            }
         }
         // Group classes and pick representatives.
         let members: Vec<VarId> = parent.keys().copied().collect();
@@ -280,6 +296,9 @@ pub fn eliminate(w: &mut Work) -> usize {
                 let st = w.vars[v as usize].start.unwrap();
                 let st = if rel < 0.0 { w.arena.neg(st) } else { st };
                 let fixed = w.vars[v as usize].fixed;
+                if let Some(t) = &mut w.trace {
+                    t.start_from.push((rep, v));
+                }
                 let rvm = &mut w.vars[rep as usize];
                 rvm.start = Some(st);
                 if fixed == Some(true) {
@@ -328,6 +347,9 @@ pub fn eliminate(w: &mut Work) -> usize {
             if eq.lhs == eq.rhs {
                 w.warnings
                     .push(format!("redundant equation removed: {}", w.eq_text(&eq)));
+                if let Some(t) = &mut w.trace {
+                    t.redundant.push(eq.src);
+                }
                 removed_total += 1;
                 continue;
             }
