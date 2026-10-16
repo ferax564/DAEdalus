@@ -1273,6 +1273,8 @@ function setMode(m: typeof mode) {
   } else if (m === "modeling") showView();
 }
 $("topbar").querySelectorAll<HTMLButtonElement>("button[data-mode]").forEach((b) => (b.onclick = () => setMode(b.dataset.mode as typeof mode)));
+// The toolbar wraps on narrow windows, so panels fixed under it (the Assistant drawer) follow its real height.
+new ResizeObserver(() => document.documentElement.style.setProperty("--topbar-h", `${$("topbar").offsetHeight}px`)).observe($("topbar"));
 
 // ---------------------------------------------------------------- plot tools
 /** Variables of the result the plot shows. */
