@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Validate an FMU exported by `daedalus fmu` and compare it with `daedalus simulate`.
 
+Works for FMI 2.0 and FMI 3.0 FMUs (`daedalus fmu --fmi-version 3`).
+
     python3 tools/fmu_check.py Model.fmu reference.csv var1,var2 [--tol 1e-3]
 
 (`states` instead of a variable list compares the continuous states.)
 
 - validates modelDescription.xml with fmpy (schema, variables, ModelStructure),
-- simulates the FMU as Co-Simulation (the model's own solver inside fmi2DoStep) and
+- simulates the FMU as Co-Simulation (the model's own solver inside fmi2DoStep / fmi3DoStep) and
   as Model Exchange (fmpy's CVode, with the FMU's event indicators),
 - compares the given variables with the reference CSV written by
   `daedalus simulate ... -o reference.csv --vars var1,var2`: the largest deviation,

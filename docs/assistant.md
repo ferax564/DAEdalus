@@ -30,8 +30,13 @@ their own tools with `registerAssistantTool` in `web/src/assistant.ts`.
 
 `daedalus mcp` serves the loaded libraries over stdio (newline-delimited JSON-RPC). Its
 tools are `list_classes`, `get_class`, `set_source`, `check_model`, `simulate_model`,
-`linearize_model`, `model_structure`, `profile_simulation`, `equations` and
-`flatten_model`. With `--workspace DIR`, `set_source` also writes the file to that
+`linearize_model`, `model_structure`, `profile_simulation`, `equations`,
+`flatten_model`, `physics_check`, `autotune_controller` and `generate_embedded_c`. `physics_check` is a
+preflight an assistant runs after building or editing a model: parameters with no value,
+masses, inertias, resistances and other physical parameters with an impossible sign,
+states that start from a guessed 0, unstable modes at the start, and a short run that
+catches blow-ups and negative absolute temperatures or pressures.
+`generate_embedded_c` returns the [embedded C code](embedded.md) of a controller. With `--workspace DIR`, `set_source` also writes the file to that
 directory, and the `.mo` files already there are loaded at start.
 
 ```sh

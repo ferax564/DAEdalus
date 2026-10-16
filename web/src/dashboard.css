@@ -1,0 +1,27 @@
+/* Dashboard panel (dashboard.ts). */
+#dashboard { width: 330px; flex: none; border-left: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
+.dash-head, .dash-run { display: flex; align-items: center; gap: 6px; padding: 5px 8px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.dash-title { font-weight: 600; text-transform: uppercase; font-size: 11px; letter-spacing: 0.6px; color: var(--muted); margin-right: auto; }
+.dash-run label { color: var(--muted); display: flex; gap: 4px; align-items: center; }
+.dash-status { font-size: 11px; width: 100%; }
+.dash-body { overflow: auto; flex: 1; padding: 6px; display: flex; flex-direction: column; gap: 6px; }
+.dash-empty { font-size: 12px; padding: 6px; }
+.dash-card { border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; background: var(--panel); flex: none; }
+.dash-card-head { display: flex; align-items: center; gap: 4px; font-size: 12px; }
+.dash-name { font-family: var(--mono); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dash-card-head .icon { margin-left: auto; }
+.dash-row { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+.dash-slider { flex: 1; min-width: 0; accent-color: var(--accent); }
+input.dash-num { width: 86px; font-family: var(--mono); font-size: 12px; }
+.dash-lims { font-size: 11px; }
+input.dash-lim { width: 72px; font-size: 11px; }
+.dash-value { font: 600 22px/1.3 var(--mono); text-align: right; }
+.dash-gauge { width: 100%; height: 92px; display: block; }
+.dash-gauge .g-track { fill: none; stroke: var(--grid); stroke-width: 9; }
+.dash-gauge .g-fill { fill: none; stroke: var(--accent); stroke-width: 9; }
+.dash-gauge .g-val { text-anchor: middle; font: 600 13px var(--mono); fill: var(--fg); }
+.dash-gauge .g-lim { text-anchor: middle; font: 8px system-ui, sans-serif; fill: var(--muted); }
+.dash-plot { width: 100%; height: 90px; display: block; margin-top: 4px; }
+.dash-form { border: 1px dashed var(--accent); border-radius: 8px; padding: 6px 8px; display: flex; flex-direction: column; gap: 4px; flex: none; }
+.dash-pick { font-family: var(--mono); font-size: 12px; }
+.dash-form-btns { display: flex; gap: 6px; }

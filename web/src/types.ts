@@ -1,3 +1,4 @@
+import type { DisplayChoices } from "./plot";
 // Data shapes returned by the WebAssembly workspace (see crates/daedalus-wasm).
 
 export interface ClassEntry {
@@ -61,12 +62,115 @@ export interface ClassInfo {
   components: ComponentInfo[];
   connections: ConnectionInfo[];
   documentation: string | null;
+  /** `Documentation(revisions=...)`. */
+  revisions: string | null;
+  /** `__Daedalus_metadata(key="value", ...)` pairs. */
+  metadata: [string, string][];
+  /** `version` annotation (a library's top-level package). */
+  version: string | null;
+  /** `uses(Lib(version="..."))` pairs. */
+  uses: [string, string][];
   experiment: AnnRecord | null;
+}
+
+/** One line of a text diff (see crates/daedalus-core/src/diff.rs). */
+export interface DiffLine {
+  op: " " | "+" | "-";
+  old: number | null;
+  new: number | null;
+  text: string;
+}
+
+export interface ComponentChange {
+  name: string;
+  change: "added" | "removed" | "modified";
+  old_type: string | null;
+  new_type: string | null;
+  parameter: boolean;
+  moved: boolean;
+  old_placement: AnnRecord | null;
+  new_placement: AnnRecord | null;
+  details: string[];
+}
+
+export interface ConnectionChange {
+  from: string;
+  to: string;
+  change: "added" | "removed" | "rerouted";
+  old_line: AnnRecord | null;
+  new_line: AnnRecord | null;
+}
+
+/** Structural and text diff of one class between two versions. */
+export interface ClassDiff {
+  old_class: string;
+  new_class: string;
+  extends: [string, string][];
+  components: ComponentChange[];
+  connections: ConnectionChange[];
+  equations: { change: "added" | "removed"; initial: boolean; text: string }[];
+  other: string[];
+  text: DiffLine[];
+}
+
+/** A parameter value imported from CSV or SSV. */
+export interface ParamValue {
+  name: string;
+  value: string;
+  unit: string | null;
+}
+
+/** A library available to `uses` resolution. */
+export interface LibAvailable {
+  name: string;
+  version: string | null;
+  origin: string;
+  loaded: boolean;
+}
+
+export interface LibReport {
+  loaded: LibAvailable[];
+  requirements: { by: string; name: string; version: string }[];
+  resolution: { selected: LibAvailable[]; missing: string[]; conflicts: string[]; notes: string[] };
+}
+
+/** The bundled index of open libraries (library/packages.json). */
+export interface LibIndex {
+  libraries: {
+    name: string;
+    description: string;
+    repo: string;
+    license: string;
+    packages: string[];
+    versions: { version: string; ref: string; uses?: Record<string, string> }[];
+  }[];
+}
+
+export interface LibSource {
+  name: string | null;
+  version: string | null;
+  repo: string;
+  git_ref: string;
+  packages: string[];
+}
+
+/** The manifest of a model package (daedalus-package.json). */
+export interface PackageManifest {
+  format: number;
+  model: string;
+  files: string[];
+  resources: string[];
+  uses: Record<string, string>;
+  missing: string[];
 }
 
 export interface VarSummary {
   name: string;
+  /** Declared unit, or the one the unit checker inferred (unit_inferred). */
   unit: string;
+  /** The `displayUnit` attribute. */
+  display_unit?: string;
+  unit_inferred?: boolean;
   description: string;
   kind: "series" | "param" | "alias";
   value: number | null;
@@ -104,6 +208,27 @@ export interface SimSummary {
   } | null;
   model_stats: Record<string, number> | null;
   experiment: Record<string, unknown> | null;
+  /** Display-unit choices keyed by "unit|displayUnit". */
+  display?: Record<string, DisplayChoices>;
+}
+
+/** Unit issue found by the unit checker (crates/daedalus-core/src/units.rs). */
+export interface UnitIssue {
+  origin: string;
+  equation: string;
+  left: string;
+  left_unit: string;
+  right: string;
+  right_unit: string;
+  message: string;
+}
+
+export interface UnitSummary {
+  issues: UnitIssue[];
+  declared: number;
+  inferred: number;
+  unknown: number;
+  unparsed: string[];
 }
 
 export interface SimSettings {
@@ -136,4 +261,138 @@ export interface BundleInfo {
   download_ms: number;
   unpack_ms: number;
   register_ms: number;
+}
+
+/** Options of a linear analysis (see daedalus_core::lti::LinearOptions). */
+export interface LinearOptions {
+  at?: number;
+  params?: [string, number][];
+  inputs?: string[];
+  outputs?: string[];
+  w_min?: number;
+  w_max?: number;
+  n_freq?: number;
+  t_final?: number;
+  n_time?: number;
+  bode?: boolean;
+  step?: boolean;
+  reduce?: number;
+  lqr?: [number, number];
+}
+
+export type Complex = [number, number];
+
+export interface BodeData {
+  omega: number[];
+  mag_db: number[];
+  phase_deg: number[];
+  re: number[];
+  im: number[];
+}
+
+export interface TimeData {
+  t: number[];
+  y: number[];
+}
+
+export interface PidGains {
+  method: string;
+  kp: number;
+  ti: number;
+  td: number;
+  ki: number;
+  kd: number;
+}
+
+export interface LinearPair {
+  input: string;
+  output: string;
+  dc_gain: number | null;
+  relative_degree: number | null;
+  hf_gain: number;
+  zeros: Complex[];
+  margins: { gain_margin_db: number | null; phase_crossover: number | null; phase_margin_deg: number | null; gain_crossover: number | null };
+  bode: BodeData | null;
+  step: TimeData | null;
+  impulse: TimeData | null;
+  step_info: { final_value: number | null; rise_time: number | null; settling_time: number | null; overshoot: number | null; peak: number; peak_time: number } | null;
+  pid: { fopdt: { k: number; t: number; l: number }; simc: PidGains; tau_c: number; ziegler_nichols: PidGains | null; note: string | null } | null;
+  reduced_bode: BodeData | null;
+  reduced_step: TimeData | null;
+}
+
+export interface LinearAnalysis {
+  model: string;
+  time: number;
+  states: string[];
+  inputs: string[];
+  outputs: string[];
+  poles: Complex[];
+  stable: boolean;
+  pairs: LinearPair[];
+  reduction: { order: number; hankel_singular_values: number[]; error_bound: number; poles: Complex[] } | null;
+  reduction_error: string | null;
+  lqr: { q: number; r: number; k: number[][]; closed_loop_poles: Complex[] } | null;
+  lqr_error: string | null;
+}
+
+export interface LinearResult {
+  ok: boolean;
+  error?: string | null;
+  analysis?: LinearAnalysis | null;
+  inputs: string[];
+  outputs: string[];
+  states: string[];
+  candidates: string[];
+  translate_ms: number;
+  analysis_ms: number;
+}
+
+// ---------------------------------------------------------------- editor intelligence
+// Offsets are JavaScript string indices into the document's text.
+export interface IdeDiagnostic {
+  from: number;
+  to: number;
+  severity: "error" | "warning";
+  message: string;
+}
+
+export interface IdeLocation {
+  uri: string;
+  from: number;
+  to: number;
+  /** 1-based line. */
+  line: number;
+  /** Innermost class around the place. */
+  class: string | null;
+  preview: string;
+}
+
+export interface IdeRename {
+  ok: boolean;
+  error?: string;
+  edits: { uri: string; from: number; to: number; text: string }[];
+}
+
+export interface IdeCompletion {
+  from: number;
+  items: { label: string; kind: string; detail: string; info: string }[];
+}
+
+export interface IdeHover {
+  from: number;
+  to: number;
+  markdown: string;
+}
+
+export interface IdeSymbol {
+  name: string;
+  kind: string;
+  detail: string;
+  path: string;
+  from: number;
+  to: number;
+  selFrom: number;
+  selTo: number;
+  children: IdeSymbol[];
 }

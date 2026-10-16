@@ -2,6 +2,22 @@
 
 The most recent additions, newest first. Each links to the page that covers it in full.
 
+## Embedded C code and processor in the loop
+
+`daedalus codegen-c` turns a controller block into portable, allocation-free C99 that
+steps it at a fixed rate, and `daedalus hil` closes the loop between that code and a
+plant simulated by DAEdalus: on your computer, on an Arduino Uno emulated in simavr, on an
+ESP32 emulated in QEMU, or on a real board over its serial port. CI runs the whole ladder
+on every change. `daedalus autotune` tunes the controller's gains on the closed loop
+against a step-response specification first. See
+[Embedded C and processor in the loop](embedded.md).
+
+## Scientific machine learning
+
+`daedalus.sciml` finds the physics a model is missing from measured data, turns it into a
+formula by symbolic regression, and learns neural surrogates that export back to
+Modelica (and from there to embedded C), in NumPy only. See
+[Scientific machine learning](sciml.md).
 ## State machines
 
 The state machines of Modelica 3.6 chapter 17 now translate and simulate. The

@@ -1,4 +1,4 @@
-//! FMI 2.0 runtime of FMUs exported by `daedalus fmu`.
+//! FMI 2.0 and FMI 3.0 runtime of FMUs exported by `daedalus fmu` (FMI 3.0 in [`fmi3`]).
 //!
 //! This shared library implements the `fmi2*` C functions for both Model Exchange
 //! and Co-Simulation. It is model independent: at `fmi2Instantiate` it loads the
@@ -21,6 +21,8 @@ use daedalus_core::fmi::Bundle;
 use daedalus_core::sim::{SimOptions, Simulation, Stepper};
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
 use std::panic::{AssertUnwindSafe, catch_unwind};
+
+pub mod fmi3;
 
 pub type fmi2Component = *mut c_void;
 pub type fmi2Status = c_int;
@@ -71,9 +73,16 @@ enum Mode {
     Error,
 }
 
+/// The importer's logging callback: FMI 2 (variadic) or FMI 3.
+#[derive(Clone, Copy)]
+enum Log {
+    V2(Logger),
+    V3(fmi3::LogMessage),
+}
+
 struct Instance {
     name: CString,
-    logger: Option<Logger>,
+    logger: Option<Log>,
     env: *mut c_void,
     logging: bool,
     model_exchange: bool,
@@ -103,16 +112,19 @@ impl Instance {
             let cat = CString::new(category).unwrap_or_default();
             let m = CString::new(msg.replace('\0', " ")).unwrap_or_default();
             let fmt = c"%s";
-            unsafe {
-                l(
-                    self.env,
-                    self.name.as_ptr(),
-                    status,
-                    cat.as_ptr(),
-                    fmt.as_ptr(),
-                    m.as_ptr(),
-                )
-            };
+            match l {
+                Log::V2(l) => unsafe {
+                    l(
+                        self.env,
+                        self.name.as_ptr(),
+                        status,
+                        cat.as_ptr(),
+                        fmt.as_ptr(),
+                        m.as_ptr(),
+                    )
+                },
+                Log::V3(l) => unsafe { l(self.env, status, cat.as_ptr(), m.as_ptr()) },
+            }
         }
     }
 
@@ -448,16 +460,42 @@ pub unsafe extern "C" fn fmi2Instantiate(
     logging_on: fmi2Boolean,
 ) -> fmi2Component {
     let r = catch_unwind(AssertUnwindSafe(|| unsafe {
-        let name = cstr(instance_name).to_string();
         let (logger, env) = if functions.is_null() {
             (None, std::ptr::null_mut())
         } else {
-            ((*functions).logger, (*functions).component_environment)
+            (
+                (*functions).logger.map(Log::V2),
+                (*functions).component_environment,
+            )
         };
-        let report = |msg: &str| {
-            if let Some(l) = logger {
-                let n = CString::new(name.clone()).unwrap_or_default();
-                let m = CString::new(msg).unwrap_or_default();
+        new_instance(
+            cstr(instance_name),
+            fmu_type == MODEL_EXCHANGE,
+            cstr(guid),
+            cstr(resource_location),
+            logger,
+            env,
+            logging_on != 0,
+        )
+    }));
+    r.unwrap_or(std::ptr::null_mut())
+}
+
+/// Load the model of an FMU and create an instance (shared by FMI 2 and FMI 3).
+fn new_instance(
+    name: &str,
+    model_exchange: bool,
+    guid: &str,
+    resource_location: &str,
+    logger: Option<Log>,
+    env: *mut c_void,
+    logging: bool,
+) -> *mut c_void {
+    let report = |msg: &str| {
+        let n = CString::new(name).unwrap_or_default();
+        let m = CString::new(msg).unwrap_or_default();
+        match logger {
+            Some(Log::V2(l)) => unsafe {
                 l(
                     env,
                     n.as_ptr(),
@@ -465,58 +503,57 @@ pub unsafe extern "C" fn fmi2Instantiate(
                     c"logStatusError".as_ptr(),
                     c"%s".as_ptr(),
                     m.as_ptr(),
-                );
-            }
-        };
-        let bundle = match read_bundle(cstr(resource_location)) {
-            Ok(b) => b,
-            Err(e) => {
-                report(&format!("cannot load the model: {e}"));
-                return std::ptr::null_mut();
-            }
-        };
-        let g = cstr(guid);
-        if !g.is_empty() && g != bundle.guid {
-            report(&format!(
-                "GUID mismatch: {g} given, the FMU's model is {}",
-                bundle.guid
-            ));
+                )
+            },
+            Some(Log::V3(l)) => unsafe { l(env, ERROR, c"logStatusError".as_ptr(), m.as_ptr()) },
+            None => {}
+        }
+    };
+    let bundle = match read_bundle(resource_location) {
+        Ok(b) => b,
+        Err(e) => {
+            report(&format!("cannot load the model: {e}"));
             return std::ptr::null_mut();
         }
-        let model: &'static Model = Box::leak(Box::new(bundle.model));
-        let opts = SimOptions {
-            store_events: false,
-            ..SimOptions::from_model(model)
-        };
-        let mut is_free_param = vec![false; model.vars.len()];
-        for &p in &model.free_params {
-            if model.vars[p as usize].kind == VarKind::Parameter && !model.vars[p as usize].is_final
-            {
-                is_free_param[p as usize] = true;
-            }
+    };
+    if !guid.is_empty() && guid != bundle.guid {
+        report(&format!(
+            "GUID mismatch: {guid} given, the FMU's model is {}",
+            bundle.guid
+        ));
+        return std::ptr::null_mut();
+    }
+    let model: &'static Model = Box::leak(Box::new(bundle.model));
+    let opts = SimOptions {
+        store_events: false,
+        ..SimOptions::from_model(model)
+    };
+    let mut is_free_param = vec![false; model.vars.len()];
+    for &p in &model.free_params {
+        if model.vars[p as usize].kind == VarKind::Parameter && !model.vars[p as usize].is_final {
+            is_free_param[p as usize] = true;
         }
-        let inst = Box::new(Instance {
-            name: CString::new(name.clone()).unwrap_or_default(),
-            logger,
-            env,
-            logging: logging_on != 0,
-            model_exchange: fmu_type == MODEL_EXCHANGE,
-            model,
-            sim: Simulation::new(model, opts.clone()),
-            stepper: None,
-            opts,
-            mode: Mode::Instantiated,
-            init_dirty: true,
-            dirty: false,
-            inputs_changed: false,
-            terminated: false,
-            last_time: 0.0,
-            is_free_param,
-            zc_scale: vec![0.0; model.layout.n_rel],
-        });
-        Box::into_raw(inst) as fmi2Component
-    }));
-    r.unwrap_or(std::ptr::null_mut())
+    }
+    let inst = Box::new(Instance {
+        name: CString::new(name).unwrap_or_default(),
+        logger,
+        env,
+        logging,
+        model_exchange,
+        model,
+        sim: Simulation::new(model, opts.clone()),
+        stepper: None,
+        opts,
+        mode: Mode::Instantiated,
+        init_dirty: true,
+        dirty: false,
+        inputs_changed: false,
+        terminated: false,
+        last_time: 0.0,
+        is_free_param,
+        zc_scale: vec![0.0; model.layout.n_rel],
+    });
+    Box::into_raw(inst) as *mut c_void
 }
 
 #[unsafe(no_mangle)]
@@ -1385,6 +1422,106 @@ end Ball;
             assert!(events >= 3, "{events} bounces");
             assert!((y - want).abs() < 1e-4, "{y} vs {want}");
             fmi2FreeInstance(c);
+        }
+        let _ = std::fs::remove_dir_all(&f.dir);
+    }
+
+    /// FMI 3.0 Model Exchange: initialization, and directional derivatives (exact
+    /// tangents) against finite differences of the derivatives and outputs.
+    #[test]
+    fn fmi3_directional_derivatives() {
+        use crate::fmi3::*;
+        let f = export("fmi3");
+        let m = &f.model;
+        let loc = CString::new(format!("{}/", f.dir.display())).unwrap();
+        let (vg, vh, vv) = (vr(m, "gain"), vr(m, "h"), vr(m, "v"));
+        let (vdh, vdv, vy) = (vr(m, "der(h)"), vr(m, "der(v)"), vr(m, "height"));
+        unsafe {
+            let c = fmi3InstantiateModelExchange(
+                c"ball".as_ptr(),
+                f.guid.as_ptr(),
+                loc.as_ptr(),
+                false,
+                false,
+                std::ptr::null_mut(),
+                None,
+            );
+            assert!(!c.is_null());
+            assert_eq!(fmi3SetFloat64(c, &vg, 1, &1.5, 1), OK);
+            assert_eq!(
+                fmi3EnterInitializationMode(c, false, 0.0, 0.0, false, 0.0),
+                OK
+            );
+            assert_eq!(fmi3ExitInitializationMode(c), OK);
+            let (mut a, mut b, mut cc, mut d, mut e, mut t) =
+                (false, false, false, false, false, 0.0);
+            assert_eq!(
+                fmi3UpdateDiscreteStates(c, &mut a, &mut b, &mut cc, &mut d, &mut e, &mut t),
+                OK
+            );
+            assert_eq!(fmi3EnterContinuousTimeMode(c), OK);
+            let x = [0.7, -1.2];
+            assert_eq!(fmi3SetContinuousStates(c, x.as_ptr(), 2), OK);
+            let unknowns = [vdh, vdv, vy];
+            let knowns = [vh, vv, vg];
+            // exact Jacobian, column by column
+            let mut jac = [[0.0; 3]; 3];
+            for (k, _) in knowns.iter().enumerate() {
+                let mut seed = [0.0; 3];
+                seed[k] = 1.0;
+                let mut out = [0.0; 3];
+                assert_eq!(
+                    fmi3GetDirectionalDerivative(
+                        c,
+                        unknowns.as_ptr(),
+                        3,
+                        knowns.as_ptr(),
+                        3,
+                        seed.as_ptr(),
+                        3,
+                        out.as_mut_ptr(),
+                        3
+                    ),
+                    OK
+                );
+                for (i, o) in out.iter().enumerate() {
+                    jac[i][k] = *o;
+                }
+            }
+            // finite differences
+            let eval = |x: [f64; 2], g: f64| -> [f64; 3] {
+                assert_eq!(fmi3SetFloat64(c, &vg, 1, &g, 1), OK);
+                assert_eq!(fmi3SetContinuousStates(c, x.as_ptr(), 2), OK);
+                let mut dx = [0.0; 2];
+                assert_eq!(fmi3GetContinuousStateDerivatives(c, dx.as_mut_ptr(), 2), OK);
+                let mut y = 0.0;
+                assert_eq!(fmi3GetFloat64(c, &vy, 1, &mut y, 1), OK);
+                [dx[0], dx[1], y]
+            };
+            let eps = 1e-6;
+            let base = eval(x, 1.5);
+            for k in 0..3 {
+                let mut xp = x;
+                let mut g = 1.5;
+                if k < 2 {
+                    xp[k] += eps;
+                } else {
+                    g += eps;
+                }
+                let p = eval(xp, g);
+                for i in 0..3 {
+                    let fd = (p[i] - base[i]) / eps;
+                    assert!(
+                        (fd - jac[i][k]).abs() < 1e-6,
+                        "d{i}/d{k}: {} vs {fd}",
+                        jac[i][k]
+                    );
+                }
+            }
+            assert_eq!(jac[1][2], -9.81);
+            assert_eq!(jac[0][1], 1.0);
+            assert_eq!(jac[2][0], 1.0);
+            fmi3FreeInstance(c);
         }
         let _ = std::fs::remove_dir_all(&f.dir);
     }

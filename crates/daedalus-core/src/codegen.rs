@@ -190,6 +190,9 @@ pub struct Model {
     pub jac_pattern: Vec<Vec<u32>>,
     pub aliases: Vec<(VarId, AliasKind)>,
     pub experiment: crate::flat::Experiment,
+    /// FMU components evaluated outside the tape (see [`crate::external_component`]).
+    #[serde(default)]
+    pub externals: Vec<crate::external_component::ExternalComponent>,
     pub stats: crate::backend::Stats,
     pub warnings: Vec<String>,
     pub tape_len: usize,
@@ -1067,6 +1070,7 @@ pub fn compile(mut sys: System) -> Model {
             .map(|a| (a.var, a.kind.clone()))
             .collect(),
         experiment: sys.experiment,
+        externals: sys.externals,
         stats: sys.stats,
         warnings: sys.warnings,
         vars: sys.vars,
@@ -1743,6 +1747,8 @@ pub struct Runtime<'m> {
     step_cap: f64,
     /// `delay()` reads the right value at a delayed jump (set while events are handled).
     pub delay_right: bool,
+    /// External components (imported FMUs): evaluates `m.ode` in [`Runtime::run_ode`].
+    pub ext: Option<Box<dyn crate::external_component::Hook>>,
     /// Block timing of the performance analyzer (None: not profiling).
     pub prof: Option<Box<crate::profile::BlockProf>>,
 }
@@ -1778,6 +1784,7 @@ impl<'m> Runtime<'m> {
             init_mode: false,
             step_cap: 0.0,
             delay_right: true,
+            ext: None,
             prof: None,
         }
     }
@@ -2306,11 +2313,24 @@ impl<'m> Runtime<'m> {
         let t0 = self.prof.as_mut().map(|p| p.enter_rhs());
         self.set_time(t);
         self.set_states(x);
-        let m = self.m;
-        self.run(&m.ode);
+        self.run_ode();
         self.get_derivs(dx);
         if let (Some(t0), Some(p)) = (t0, self.prof.as_mut()) {
             p.leave_rhs(t0);
+        }
+    }
+
+    /// Run `m.ode`, through the external components' hook when there is one.
+    pub fn run_ode(&mut self) {
+        match self.ext.take() {
+            Some(mut h) => {
+                h.ode(self);
+                self.ext = Some(h);
+            }
+            None => {
+                let m = self.m;
+                self.run(&m.ode);
+            }
         }
     }
 

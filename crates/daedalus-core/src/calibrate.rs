@@ -8,8 +8,16 @@
 //! fitted values to write back to the model. Dynamic optimization with constraints,
 //! moving-horizon estimation and large least-squares problems are the job of the
 //! CasADi export (`python/daedalus_casadi`).
+//!
+//! With [`CalibOptimizer::Lbfgsb`] the cost `0.5 |r|^2` is minimized by projected
+//! L-BFGS ([`crate::lbfgsb`]) instead, with its gradient `J^T r` from one adjoint solve
+//! per iteration (a point term per measurement, see [`crate::adjoint`]) where it
+//! applies, so the cost per iteration does not grow with the number of parameters.
+//! The standard errors still come from one sensitivity Jacobian at the solution.
 
+use crate::adjoint::{GradMethod, Term, TermKind, adjoint_terms};
 use crate::codegen::Model;
+use crate::sensitivity::ExactError;
 use crate::sensitivity::{SensMethod, SensOptions, sensitivities};
 use crate::sim::SimOptions;
 use crate::uq::{Job, check_var, free_param, interp, output_grid, param_values, run_outputs};
@@ -259,6 +267,33 @@ pub struct CalibSpec {
     pub method: SensMethod,
     #[serde(default = "default_max_iter")]
     pub max_iter: usize,
+    #[serde(default)]
+    pub optimizer: CalibOptimizer,
+    /// Gradient source of L-BFGS-B (default: adjoint where it applies).
+    #[serde(default)]
+    pub gradient: GradMethod,
+}
+
+/// The least-squares method.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum CalibOptimizer {
+    /// Levenberg–Marquardt on the residual Jacobian (sensitivities of every output).
+    #[default]
+    Lm,
+    /// Projected L-BFGS on the cost, gradients from adjoints or sensitivities.
+    #[serde(alias = "l-bfgs-b", alias = "lbfgs")]
+    Lbfgsb,
+}
+
+impl CalibOptimizer {
+    pub fn parse(s: &str) -> Option<CalibOptimizer> {
+        Some(match s.to_ascii_lowercase().as_str() {
+            "lm" | "levenberg-marquardt" | "gauss-newton" => CalibOptimizer::Lm,
+            "lbfgsb" | "l-bfgs-b" | "lbfgs" | "gradient" => CalibOptimizer::Lbfgsb,
+            _ => return None,
+        })
+    }
 }
 
 fn default_max_iter() -> usize {
@@ -313,6 +348,11 @@ pub struct CalibResult {
     pub message: String,
     /// The fitted values as a Modelica modifier.
     pub modifier: String,
+    pub optimizer: CalibOptimizer,
+    /// Gradient evaluations of L-BFGS-B and the method that computed them.
+    pub gradients: usize,
+    pub gradient_method: Option<GradMethod>,
+    pub notes: Vec<String>,
 }
 
 /// The calibration problem and the state of its Levenberg–Marquardt iteration.
@@ -341,6 +381,14 @@ pub struct Calibration {
     done: bool,
     converged: bool,
     message: String,
+    optimizer: CalibOptimizer,
+    grad_method: GradMethod,
+    grad: Vec<f64>,
+    memory: crate::lbfgsb::Memory,
+    gradients: usize,
+    grad_used: Option<GradMethod>,
+    notes: Vec<String>,
+    scale: Vec<f64>,
 }
 
 impl Calibration {
@@ -428,6 +476,17 @@ impl Calibration {
         let names: Vec<String> = spec.tuners.iter().map(|t| t.name.clone()).collect();
         let p0 = tuner_starts(&m, &o, &spec.tuners)?;
         Ok(Calibration {
+            optimizer: spec.optimizer,
+            grad_method: spec.gradient,
+            grad: Vec::new(),
+            memory: crate::lbfgsb::Memory::new(8),
+            gradients: 0,
+            grad_used: None,
+            notes: Vec::new(),
+            scale: p0
+                .iter()
+                .map(|v| if *v != 0.0 { v.abs() } else { 1.0 })
+                .collect(),
             m,
             opts: o,
             tuners: spec.tuners,
@@ -615,6 +674,198 @@ impl Calibration {
         Ok(())
     }
 
+    /// Gradient `J^T r` of the cost at `p`: by the adjoint method (one backward solve with a
+    /// point term per measurement) where it applies, else from the residual Jacobian.
+    fn cost_gradient(&mut self, p: &[f64]) -> Result<Vec<f64>, String> {
+        let o = with_params(&self.opts, &self.names, p);
+        let mut why = None;
+        if matches!(self.grad_method, GradMethod::Auto | GradMethod::Adjoint) {
+            let vars = self.vars();
+            let extra: Vec<f64> = self.cols.iter().flat_map(|c| c.2.iter().copied()).collect();
+            let cols = &self.cols;
+            let m = &self.m;
+            let r = adjoint_terms(m, &o, &self.names, &vars, &extra, 2, &mut |grid, traj| {
+                let mut terms = Vec::new();
+                for (k, (d, w, ts, ys)) in cols.iter().enumerate() {
+                    let var = check_var(m, &d.var)?;
+                    for (&t, &y) in ts.iter().zip(ys) {
+                        let res = w * (interp(grid, &traj[k], t) - y);
+                        terms.push(Term {
+                            var,
+                            weight: res * w,
+                            kind: TermKind::Point(t),
+                        });
+                    }
+                }
+                Ok(terms)
+            });
+            match r {
+                Ok(core) => {
+                    self.note_grad(GradMethod::Adjoint, None);
+                    return Ok(core.grad);
+                }
+                Err(ExactError::NotApplicable(w)) if self.grad_method == GradMethod::Auto => {
+                    why = Some(format!("forward sensitivities used because {w}"));
+                }
+                Err(ExactError::Failed(w)) if self.grad_method == GradMethod::Auto => {
+                    why = Some(format!(
+                        "forward sensitivities used because the adjoint method failed: {w}"
+                    ));
+                }
+                Err(ExactError::NotApplicable(w)) => {
+                    return Err(format!("adjoint gradients are not available: {w}"));
+                }
+                Err(ExactError::Failed(w)) => return Err(w),
+            }
+        }
+        let (traj, jac) = self.eval(p, true)?;
+        let r = self.residuals(&traj);
+        let jac = jac.unwrap();
+        let mut g = vec![0.0; p.len()];
+        for (row, ri) in jac.iter().zip(&r) {
+            for j in 0..g.len() {
+                g[j] += row[j] * ri;
+            }
+        }
+        let used = if self.used == SensMethod::Fd {
+            GradMethod::Fd
+        } else {
+            GradMethod::Forward
+        };
+        self.note_grad(used, why);
+        Ok(g)
+    }
+
+    fn note_grad(&mut self, m: GradMethod, why: Option<String>) {
+        self.gradients += 1;
+        if self.grad_used != Some(m) {
+            self.grad_used = Some(m);
+            self.notes.push(format!(
+                "gradients by {}{}",
+                match m {
+                    GradMethod::Adjoint => "the adjoint method",
+                    GradMethod::Forward => "forward sensitivities",
+                    GradMethod::Fd => "finite differences",
+                    GradMethod::Auto => "auto",
+                },
+                why.map(|w| format!(" ({w})")).unwrap_or_default()
+            ));
+        }
+    }
+
+    fn start_lbfgs(&mut self) -> Result<(), String> {
+        let p = self.p.clone();
+        let (traj, _) = self.eval(&p, false)?;
+        self.r = self.residuals(&traj);
+        self.cost = 0.5 * self.r.iter().map(|x| x * x).sum::<f64>();
+        if !self.cost.is_finite() {
+            return Err("the residuals are not finite at the start values".into());
+        }
+        self.history.push(self.cost);
+        self.before = traj.clone();
+        self.after = traj;
+        let g = self.cost_gradient(&p)?;
+        self.grad = g.iter().zip(&self.scale).map(|(a, s)| a * s).collect();
+        self.started = true;
+        Ok(())
+    }
+
+    fn iterate_lbfgs(&mut self) -> Result<(), String> {
+        use crate::lbfgsb::{Outcome, iterate};
+        let sc = self.scale.clone();
+        let lo: Vec<f64> = self
+            .tuners
+            .iter()
+            .zip(&sc)
+            .map(|(t, s)| t.lo() / s)
+            .collect();
+        let hi: Vec<f64> = self
+            .tuners
+            .iter()
+            .zip(&sc)
+            .map(|(t, s)| t.hi() / s)
+            .collect();
+        let mut x: Vec<f64> = self.p.iter().zip(&sc).map(|(p, s)| p / s).collect();
+        let mut f = self.cost;
+        let mut g = std::mem::take(&mut self.grad);
+        let mut mem = std::mem::take(&mut self.memory);
+        let gtol = 1e-10 * (1.0 + f);
+        let to_p = |x: &[f64]| -> Vec<f64> { x.iter().zip(&sc).map(|(a, s)| a * s).collect() };
+        let mut last: Option<(Vec<f64>, Vec<Vec<f64>>)> = None;
+        let out = {
+            let this = std::cell::RefCell::new(&mut *self);
+            iterate(
+                &mut x,
+                &mut f,
+                &mut g,
+                &lo,
+                &hi,
+                &mut mem,
+                gtol,
+                &mut |xp| {
+                    let p = to_p(xp);
+                    let mut me = this.borrow_mut();
+                    match me.eval(&p, false) {
+                        Ok((traj, _)) => {
+                            let c = 0.5 * me.residuals(&traj).iter().map(|v| v * v).sum::<f64>();
+                            last = Some((xp.to_vec(), traj));
+                            c
+                        }
+                        Err(_) => f64::INFINITY,
+                    }
+                },
+                &mut |xp| {
+                    let p = to_p(xp);
+                    let g = this.borrow_mut().cost_gradient(&p)?;
+                    Ok(g.iter().zip(&sc).map(|(a, s)| a * s).collect())
+                },
+            )
+        };
+        self.memory = mem;
+        self.grad = g;
+        match out? {
+            Outcome::Moved { decrease, step } => {
+                self.p = to_p(&x);
+                self.cost = f;
+                if let Some((xl, traj)) = last
+                    && xl == x
+                {
+                    self.r = self.residuals(&traj);
+                    self.after = traj;
+                }
+                self.history.push(f);
+                if decrease.abs() < 1e-10 || step < 1e-12 {
+                    self.converged = true;
+                    self.done = true;
+                    self.message = "cost and step no longer decrease".into();
+                }
+            }
+            Outcome::Restart => {}
+            Outcome::Stationary => {
+                self.converged = true;
+                self.done = true;
+                self.message = "projected gradient vanishes (stationary point)".into();
+            }
+            Outcome::NoDecrease => {
+                self.converged = true;
+                self.done = true;
+                self.message = "no step reduces the cost further (local minimum)".into();
+            }
+        }
+        Ok(())
+    }
+
+    /// The residual Jacobian at the solution, for the standard errors.
+    fn finish_lbfgs(&mut self) {
+        let p = self.p.clone();
+        if let Ok((traj, Some(jac))) = self.eval(&p, true) {
+            self.r = self.residuals(&traj);
+            self.jac = jac;
+            self.cost = 0.5 * self.r.iter().map(|x| x * x).sum::<f64>();
+            self.after = traj;
+        }
+    }
+
     pub fn result(&self) -> CalibResult {
         let np = self.p.len();
         let mrow = self.r.len();
@@ -722,6 +973,10 @@ impl Calibration {
             converged: self.converged,
             message: self.message.clone(),
             modifier: modifier(&fitted),
+            optimizer: self.optimizer,
+            gradients: self.gradients,
+            gradient_method: self.grad_used,
+            notes: self.notes.clone(),
         }
     }
 
@@ -740,6 +995,16 @@ impl Calibration {
                 SensMethod::Auto => "auto",
             }
         );
+        if r.optimizer == CalibOptimizer::Lbfgsb {
+            let _ = writeln!(
+                s,
+                "  optimizer: L-BFGS-B, {} gradient evaluations",
+                r.gradients
+            );
+        }
+        for n in &r.notes {
+            let _ = writeln!(s, "  note: {n}");
+        }
         let _ = writeln!(
             s,
             "  {}{}",
@@ -805,15 +1070,27 @@ impl Job for Calibration {
         if self.done {
             return Ok(true);
         }
+        let lbfgs = self.optimizer == CalibOptimizer::Lbfgsb;
         if !self.started {
-            self.start()?;
+            if lbfgs {
+                self.start_lbfgs()?;
+            } else {
+                self.start()?;
+            }
             return Ok(false);
         }
-        self.iterate()?;
+        if lbfgs {
+            self.iterate_lbfgs()?;
+        } else {
+            self.iterate()?;
+        }
         self.iter += 1;
         if !self.done && self.iter >= self.max_iter {
             self.done = true;
             self.message = format!("iteration limit ({}) reached", self.max_iter);
+        }
+        if self.done && lbfgs {
+            self.finish_lbfgs();
         }
         Ok(self.done)
     }

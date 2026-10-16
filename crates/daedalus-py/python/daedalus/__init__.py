@@ -389,6 +389,59 @@ class Model:
         modelica = d.pop("modelica")
         return Linearization(**d, _report=report, _modelica=modelica)
 
+    def derivatives(
+        self,
+        t: Union[float, Sequence[float], np.ndarray],
+        states: Union[Mapping[str, Any], np.ndarray, Sequence[Sequence[float]]],
+        *,
+        inputs: Optional[Mapping[str, Any]] = None,
+        params: Optional[Mapping[str, float]] = None,
+        read: Optional[Sequence[str]] = None,
+    ) -> Dict[str, np.ndarray]:
+        """The model's right-hand side ``der(x) = f(t, x, u)`` at given points.
+
+        ``states`` is an array with one row per point and one column per state (in
+        :attr:`states` order) or a mapping from state name to values; ``inputs`` maps
+        top-level inputs (or parameters) to a value or one value per point. Discrete
+        variables keep their start values. Returns a dict with ``"der(x)"`` for each
+        state and the variables in ``read``, each an array over the points: the known
+        physics at measured states, for hybrid and data-driven modelling
+        (see :mod:`daedalus.sciml`).
+        """
+        names = self.states
+        # The number of points is the longest of t, the states and the inputs.
+        sizes = [np.size(t)]
+        if isinstance(states, Mapping):
+            sizes += [np.size(states[s]) for s in names if s in states]
+        else:
+            sizes.append(np.asarray(states, dtype=float).size // max(1, len(names)))
+        sizes += [np.size(v) for v in (inputs or {}).values()]
+        npts = max(sizes)
+        tt = np.broadcast_to(np.asarray(t, dtype=float), (npts,))
+        if isinstance(states, Mapping):
+            missing = [s for s in names if s not in states]
+            if missing:
+                raise KeyError(f"no value for the states {missing}")
+            cols = [np.broadcast_to(np.asarray(states[s], dtype=float), tt.shape) for s in names]
+            x = np.column_stack(cols) if cols else np.zeros((npts, 0))
+        else:
+            x = np.asarray(states, dtype=float).reshape(npts, len(names))
+        cols_in = []
+        for k, v in (inputs or {}).items():
+            cols_in.append((k, [float(a) for a in np.broadcast_to(np.asarray(v, dtype=float), tt.shape)]))
+        read = list(read or [])
+        der, vals = self._m.rhs(
+            [float(a) for a in tt],
+            [list(map(float, row)) for row in x],
+            inputs=cols_in,
+            params=self._params(params),
+            read=read,
+        )
+        out: Dict[str, np.ndarray] = {f"der({s})": der[:, i] for i, s in enumerate(names)}
+        for i, r in enumerate(read):
+            out[r] = vals[:, i]
+        return out
+
     # -- FMU --------------------------------------------------------------------------
 
     def export_fmu(self, path: Optional[PathLike] = None, *, fmi_lib: Optional[PathLike] = None) -> Path:

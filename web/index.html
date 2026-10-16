@@ -16,8 +16,10 @@
       </nav>
       <div class="tools">
         <a href="./scoreboard.html" title="How DAEdalus results compare with the MSL reference results" style="color: var(--muted)">Scoreboard</a>
-        <label class="file" title="Open .mo files (and .stl/.obj shape files)">Open .mo<input id="open-files" type="file" multiple accept=".mo,.stl,.obj" /></label>
-        <label class="file" title="Load a library folder">Library<input id="open-dir" type="file" webkitdirectory /></label>
+        <label class="file" title="Open .mo files, shape files, or a model package / library .zip">Open<input id="open-files" type="file" multiple accept=".mo,.stl,.obj,.zip" /></label>
+        <label class="file" title="Load a library folder">Folder<input id="open-dir" type="file" webkitdirectory /></label>
+        <button id="btn-libs" title="Install libraries (Buildings, ThermoSysPro, OpenIPSL, ...) and check the versions loaded">Libraries</button>
+        <button id="btn-save-zip" title="Save the open model with the files and resources it needs as a .zip">Save .zip</button>
         <span class="sep"></span>
         <button id="btn-check" title="Translate and check the model">Check</button>
         <label>Stop <input id="set-stop" type="number" step="any" placeholder="auto" /></label>
@@ -59,10 +61,12 @@
             <span id="model-title" class="model-title">No class open</span>
             <button data-view="icon">Icon</button>
             <button data-view="diagram" class="active">Diagram</button>
-            <button data-view="text">Text</button>
+            <button data-view="text" title="Modelica text. F12 or Ctrl/Cmd-click: go to definition · Shift+F12: find usages · F2: rename · Ctrl+Space: complete · Ctrl+Shift+O: outline">Text</button>
             <button data-view="doc">Documentation</button>
             <button data-view="flat">Flat model</button>
             <button data-view="structure" title="BLT blocks, incidence, state selection and the state Jacobian">Structure</button>
+            <button data-view="linear" title="Linear analysis: Bode, poles and zeros, step response, model reduction, LQR and PID tuning">Linear</button>
+            <button data-view="diff" title="Differences from the version as loaded, or from a file">Diff</button>
           </div>
           <div id="views">
             <div id="view-graphic" class="view"></div>
@@ -70,6 +74,20 @@
             <div id="view-doc" class="view doc hidden"></div>
             <pre id="view-flat" class="view flat hidden"></pre>
             <div id="view-structure" class="view hidden"></div>
+            <div id="view-linear" class="view linear hidden"></div>
+            <div id="view-diff" class="view diff hidden"></div>
+          </div>
+          <div id="plot-strip" class="hidden">
+            <div id="strip-resize" title="Drag to resize the plot"></div>
+            <div class="strip-bar">
+              <button id="strip-toggle" title="Show or hide the plot below the diagram">▾ Plot</button>
+              <span id="strip-note" class="strip-note">Click a component or connection in the diagram to plot its variables</span>
+              <span class="spacer" style="flex:1"></span>
+              <button id="strip-new" title="Add a subplot">New subplot</button>
+              <button id="strip-clear" title="Remove every curve">Clear</button>
+              <button id="strip-open" title="Open the plot in Simulation mode, with the plot tools">Open in Simulation ↗</button>
+            </div>
+            <div id="strip-host" class="plot-host"></div>
           </div>
         </div>
         <div id="plot-pane" class="pane hidden">
@@ -79,11 +97,29 @@
             <button id="plot-new">New subplot</button>
             <button id="plot-clear">Clear</button>
             <label>x-axis <select id="plot-x"><option value="">time</option></select></label>
+            <span id="plot-units">
+              <label title="Unit of the x axis">x unit <select id="plot-xunit"></select></label>
+              <label title="Unit of the y axis of the active subplot">y unit <select id="plot-yunit"></select></label>
+              <label title="Default to Imperial / US units (ft, lbf, psi, mph, degF, hp ...)"><input type="checkbox" id="plot-imperial" /> Imperial</label>
+            </span>
             <span class="spacer"></span>
+            <span id="live-status" class="live-status"></span>
+            <button id="live-stop" class="hidden" title="Stop the running simulation (the rows so far are kept)">■ Stop</button>
+            <label title="Stream the results into the plot while the simulation runs"><input id="plot-live" type="checkbox" checked /> Live</label>
+            <button id="sim-diagram-btn" title="Show the diagram next to the plot: click a component or connection to plot its variables">Diagram</button>
+            <button id="dash-btn" title="Dashboard: sliders, gauges and displays for live, interactive runs">Dashboard</button>
             <button id="export-csv">Export CSV</button>
             <button id="export-mat">Export .mat</button>
           </div>
-          <div id="plot" class="plot-host"></div>
+          <div id="plot-tools" class="plot-tools"></div>
+          <div id="plot-body">
+            <div id="sim-diagram" class="hidden"></div>
+            <div id="plot-col">
+              <div id="plot" class="plot-host"></div>
+              <div id="plot-stats" class="hidden"></div>
+            </div>
+            <div id="dashboard" class="hidden"></div>
+          </div>
           <div id="anim" class="plot-host hidden"></div>
         </div>
       </section>

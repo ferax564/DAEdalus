@@ -186,6 +186,7 @@ pub fn causalize(
         .map(|v| vars[v])
         .collect();
     if !free_eqs.is_empty() || !free_vars.is_empty() {
+        w.record_singular(label, eqs, is_unknown);
         let mut msg = format!(
             "{label} problem is structurally singular ({n_eq} equations, {n_var} unknowns).\n"
         );
@@ -207,22 +208,40 @@ pub fn causalize(
     let comps = tarjan_blt(&adj, &var_match);
     let mut blocks = Vec::with_capacity(comps.len());
     // The structure report records which equation computes which unknown.
-    let tracing = label == "simulation" && w.trace.is_some();
+    let init = label == "initialization";
+    let tracing = (label == "simulation" || init) && w.trace.is_some();
     if tracing && let Some(t) = &mut w.trace {
-        t.eqs = eqs
+        let teqs = eqs
             .iter()
             .map(|e| super::trace::TraceEq {
                 lhs: e.lhs,
                 rhs: e.rhs,
                 origin: e.origin,
                 parent: e.parent,
+                src: e.src,
             })
             .collect();
-        t.incidence = adj
+        let inc = adj
             .iter()
             .map(|row| row.iter().map(|&i| vars[i as usize]).collect())
             .collect();
+        if init {
+            t.init_eqs = teqs;
+            t.init_incidence = inc;
+        } else {
+            t.eqs = teqs;
+            t.incidence = inc;
+        }
     }
+    let push_block = |w: &mut Work, b: super::trace::TraceBlock| {
+        if let Some(t) = &mut w.trace {
+            if init {
+                t.init_blocks.push(b);
+            } else {
+                t.blocks.push(b);
+            }
+        }
+    };
     // Guess point propagated through the blocks in order (start values, then what the
     // explicit assignments give from them): tearing checks its pivots against it.
     let mut pt: Vec<f64> = (0..w.vars.len() as VarId)
@@ -239,13 +258,16 @@ pub fn causalize(
             let e = comp[0] as usize;
             let v = vars[eq_match[e] as usize];
             let sol = w.solve_for(&eqs[e], v);
-            if tracing && let Some(t) = &mut w.trace {
+            if tracing {
                 let solved = sol.is_some();
-                t.blocks.push(super::trace::TraceBlock {
-                    solved: if solved { vec![(e, v)] } else { vec![] },
-                    residual_eqs: if solved { vec![] } else { vec![e] },
-                    tears: if solved { vec![] } else { vec![v] },
-                });
+                push_block(
+                    w,
+                    super::trace::TraceBlock {
+                        solved: if solved { vec![(e, v)] } else { vec![] },
+                        residual_eqs: if solved { vec![] } else { vec![e] },
+                        tears: if solved { vec![] } else { vec![v] },
+                    },
+                );
             }
             match sol {
                 Some(x) => {
@@ -275,19 +297,17 @@ pub fn causalize(
             .map(|&e| vars[eq_match[e as usize] as usize])
             .collect();
         let (b, solved) = tear(w, &ceqs, &cvars, tearing, &pt);
-        if tracing
-            && let Some(t) = &mut w.trace
-            && let Block::Solve { tears, .. } = &b
-        {
+        if tracing && let Block::Solve { tears, .. } = &b {
             let done: FxHashSet<usize> = solved.iter().map(|&(i, _)| i).collect();
-            t.blocks.push(super::trace::TraceBlock {
+            let tb = super::trace::TraceBlock {
                 solved: solved.iter().map(|&(i, v)| (comp[i] as usize, v)).collect(),
                 residual_eqs: (0..comp.len())
                     .filter(|i| !done.contains(i))
                     .map(|i| comp[i] as usize)
                     .collect(),
                 tears: tears.clone(),
-            });
+            };
+            push_block(w, tb);
         }
         if let Block::Solve { inner, .. } = &b {
             for &(v, x) in inner {
@@ -574,6 +594,7 @@ fn initialization_inner(w: &mut Work, states: &[VarId], tearing: bool) -> Result
             origin,
             parent: None,
             derived: None,
+            src: super::NO_SRC,
         }
     };
     for v in 0..w.vars.len() as VarId {
@@ -585,6 +606,9 @@ fn initialization_inner(w: &mut Work, states: &[VarId], tearing: bool) -> Result
         {
             let e = start_eq(w, v);
             mandatory.push(e);
+            if let Some(t) = &mut w.trace {
+                t.init_fixed.push(v);
+            }
         }
     }
     // Optional equations by priority: states without explicit fixed, then other variables.
@@ -620,6 +644,8 @@ fn initialization_inner(w: &mut Work, states: &[VarId], tearing: bool) -> Result
     for e in 0..mandatory.len() {
         if eq_match[e] == NONE {
             if e < n_sim {
+                let unknown = w.unknown.clone();
+                w.record_singular("initialization", &mandatory, &|v| unknown[v as usize]);
                 bail!(
                     "initialization problem is overdetermined at {}",
                     w.eq_text(&mandatory[e])
@@ -629,6 +655,10 @@ fn initialization_inner(w: &mut Work, states: &[VarId], tearing: bool) -> Result
                 "initialization: redundant equation ignored: {}",
                 w.eq_text(&mandatory[e])
             ));
+            let text = w.eq_text(&mandatory[e]);
+            if let Some(t) = &mut w.trace {
+                t.init_redundant.push(text);
+            }
             keep[e] = false;
         }
     }
@@ -666,6 +696,9 @@ fn initialization_inner(w: &mut Work, states: &[VarId], tearing: bool) -> Result
         if ok {
             matched += 1;
             selected.push(e);
+            if let Some(t) = &mut w.trace {
+                t.init_defaulted.push(v);
+            }
             if k >= n_states_optional {
                 defaulted.push(w.name(v).to_string());
             }
