@@ -516,6 +516,88 @@ fn stall_test() {
     }
 }
 
+const HOST_INIT: &str = "model HostInit{K}
+  Follower{K} f;
+  parameter Real p = 3;
+  Real a;
+initial equation
+  a = p;
+equation
+  der(a) = 0;
+  f.u = a;
+  annotation(experiment(StopTime = 1, Interval = 0.1));
+end HostInit{K};
+";
+
+/// An FMU input driven by a host variable that only the host's initial equations
+/// determine: the FMU initializes with the solved value (its state `x(0) = u(0)` is 3),
+/// not with the start value 0 the host variable had before its initialization.
+#[test]
+fn fmu_initialized_with_solved_inputs() {
+    let rt = need_runtime!();
+    let s = Scratch::new("hostinit");
+    let m = models();
+    let m = m.to_str().unwrap();
+    for v in ["2", "3"] {
+        let fmu = format!("Follower{v}.fmu");
+        daedalus(
+            &s,
+            &rt,
+            &[
+                "fmu",
+                m,
+                "-m",
+                "FmuImport.Follower",
+                "-o",
+                &fmu,
+                "--fmi-version",
+                v,
+            ],
+        );
+        for kind in ["me", "cs"] {
+            let class = format!("Follower{}", kind.to_uppercase());
+            let mut args = vec![
+                "import-fmu",
+                &fmu,
+                "-o",
+                "F.mo",
+                "--class",
+                &class,
+                "--fmi-type",
+                kind,
+            ];
+            if kind == "cs" {
+                args.extend(["--comm-step", "0.1"]);
+            }
+            daedalus(&s, &rt, &args);
+            let k = kind.to_uppercase();
+            std::fs::rename(s.path("F.mo"), s.path(&format!("{class}.mo"))).unwrap();
+            s.write(&format!("HostInit{k}.mo"), &HOST_INIT.replace("{K}", &k));
+            daedalus(
+                &s,
+                &rt,
+                &[
+                    "simulate",
+                    ".",
+                    "-m",
+                    &format!("HostInit{k}"),
+                    "-o",
+                    "r.csv",
+                    "--vars",
+                    "a,f.y",
+                ],
+            );
+            let r = Csv::read(&s.path("r.csv"));
+            for (i, y) in r.col("f.y").iter().enumerate() {
+                assert!(
+                    (y - 3.0).abs() < 1e-9,
+                    "FMI {v} {kind}: f.y = {y} at row {i} (expected 3)"
+                );
+            }
+        }
+    }
+}
+
 /// A wrapper whose FMU file is missing fails with a clear message.
 #[test]
 fn missing_fmu() {

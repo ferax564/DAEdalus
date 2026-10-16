@@ -739,8 +739,10 @@ impl Workspace {
     }
 
     /// Advance the live run to time `t` (at most its stop time) or for `budget_ms` of
-    /// wall-clock time (0: no budget). JSON `{"t", "points", "done"}`; once done, the run
-    /// becomes the workspace's result and `"summary"` holds what `simulate` returns.
+    /// wall-clock time (0: no budget). JSON `{"t", "points", "done"}`. Once done, the
+    /// rows of the last slice can still be read ([`Workspace::live_time`],
+    /// [`Workspace::live_values`]); [`Workspace::live_finish`] then makes the run the
+    /// workspace's result and returns its summary.
     #[wasm_bindgen(js_name = liveAdvance)]
     pub fn live_advance(&mut self, t: f64, budget_ms: f64) -> String {
         let Some(run) = self.live.as_mut() else {
@@ -749,18 +751,11 @@ impl Workspace {
         let inc = run.inc.as_mut().unwrap();
         let r = inc.advance(t, budget_ms * 1e-3);
         let done = matches!(r, Ok(true) | Err(_));
-        let out = serde_json::json!({
+        to_json(&serde_json::json!({
             "t": inc.time(),
             "points": inc.results().time.len(),
             "done": done,
-        });
-        if !done {
-            return to_json(&out);
-        }
-        let summary = self.live_finish();
-        let mut out = out;
-        out["summary"] = serde_json::from_str(&summary).unwrap_or_default();
-        to_json(&out)
+        }))
     }
 
     /// End the live run where it is; it becomes the workspace's result. Returns the

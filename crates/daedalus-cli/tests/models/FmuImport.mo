@@ -58,4 +58,16 @@ package FmuImport "Models for the FMU import and SSP tests (crates/daedalus-cli/
     height = h;
     annotation(experiment(StopTime = 3));
   end Ball;
+
+  model Follower "Initial state taken from the input: x(0) = u(0), then held"
+    input Real u(start = 0);
+    output Real y;
+    Real x;
+  initial equation
+    x = u;
+  equation
+    der(x) = 0;
+    y = x;
+    annotation(experiment(StopTime = 1));
+  end Follower;
 end FmuImport;

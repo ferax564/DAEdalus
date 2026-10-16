@@ -1,6 +1,6 @@
-# FMI 2.0 export
+# FMI and SSP
 
-`daedalus fmu` exports a model as a Functional Mock-up Unit for FMI 2.0, so it runs in any
+`daedalus fmu` exports a model as a Functional Mock-up Unit for FMI 2.0 or 3.0, so it runs in any
 FMI importer: Simulink, Dymola, OpenModelica, FMPy, Silver, or your own co-simulation
 master. One FMU carries both interfaces:
 
@@ -59,6 +59,23 @@ OK
 
 ![The FMU in FMPy, as Co-Simulation and as Model Exchange, on top of the native run](img/fmu_stalltest.png)
 
+## FMI 3.0
+
+`--fmi-version 3` writes the same model as an FMI 3.0 FMU (`x86_64-linux`):
+
+```sh
+daedalus fmu library/Daedalus -m Daedalus.Examples.TorqueConverter.StallTest --fmi-version 3 -o StallTest3.fmu
+```
+
+```
+FMU Daedalus_Examples_TorqueConverter_StallTest (FMI 3.0): 552 variables, 2 states, 2 event indicators, 0 inputs, 0 outputs
+wrote StallTest3.fmu
+```
+
+The same runtime implements the `fmi3*` API: Float64, Int32 and Boolean variables,
+`fmi3UpdateDiscreteStates`, and exact directional derivatives from the forward tangents
+of the compiled equations, available after initialization.
+
 ## Using the FMU from Python
 
 ```python
@@ -71,12 +88,66 @@ print(res["rpm_engine"][-1])   # 2160.5
 
 Parameters are set the usual way, with `start_values={"engine.J": 0.3}`.
 
+## Importing FMUs
+
+DAEdalus also runs FMUs from other tools, FMI 2.0 or 3.0, on their own or as components
+of a Modelica model:
+
+```sh
+# simulate an FMU on its own: Model Exchange if it has it
+daedalus simulate StallTest.fmu -o fmu.csv --vars rpm_engine
+daedalus simulate StallTest.fmu --fmi-type cs --comm-step 0.004 -o cs.csv
+
+# a wrapper block to use as a component in any model
+daedalus import-fmu Plant.fmu -o Plant.mo [--fmi-type me|cs] [--comm-step H] [--class NAME] [--within PKG]
+```
+
+The wrapper declares the FMU's parameters with their units and descriptions, and its
+inputs and outputs as connectors:
+
+```modelica
+block StallTest "Daedalus.Examples.TorqueConverter.StallTest (DAEdalus) (FMU, ModelExchange)"
+  parameter Real engine_tau_drag(unit = "N.m") = 20.0 "Friction (motoring) torque at 3000 rpm (engine.tau_drag)";
+  parameter Real engine_J(unit = "kg.m2") = 0.2 "Engine (crank + flywheel) inertia (engine.J)";
+  ...
+```
+
+and an annotation `__Daedalus_FMU(fileName = "Plant.fmu", fmiType = "ModelExchange")`
+that names the file relative to the `.mo`.
+
+- **Model Exchange.** The FMU's states are integrated together with the model's, and its
+  event indicators are located like the model's own zero crossings. Its time events and
+  discrete state updates take part in the event iteration, and outputs that depend
+  directly on inputs are iterated to a fixed point. Every integrator works; the implicit
+  ones use a difference Jacobian, since DAEdalus cannot see inside an FMU.
+- **Co-Simulation.** The FMU is stepped over the communication grid, with its inputs held
+  over each step. Its outputs change at the grid points, so a signal through a chain of
+  Co-Simulation FMUs is delayed one step per FMU.
+
+FMU components need the native tools, the command line or the Python package. The browser
+workbench reports an error for them, and `linearize` and `steady` refuse them.
+`crates/daedalus-cli/tests/fmu_import.rs` imports exported FMUs back and compares them
+with the native simulation.
+
+## SSP
+
+[SSP](https://ssp-standard.org) packages describe systems of connected FMUs:
+
+```sh
+daedalus simulate System.ssp --comm-step 0.01 -o sys.csv   # run as a co-simulation master
+daedalus import-ssp System.ssp -o System.mo                 # one model, a wrapper per FMU
+daedalus export-ssp . -m Loop -o Loop.ssp                   # a model made of FMU components
+```
+
+`import-ssp` reads `SystemStructure.ssd`: the FMU components, parameter bindings inline
+or in `.ssv` files, connections, system connectors and the default experiment. Nested
+systems are not supported. `export-ssp` packs a model's FMU components with their
+parameter values, placements and connections.
+
 ## Limits
 
 - The binaries are built for `linux64`; Windows and macOS FMUs need `daedalus-fmi` built
   on those platforms.
-- FMU state get/set (`fmi2GetFMUstate`) and directional derivatives are not provided yet.
-- In Model Exchange, a jump in a time table without an event can stall an importer's
-  integrator; time events for table breakpoints are planned.
+- FMU state get/set is not provided; FMI 2.0 FMUs have no directional derivatives (the
+  FMI 3.0 ones do).
 
-FMI 3.0 and FMU import are on the [Roadmap](roadmap.md).

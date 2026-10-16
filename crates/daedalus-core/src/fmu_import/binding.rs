@@ -429,6 +429,17 @@ impl Instance {
         }
     }
 
+    /// A communication step the FMU discarded without terminating: the importer has
+    /// no step-size control to retry it with a smaller step.
+    fn discarded(&self, what: &str, t: f64, h: f64) -> String {
+        format!(
+            "FMU '{}': {what} discarded the communication step from t = {t} (step size {h}) \
+             without terminating; try a smaller communicationStepSize{}",
+            self.name,
+            self.messages_suffix()
+        )
+    }
+
     fn missing(&self, what: &str) -> String {
         format!("FMU '{}': the binary has no {what}", self.name)
     }
@@ -745,9 +756,14 @@ impl Instance {
                     let mut term = 0;
                     if let Some(gs) = f.get_boolean_status {
                         // fmi2Terminated = 3
-                        unsafe { gs(self.c, 3, &mut term) };
+                        if unsafe { gs(self.c, 3, &mut term) } > WARNING {
+                            term = 0;
+                        }
                     }
-                    return Ok(true);
+                    if term != 0 {
+                        return Ok(true);
+                    }
+                    return Err(self.discarded("fmi2DoStep", t, h));
                 }
                 self.check("fmi2DoStep", s)?;
                 Ok(false)
@@ -761,7 +777,10 @@ impl Instance {
                     )
                 };
                 if s == DISCARD {
-                    return Ok(true);
+                    if term {
+                        return Ok(true);
+                    }
+                    return Err(self.discarded("fmi3DoStep", t, h));
                 }
                 self.check("fmi3DoStep", s)?;
                 Ok(term)
