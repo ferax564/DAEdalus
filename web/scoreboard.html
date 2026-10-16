@@ -6,6 +6,15 @@
     <meta name="description" content="How DAEdalus simulation results compare with the Modelica Association reference results for every Modelica Standard Library example." />
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3E%3Crect width=%2716%27 height=%2716%27 rx=%273%27 fill=%27%231f4e79%27/%3E%3Cpath d=%27M3 12 L6 5 L9 10 L13 3%27 stroke=%27white%27 stroke-width=%271.6%27 fill=%27none%27/%3E%3C/svg%3E" />
     <title>DAEdalus MSL Scoreboard</title>
+    <script>
+      try {
+        var theme = localStorage.getItem("daedalus.theme");
+        if (theme === "light" || theme === "dark") {
+          document.documentElement.dataset.theme = theme;
+          document.documentElement.style.colorScheme = theme;
+        }
+      } catch (e) {}
+    </script>
   </head>
   <body>
     <header class="top">

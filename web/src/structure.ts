@@ -67,7 +67,8 @@ const fmt = (v: number | null | undefined, d = 3) => (v === null || v === undefi
 /** A condition number: `null` (JSON of an infinite value) is "∞". */
 const fmtCond = (v: number | null | undefined) => (v === null || v === undefined ? "∞" : fmt(v));
 const css = (name: string) => getComputedStyle(document.documentElement).getPropertyValue(name).trim() || "#888";
-const KIND_COLOR: Record<string, string> = { assign: "#2b8a3e", linear: "#1971c2", nonlinear: "#e8590c" };
+const KIND_VAR: Record<string, string> = { assign: "--ok", linear: "--accent", nonlinear: "--warn" };
+const kindColor = (k: string) => css(KIND_VAR[k] ?? "--ok");
 
 function sizeCanvas(c: HTMLCanvasElement, w: number, h: number) {
   const dpr = window.devicePixelRatio || 1;
@@ -471,7 +472,7 @@ export class StructureView {
                 })
                 .join("")}${b.tears.length ? `<div class="muted">tears: ${esc(b.tears.join(", "))}</div>` : ""}</div>`
             : "";
-          return `<div class="st-block${open ? " open" : ""}" data-block="${b.index}"><span class="st-sw" style="background:${KIND_COLOR[b.kind]}"></span><span class="st-bi">${b.index}</span> ${head}${body}</div>`;
+          return `<div class="st-block${open ? " open" : ""}" data-block="${b.index}"><span class="st-sw" style="background:var(${KIND_VAR[b.kind] ?? "--muted"})"></span><span class="st-bi">${b.index}</span> ${head}${body}</div>`;
         })
         .join("") + (omitted ? `<div class="muted">${omitted} assignments not listed</div>` : "")
     );
@@ -559,6 +560,11 @@ export class StructureView {
     );
   }
 
+  /** Redraw incidence, Jacobian, and eigenvalue canvases after a theme change. */
+  redraw() {
+    this.drawAll();
+  }
+
   private drawAll() {
     this.drawIncidence();
     this.drawJacobian();
@@ -597,9 +603,9 @@ export class StructureView {
       const k = r.blocks[b]?.kind ?? "assign";
       blk.fill(b, a, e);
       if (e - a > 1 || b === this.selectedBlock) {
-        g.fillStyle = KIND_COLOR[k] + "22";
+        g.fillStyle = kindColor(k) + "22";
         g.fillRect(a * s, a * s, (e - a) * s, (e - a) * s);
-        g.strokeStyle = KIND_COLOR[k];
+        g.strokeStyle = kindColor(k);
         g.lineWidth = b === this.selectedBlock ? 2 : 1;
         g.strokeRect(a * s + 0.5, a * s + 0.5, Math.max((e - a) * s - 1, 1), Math.max((e - a) * s - 1, 1));
       }
@@ -608,7 +614,7 @@ export class StructureView {
     const px = Math.max(s, 1);
     const below = css("--muted");
     for (const [row, col] of inc.entries) {
-      g.fillStyle = blk[row] === blk[col] ? KIND_COLOR[r.blocks[blk[row]]?.kind ?? "assign"] : below;
+      g.fillStyle = blk[row] === blk[col] ? kindColor(r.blocks[blk[row]]?.kind ?? "assign") : below;
       g.fillRect(col * s, row * s, px, px);
     }
     c.onmousemove = (e) => {

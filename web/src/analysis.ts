@@ -243,6 +243,12 @@ export class AnalysisPanel {
     }
   }
 
+  /** Redraw analysis canvases after a theme change. */
+  redraw() {
+    this.plot.draw();
+    this.bars.draw();
+  }
+
   /** Re-read the model's parameters (after a simulation or opening another model). */
   refresh() {
     const vars = this.host.vars();
@@ -328,8 +334,9 @@ export class AnalysisPanel {
     if (this.tab === "sensitivity") {
       const method = this.get("s.method", "auto");
       const adj = method === "adjoint";
+      const sensHelp = "exact: forward sensitivity equations with exact tape derivatives (models without events); fd: central differences, two runs per parameter; adjoint: the gradient of one scalar objective.";
       h = `<div class="an-h">Sensitivity</div>
-        <label class="an-field">Method <select data-k="s.method">${[
+        <label class="an-field">Method <select data-k="s.method" title="${esc(sensHelp)}">${[
           ["auto", "auto"],
           ["exact", "exact (forward)"],
           ["fd", "fd"],
@@ -341,8 +348,7 @@ export class AnalysisPanel {
           adj
             ? `${this.field("s.objective", "Objective", this.get("s.objective", `integral(${this.defaultOutputs()[0] ?? "x"})`), 'class="an-objective"')}
         <p class="muted small">The gradient dJ/dp of one scalar J for all ticked parameters from one backward adjoint solve (reverse-mode tape passes), whatever their number. J: final(x), integral(x), mean(x), at(x, t), max(x), min(x), optionally with a window: integral(x, t0, t1). Models with events fall back to forward sensitivities.</p>`
-            : `${this.field("s.outputs", "Outputs", this.get("s.outputs", outputsDefault), 'list="an-vars"')}
-        <p class="muted small">exact: forward sensitivity equations with exact tape derivatives (models without events); fd: central differences, two runs per parameter; adjoint: the gradient of one scalar objective.</p>`
+            : `${this.field("s.outputs", "Outputs", this.get("s.outputs", outputsDefault), 'list="an-vars"')}`
         }
         ${sel.length ? `<div class="muted small">${sel.length} parameter${sel.length > 1 ? "s" : ""}: ${esc(sel.join(", "))}</div>` : none}`;
     } else if (this.tab === "uncertainty") {

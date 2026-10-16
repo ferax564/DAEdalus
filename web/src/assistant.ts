@@ -273,20 +273,29 @@ export function initAssistant(hooks: AssistantHooks) {
 
   const panel = document.createElement("aside");
   panel.id = "assistant";
-  panel.className = "assistant-panel hidden";
+  panel.className = "assistant-panel pane hidden";
   panel.innerHTML = `
     <div class="pane-title">Assistant <span class="muted">Claude</span><button class="close" title="Close">✕</button></div>
+    <div class="assistant-starters">
+      <p>Ask about the open model.</p>
+      <button type="button" data-prompt="Why is this model stiff?">Why is this model stiff?</button>
+      <button type="button" data-prompt="Add a damper between the masses.">Add a damper between the masses.</button>
+      <button type="button" data-prompt="What does this model do?">What does this model do?</button>
+    </div>
     <div class="assistant-key hidden">
       <p>The assistant calls the Claude API from this page with your own API key. The key is kept only in this browser.</p>
       <input type="password" placeholder="sk-ant-…" autocomplete="off" />
-      <button class="primary">Save key</button>
+      <button type="button">Save key</button>
     </div>
     <div class="assistant-log"></div>
     <form class="assistant-input">
-      <textarea rows="3" placeholder="Ask about the open model, e.g. “Why is this model stiff?” or “Add a damper between the masses.”"></textarea>
-      <div class="row"><button type="button" class="forget">Forget key</button><button type="button" class="stop hidden">Stop</button><button type="submit" class="primary">Send</button></div>
+      <textarea rows="3" placeholder="Ask about the open model"></textarea>
+      <div class="row"><button type="button" class="forget">Forget key</button><button type="button" class="stop hidden">Stop</button><button type="submit">Send</button></div>
     </form>`;
-  document.body.appendChild(panel);
+  const right = document.getElementById("right");
+  const inspectorPane = document.getElementById("inspector-pane");
+  if (right && inspectorPane) right.insertBefore(panel, inspectorPane);
+  else document.body.appendChild(panel);
   const logEl = panel.querySelector<HTMLElement>(".assistant-log")!;
   const keyBox = panel.querySelector<HTMLElement>(".assistant-key")!;
   const keyInput = keyBox.querySelector<HTMLInputElement>("input")!;
@@ -312,15 +321,38 @@ export function initAssistant(hooks: AssistantHooks) {
     }
     keyBox.classList.toggle("hidden", !!k);
   };
-  keyBox.querySelector("button")!.addEventListener("click", () => setKey(keyInput.value.trim()));
-  form.querySelector(".forget")!.addEventListener("click", () => setKey(""));
+  let pending = "";
+  const setOpen = (on: boolean) => {
+    panel.classList.toggle("hidden", !on);
+    inspectorPane?.classList.toggle("hidden", on);
+    document.getElementById("app")?.classList.toggle("assistant-open", on);
+    btn.classList.toggle("active", on);
+  };
+  keyBox.querySelector("button")!.addEventListener("click", () => {
+    setKey(keyInput.value.trim());
+    if ((getKey() || memoryKey) && pending) {
+      const q = pending;
+      pending = "";
+      void send(q);
+    }
+  });
+  form.querySelector(".forget")!.addEventListener("click", () => {
+    setKey("");
+    keyBox.classList.add("hidden");
+  });
+  panel.querySelectorAll<HTMLButtonElement>(".assistant-starters button").forEach((b) => {
+    b.onclick = () => {
+      const q = b.dataset.prompt ?? b.textContent ?? "";
+      if (q) void send(q);
+    };
+  });
 
   btn.onclick = () => {
-    panel.classList.toggle("hidden");
-    keyBox.classList.toggle("hidden", !!getKey() || !!memoryKey);
-    if (!panel.classList.contains("hidden")) ta.focus();
+    const open = panel.classList.contains("hidden");
+    setOpen(open);
+    if (open) panel.querySelector<HTMLButtonElement>(".assistant-starters button")?.focus();
   };
-  panel.querySelector(".close")!.addEventListener("click", () => panel.classList.add("hidden"));
+  panel.querySelector(".close")!.addEventListener("click", () => setOpen(false));
 
   const show = (e: ChatEntry) => {
     const d = document.createElement(e.role === "tool" ? "details" : "div");
@@ -342,9 +374,12 @@ export function initAssistant(hooks: AssistantHooks) {
   async function send(question: string) {
     const key = getKey() || memoryKey;
     if (!key) {
+      pending = question;
       keyBox.classList.remove("hidden");
+      keyInput.focus();
       return;
     }
+    pending = "";
     const tools = [...builtinTools(hooks), ...extraTools];
     const byName = new Map(tools.map((t) => [t.name, t]));
     // Loaded on first use, so the SDK stays out of the page's initial bundle.

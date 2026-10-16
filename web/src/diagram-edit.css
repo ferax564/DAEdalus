@@ -9,19 +9,19 @@
 
 svg.diagram.editing { cursor: default; }
 svg.diagram.editing .component { cursor: move; }
-svg.diagram .edit-overlay .edit-selection { fill: rgba(11, 95, 255, 0.08); stroke: #0b5fff; stroke-width: 1.5; stroke-dasharray: 4 2; vector-effect: non-scaling-stroke; pointer-events: none; }
+svg.diagram .edit-overlay .edit-selection { fill: color-mix(in srgb, var(--accent) 12%, transparent); stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 4 2; vector-effect: non-scaling-stroke; pointer-events: none; }
 svg.diagram .edit-overlay .edit-resize,
-svg.diagram .edit-overlay .edit-vertex { fill: white; stroke: #0b5fff; stroke-width: 1.5; vector-effect: non-scaling-stroke; cursor: nwse-resize; }
+svg.diagram .edit-overlay .edit-vertex { fill: var(--canvas); stroke: var(--accent); stroke-width: 1.5; vector-effect: non-scaling-stroke; cursor: nwse-resize; }
 svg.diagram .edit-overlay .edit-vertex { cursor: move; }
 svg.diagram .edit-overlay .edit-port { fill: transparent; stroke: transparent; stroke-width: 1.5; vector-effect: non-scaling-stroke; cursor: crosshair; }
-svg.diagram .edit-overlay .edit-port:hover { fill: rgba(11, 95, 255, 0.18); stroke: #0b5fff; }
-svg.diagram .edit-overlay .edit-port.compatible { fill: rgba(43, 138, 62, 0.25); stroke: #2b8a3e; }
-svg.diagram .edit-overlay .edit-port.incompatible { fill: rgba(201, 42, 42, 0.08); }
+svg.diagram .edit-overlay .edit-port:hover { fill: color-mix(in srgb, var(--accent) 22%, transparent); stroke: var(--accent); }
+svg.diagram .edit-overlay .edit-port.compatible { fill: color-mix(in srgb, var(--ok) 28%, transparent); stroke: var(--ok); }
+svg.diagram .edit-overlay .edit-port.incompatible { fill: color-mix(in srgb, var(--err) 12%, transparent); }
 svg.diagram .edit-overlay .edit-wire { fill: none; stroke: transparent; stroke-width: 9; vector-effect: non-scaling-stroke; cursor: pointer; }
-svg.diagram .edit-overlay .edit-wire:hover { stroke: rgba(11, 95, 255, 0.18); }
-svg.diagram .edit-overlay .edit-wire.selected { stroke: rgba(11, 95, 255, 0.35); }
-svg.diagram .edit-rubber-line { fill: none; stroke: #0b5fff; stroke-width: 1.5; stroke-dasharray: 5 3; vector-effect: non-scaling-stroke; pointer-events: none; }
-svg.diagram .edit-band { fill: rgba(11, 95, 255, 0.06); stroke: #0b5fff; stroke-width: 1; stroke-dasharray: 3 3; vector-effect: non-scaling-stroke; pointer-events: none; }
+svg.diagram .edit-overlay .edit-wire:hover { stroke: color-mix(in srgb, var(--accent) 28%, transparent); }
+svg.diagram .edit-overlay .edit-wire.selected { stroke: color-mix(in srgb, var(--accent) 45%, transparent); }
+svg.diagram .edit-rubber-line { fill: none; stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 5 3; vector-effect: non-scaling-stroke; pointer-events: none; }
+svg.diagram .edit-band { fill: color-mix(in srgb, var(--accent) 10%, transparent); stroke: var(--accent); stroke-width: 1; stroke-dasharray: 3 3; vector-effect: non-scaling-stroke; pointer-events: none; }
 
 .param-dialog {
   position: fixed; inset: 0; z-index: 50; display: grid; place-items: center;
@@ -29,7 +29,7 @@ svg.diagram .edit-band { fill: rgba(11, 95, 255, 0.06); stroke: #0b5fff; stroke-
 }
 .param-dialog .box {
   background: var(--panel); color: var(--fg); border: 1px solid var(--line); border-radius: 10px;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25); padding: 14px 16px; width: min(720px, calc(100vw - 32px));
+  box-shadow: 0 12px 40px var(--shadow); padding: 14px 16px; width: min(720px, calc(100vw - 32px));
   max-height: calc(100vh - 64px); display: flex; flex-direction: column; gap: 6px;
 }
 .param-dialog h3 { margin: 0; font-size: 15px; }

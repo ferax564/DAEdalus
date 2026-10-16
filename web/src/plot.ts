@@ -150,7 +150,7 @@ export class PlotWindow {
   /** Vertical marker lines at these times (time subplots). */
   markers: { t: number; color: string }[] = [];
   /** Shown when nothing is plotted. */
-  emptyText = "Tick variables in the variable browser to plot them";
+  emptyText = "Click the diagram, or tick a variable.";
   private host: HTMLElement;
   private resizeObs: ResizeObserver;
 
@@ -853,6 +853,11 @@ export class BarChart {
     this.canvas.className = "plot";
     host.appendChild(this.canvas);
     new ResizeObserver(() => this.draw()).observe(host);
+    window.matchMedia?.("(prefers-color-scheme: dark)").addEventListener?.("change", () => this.draw());
+    new MutationObserver(() => this.draw()).observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["data-theme", "class"],
+    });
   }
 
   set(title: string, legend: string[], rows: BarRow[]) {
