@@ -3,7 +3,8 @@
 // sources as the main worker (rpc.ts records them); the library bundle download is cached
 // by the browser, so only its unpacking is repeated. A worker keeps the last translation,
 // so runs of one model that differ only in free parameters translate once per worker.
-import { sources } from "./rpc";
+import { engineState, sources } from "./rpc";
+import { engineCall, engineValues } from "./engine";
 import type { SimSettings } from "./types";
 
 /** Summary of one run (see `Workspace::simulateRun` in crates/daedalus-wasm). */
@@ -52,7 +53,8 @@ interface Job {
 }
 
 class PoolWorker {
-  private w: Worker;
+  private worker: Worker | null = null;
+  private terminated = false;
   private nextId = 1;
   private pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
   /** Sources sent so far (rpc.ts `sources.seq`). */
@@ -61,9 +63,13 @@ class PoolWorker {
   private bundleSeq = 0;
   busy = false;
 
-  constructor(readonly index: number) {
-    this.w = new Worker(new URL("./worker.ts", import.meta.url), { type: "module" });
-    this.w.onmessage = (ev) => {
+  constructor(readonly index: number) {}
+
+  /** The browser worker, started on first use (runs on the local engine need none). */
+  private get w(): Worker {
+    if (this.worker) return this.worker;
+    const w = (this.worker = new Worker(new URL("./worker.ts", import.meta.url), { type: "module" }));
+    w.onmessage = (ev) => {
       if (ev.data.progress) return;
       const { id, ok, result, error } = ev.data;
       const p = this.pending.get(id);
@@ -72,6 +78,7 @@ class PoolWorker {
       if (ok) p.resolve(result);
       else p.reject(new Error(error));
     };
+    return w;
   }
 
   private call<T>(op: string, ...args: unknown[]): Promise<T> {
@@ -107,6 +114,20 @@ class PoolWorker {
 
   async run(job: Job): Promise<RunOutput> {
     const t0 = performance.now();
+    const eng = engineState.url;
+    if (eng) {
+      // The local engine holds the same sources (the main worker mirrors them); each pool
+      // slot has its own engine space, so runs go in parallel on native threads.
+      const space = `pool-${this.index}`;
+      const summary = await engineCall<RunSummary>(eng, space, "simulateRun", [job.model, job.options]);
+      const r = await engineValues(eng, space, job.vars);
+      if (this.terminated) throw new CancelledError();
+      const series = new Map<string, Float64Array>();
+      job.vars.forEach((n, i) => {
+        if (r.cols[i]?.length) series.set(n, r.cols[i]);
+      });
+      return { summary, time: r.time, series, worker: this.index, ms: performance.now() - t0 };
+    }
     await this.sync();
     const r = await this.call<{ summary: RunSummary; time: Float64Array; cols: Float64Array[]; qoi?: (number | null)[] }>("run", job.model, job.options, job.vars, job.qois ?? null);
     const series = new Map<string, Float64Array>();
@@ -117,14 +138,15 @@ class PoolWorker {
   }
 
   terminate() {
-    this.w.terminate();
+    this.terminated = true;
+    this.worker?.terminate();
     for (const p of this.pending.values()) p.reject(new CancelledError());
     this.pending.clear();
   }
 }
 
 export class WorkerPool {
-  readonly size: number;
+  private readonly browserSize: number;
   private workers: (PoolWorker | null)[];
   private queue: Job[] = [];
   /** Runs in flight now, and the most at once since the last reset (for checks). */
@@ -133,8 +155,13 @@ export class WorkerPool {
 
   constructor(size?: number) {
     const cores = navigator.hardwareConcurrency || 2;
-    this.size = Math.max(1, Math.min(size ?? cores - 1, 8));
-    this.workers = new Array(this.size).fill(null);
+    this.browserSize = Math.max(1, Math.min(size ?? cores - 1, 8));
+    this.workers = [];
+  }
+
+  /** Parallel runs: the local engine's cores when it is connected, else browser workers. */
+  get size(): number {
+    return engineState.status ? Math.max(1, engineState.status.cores) : this.browserSize;
   }
 
   /**

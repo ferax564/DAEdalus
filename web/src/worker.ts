@@ -1,11 +1,43 @@
 // Web Worker owning the WebAssembly workspace, so translation and simulation never block the UI.
 import init, { Workspace, doePlan, doeAnalyze } from "./wasm/daedalus_wasm.js";
 import type { BundleInfo, BundleProgress } from "./types";
+import { engineBytes, engineCall, enginePost, engineStatus, engineValues, type EngineStatus } from "./engine";
 
 let ws: Workspace | null = null;
-const ready = init().then(() => {
+const ready = init().then((wasm) => {
+  installCompiledTapes(wasm as unknown as WasmExports);
   ws = new Workspace();
+  ws.setCompiledTapes(true);
 });
+
+interface WasmExports {
+  memory: WebAssembly.Memory;
+  __indirect_function_table?: WebAssembly.Table;
+}
+
+/**
+ * Compiled tapes (daedalus_core::jit): the workspace hands over each hot tape of a model as
+ * a small generated WebAssembly module; it is instantiated against this module's memory
+ * and function table and put in the table, where the workspace calls it directly. Results
+ * are the same as interpreting the tape. Without the exported table (an old build) the
+ * hooks are left out and tapes are interpreted.
+ */
+function installCompiledTapes(wasm: WasmExports) {
+  const table = wasm.__indirect_function_table;
+  if (!table) return;
+  const free: number[] = [];
+  const g = globalThis as unknown as Record<string, unknown>;
+  g.daedalusJitInstall = (bytes: Uint8Array) => {
+    const inst = new WebAssembly.Instance(new WebAssembly.Module(bytes), { env: { memory: wasm.memory, table } });
+    const slot = free.length ? free.pop()! : table.grow(1);
+    table.set(slot, inst.exports.run as WebAssembly.ExportValue);
+    return slot;
+  };
+  g.daedalusJitRemove = (slot: number) => {
+    table.set(slot, null);
+    free.push(slot);
+  };
+}
 
 type Req = { id: number; op: string; args: unknown[] };
 /** Text of each document as the editor intelligence last saw it. */
@@ -13,6 +45,71 @@ const ideText = new Map<string, string>();
 
 /** Set by an "analysisCancel" request; the running analysis checks it between steps. */
 let analysisCancelled = false;
+
+/**
+ * The local engine (engine.ts), when connected: simulations and analyses run there, while
+ * the class tree, diagrams and editing stay here. Every source this worker loads is also
+ * kept (`mirror`) and sent to the engine, so both see the same documents and libraries.
+ */
+let engine: string | null = null;
+const ENGINE_OPS = new Set(["simulate", "values", "resultMat", "resultCsv", "structure", "profile", "analysisRun"]);
+const mirror = {
+  docs: new Map<string, string>(),
+  bundles: [] as { prefix: string; files: [string, string][] }[],
+};
+
+/**
+ * Engine traffic in order: the connection (reset and every source so far), then each
+ * source change, so the engine's copy never misses or reorders one. Calls wait for it.
+ */
+let engineQueue: Promise<unknown> = Promise.resolve();
+function engineQueued<T>(task: () => Promise<T>): Promise<T> {
+  const p = engineQueue.then(task);
+  engineQueue = p.catch(() => undefined);
+  return p;
+}
+
+/** Connect: from the moment this runs, later source changes are forwarded after it. */
+function engineConnect(base: string): Promise<EngineStatus> {
+  return engineQueued(async () => {
+    const st = await engineStatus(base);
+    engine = base;
+    try {
+      await enginePost(base, "/reset", {});
+      for (const b of mirror.bundles) await enginePost(base, `/bundle?prefix=${encodeURIComponent(b.prefix)}`, { files: b.files });
+      if (mirror.docs.size) await enginePost(base, "/sources", { set: [...mirror.docs] });
+    } catch (e) {
+      engine = null;
+      throw e;
+    }
+    return st;
+  });
+}
+
+/** Forward a source change; on failure the engine is dropped and runs come back here. */
+function engineForward(path: string, body: unknown): Promise<void> {
+  if (!engine) return Promise.resolve();
+  const base = engine;
+  return engineQueued(async () => {
+    if (engine !== base) return;
+    try {
+      await enginePost(base, path, body);
+    } catch (e) {
+      engineLost(e);
+    }
+  });
+}
+
+/** The engine, once every queued source change has reached it (null when not connected). */
+async function engineReady(): Promise<string | null> {
+  await engineQueue;
+  return engine;
+}
+
+function engineLost(e: unknown) {
+  engine = null;
+  (self as unknown as Worker).postMessage({ engine: { lost: String(e) } });
+}
 
 /**
  * The run being advanced in slices (live plotting, dashboards). Requests that arrive while
@@ -168,6 +265,8 @@ async function loadBundle(base: string, prefix: string): Promise<BundleInfo | nu
   progress({ phase: "unpack", done: 0, total: 1 });
   const data = JSON.parse(new TextDecoder().decode(await gunzip(bytes))) as { files: [string, string][] };
   const t2 = performance.now();
+  mirror.bundles.push({ prefix, files: data.files });
+  await engineForward(`/bundle?prefix=${encodeURIComponent(prefix)}`, { files: data.files });
   await ready;
   const w = ws!;
   let slice = performance.now();
@@ -196,6 +295,8 @@ self.onmessage = async (ev: MessageEvent<Req>) => {
   try {
     await ready;
     const w = ws!;
+    // Simulations and analyses see every source change sent before them.
+    if (engine && ENGINE_OPS.has(op)) await engineReady();
     let result: unknown;
     const transfer: Transferable[] = [];
     switch (op) {
@@ -206,7 +307,9 @@ self.onmessage = async (ev: MessageEvent<Req>) => {
           ideText.delete(uri);
           const e = JSON.parse(w.setDocument(uri, text)) as string[];
           if (e.length) errors[uri] = e;
+          mirror.docs.set(uri, text);
         }
+        await engineForward("/sources", { set: docs });
         result = errors;
         break;
       }
@@ -219,7 +322,16 @@ self.onmessage = async (ev: MessageEvent<Req>) => {
       case "removeDocument":
         ideText.delete(args[0] as string);
         w.removeDocument(args[0] as string);
+        mirror.docs.delete(args[0] as string);
+        await engineForward("/sources", { remove: [args[0]] });
         break;
+      case "engine": {
+        // Connect to the local engine at args[0], or disconnect (null).
+        const base = args[0] as string | null;
+        engine = null;
+        if (base) result = await engineConnect(base);
+        break;
+      }
       case "classTree":
         result = JSON.parse(w.classTree());
         break;
@@ -261,6 +373,15 @@ self.onmessage = async (ev: MessageEvent<Req>) => {
         break;
       case "simulate":
         live = null;
+        if (engine) {
+          try {
+            result = { ...(await engineCall<object>(engine, "main", "simulate", [args[0], args[1] ?? {}])), engine: true };
+            break;
+          } catch (e) {
+            // The engine went away (stopped, or the machine slept): run here instead.
+            engineLost(e);
+          }
+        }
         result = JSON.parse(w.simulate(args[0] as string, JSON.stringify(args[1] ?? {})));
         break;
       case "linearAnalysis":
@@ -292,6 +413,12 @@ self.onmessage = async (ev: MessageEvent<Req>) => {
         break;
       }
       case "values": {
+        if (engine) {
+          const r = await engineValues(engine, "main", args[0] as string[]);
+          transfer.push(r.time.buffer, ...r.cols.map((c) => c.buffer));
+          result = r;
+          break;
+        }
         const names = args[0] as string[];
         const time = w.time();
         const cols = names.map((n) => w.values(n));
@@ -300,7 +427,7 @@ self.onmessage = async (ev: MessageEvent<Req>) => {
         break;
       }
       case "resultMat": {
-        const b = w.resultMat();
+        const b = engine ? await engineBytes(engine, "main", "resultMat", []) : w.resultMat();
         transfer.push(b.buffer);
         result = b;
         break;
@@ -326,7 +453,7 @@ self.onmessage = async (ev: MessageEvent<Req>) => {
         result = JSON.parse(doeAnalyze(args[0] as string, JSON.stringify(args[1]), JSON.stringify(args[2]), JSON.stringify(args[3]), JSON.stringify(args[4])));
         break;
       case "resultCsv":
-        result = w.resultCsv(args[0] as string);
+        result = engine ? await engineCall(engine, "main", "resultCsv", [args[0]]) : w.resultCsv(args[0] as string);
         break;
       case "setResource":
         w.setResource(args[0] as string, new Uint8Array(args[1] as ArrayBuffer));
@@ -383,13 +510,15 @@ self.onmessage = async (ev: MessageEvent<Req>) => {
         result = JSON.parse(w.openPackage(args[0] as Uint8Array, args[1] as string));
         break;
       case "structure":
-        result = JSON.parse(w.structure(args[0] as string, JSON.stringify(args[1] ?? {})));
+        result = engine
+          ? await engineCall(engine, "main", "structure", [args[0], args[1] ?? {}])
+          : JSON.parse(w.structure(args[0] as string, JSON.stringify(args[1] ?? {})));
         break;
       case "debug":
         result = JSON.parse(w.debug(args[0] as string, JSON.stringify(args[1] ?? {})));
         break;
       case "profile":
-        result = JSON.parse(w.profile());
+        result = engine ? await engineCall(engine, "main", "profile", []) : JSON.parse(w.profile());
         break;
       case "editClass":
         result = JSON.parse(w.editClass(args[0] as string, JSON.stringify(args[1])));
@@ -407,24 +536,34 @@ self.onmessage = async (ev: MessageEvent<Req>) => {
         // Runs in slices so progress is posted and a cancel request is seen between them.
         const [model, kind, spec, settings] = args as [string, string, unknown, unknown];
         analysisCancelled = false;
-        const st = JSON.parse(w.analysisStart(model, kind, JSON.stringify(spec), JSON.stringify(settings ?? {})));
+        const eng = engine;
+        const A = {
+          start: async () =>
+            eng
+              ? await engineCall<{ ok: boolean; error?: string; done: number; total: number }>(eng, "main", "analysisStart", [model, kind, spec, settings ?? {}])
+              : JSON.parse(w.analysisStart(model, kind, JSON.stringify(spec), JSON.stringify(settings ?? {}))),
+          step: async (ms: number) => (eng ? await engineCall<{ error?: string; progress: [number, number]; done: boolean }>(eng, "main", "analysisStep", [ms]) : JSON.parse(w.analysisStep(ms))),
+          cancel: async () => (eng ? void (await engineCall(eng, "main", "analysisCancel", [])) : w.analysisCancel()),
+          result: async () => (eng ? await engineCall<unknown>(eng, "main", "analysisResult", []) : JSON.parse(w.analysisResult())),
+        };
+        const st = await A.start();
         if (!st.ok) throw new Error(st.error);
         const post = (done: number, total: number) => (self as unknown as Worker).postMessage({ analysis: { done, total } });
         post(st.done, st.total);
         let cancelled = false;
         for (;;) {
-          const r = JSON.parse(w.analysisStep(120));
+          const r = await A.step(120);
           if (r.error) throw new Error(r.error);
           post(r.progress[0], r.progress[1]);
           if (r.done) break;
           await new Promise((res) => setTimeout(res, 0));
           if (analysisCancelled) {
-            w.analysisCancel();
+            await A.cancel();
             cancelled = true;
             break;
           }
         }
-        result = cancelled ? { cancelled: true } : JSON.parse(w.analysisResult());
+        result = cancelled ? { cancelled: true } : await A.result();
         break;
       }
       case "analysisCancel":

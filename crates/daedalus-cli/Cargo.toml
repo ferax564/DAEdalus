@@ -7,7 +7,10 @@ license.workspace = true
 name = "daedalus"
 path = "src/main.rs"
 [dependencies]
-daedalus-core = { path = "../daedalus-core", features = ["fmu"] }
+daedalus-core = { path = "../daedalus-core", features = ["fmu", "jit"] }
+# The workbench's Workspace, run natively by the local engine (`daedalus serve`).
+daedalus-wasm = { path = "../daedalus-wasm" }
+tiny_http = "0.12"
 anyhow = { workspace = true }
 rumoca-ir-ast = { workspace = true }
 rumoca-core = { workspace = true }

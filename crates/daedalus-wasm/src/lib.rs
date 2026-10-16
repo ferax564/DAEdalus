@@ -20,13 +20,36 @@ extern "C" {
     fn perf_now() -> f64;
 }
 
+// Compiled tapes: the page instantiates each generated tape module against this module's
+// memory and function table (worker.ts); see `daedalus_core::jit`.
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(catch, js_namespace = globalThis, js_name = daedalusJitInstall)]
+    fn js_jit_install(bytes: &[u8]) -> Result<JsValue, JsValue>;
+    #[wasm_bindgen(catch, js_namespace = globalThis, js_name = daedalusJitRemove)]
+    fn js_jit_remove(slot: u32) -> Result<JsValue, JsValue>;
+}
+
+#[cfg(target_arch = "wasm32")]
+fn jit_install(bytes: &[u8]) -> Option<u32> {
+    js_jit_install(bytes).ok()?.as_f64().map(|v| v as u32)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn jit_remove(slot: u32) {
+    let _ = js_jit_remove(slot);
+}
+
 #[cfg(target_arch = "wasm32")]
 fn now_ms() -> f64 {
     perf_now()
 }
+/// Natively (the local engine, `daedalus serve`): milliseconds since the first call.
 #[cfg(not(target_arch = "wasm32"))]
 fn now_ms() -> f64 {
-    0.0
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    START.get_or_init(std::time::Instant::now).elapsed().as_secs_f64() * 1e3
 }
 
 #[wasm_bindgen]
@@ -46,10 +69,13 @@ pub struct Workspace {
     /// Translation reused by [`Workspace::simulate_run`] (sweeps): (model and state
     /// overrides, compiled).
     compiled: Option<(String, daedalus_core::codegen::Model)>,
+    /// Translation reused by [`Workspace::simulate`] when Simulate is pressed again with
+    /// only option or parameter changes: (model and state overrides, compiled, units).
+    sim_cache: Option<(String, daedalus_core::codegen::Model, UnitMap)>,
     /// Performance profile of the last simulation (JSON), when it was asked for.
     profile: Option<String>,
     /// The running analysis (see `analysis.rs`).
-    job: Option<Box<dyn daedalus_core::uq::Job>>,
+    job: Option<Box<dyn daedalus_core::uq::Job + Send>>,
     /// The model last translated for linear analysis (dropped when sources change).
     lin_model: Option<(String, daedalus_core::codegen::Model)>,
     /// The run being advanced in slices (live plotting, dashboards).
@@ -95,6 +121,8 @@ struct SimSummary<'a> {
     experiment: Option<serde_json::Value>,
     /// Display-unit choices keyed by "unit|displayUnit" (see `units::display_choices`).
     display: serde_json::Map<String, serde_json::Value>,
+    /// The translation of the previous Simulate was reused (`translate_ms` is then 0).
+    cached: bool,
 }
 
 #[derive(Serialize)]
@@ -119,8 +147,19 @@ impl Workspace {
     #[wasm_bindgen(constructor)]
     pub fn new() -> Workspace {
         #[cfg(target_arch = "wasm32")]
-        daedalus_core::profile::set_clock(|| perf_now() * 1e-3);
+        {
+            daedalus_core::profile::set_clock(|| perf_now() * 1e-3);
+            daedalus_core::jit::set_wasm_hooks(jit_install, jit_remove);
+        }
         Workspace::default()
+    }
+
+    /// Run the hot tapes of models translated from now on as compiled code (generated
+    /// WebAssembly here, machine code natively) instead of interpreting them. Results are
+    /// the same either way.
+    #[wasm_bindgen(js_name = setCompiledTapes)]
+    pub fn set_compiled_tapes(&mut self, on: bool) {
+        daedalus_core::jit::set_enabled(on);
     }
 
     /// Add or replace a source file; returns a JSON array of parse errors.
@@ -128,6 +167,7 @@ impl Workspace {
     pub fn set_document(&mut self, uri: &str, text: &str) -> String {
         self.ensured.clear();
         self.compiled = None;
+        self.sim_cache = None;
         self.lin_model = None;
         to_json(&self.lib.set_document(uri, text))
     }
@@ -137,6 +177,7 @@ impl Workspace {
         self.ensured.clear();
         self.ide.forget(uri);
         self.compiled = None;
+        self.sim_cache = None;
         self.lin_model = None;
         self.lib.remove_document(uri);
     }
@@ -149,6 +190,7 @@ impl Workspace {
     pub fn add_library_file(&mut self, prefix: &str, rel: &str, text: &str) {
         self.ensured.clear();
         self.compiled = None;
+        self.sim_cache = None;
         self.lin_model = None;
         if let Some(dir) = rel.strip_suffix("package.order") {
             let class = lazy::class_for_path(&format!("{dir}package.mo"));
@@ -173,6 +215,7 @@ impl Workspace {
     pub fn load_all(&mut self) {
         self.ensured.clear();
         self.compiled = None;
+        self.sim_cache = None;
         self.lin_model = None;
         self.lib.load_all();
     }
@@ -265,7 +308,11 @@ impl Workspace {
         let load_ms = self.ensure(model, Some(true));
         let t0 = now_ms();
         let bopts = backend_options(options);
-        let compiled = compile_with_units(&self.lib, model, &bopts);
+        let key = translation_key(model, &bopts);
+        let (compiled, cached) = match self.sim_cache.take() {
+            Some((k, m, u)) if k == key => (Ok((m, u)), true),
+            _ => (compile_with_units(&self.lib, model, &bopts), false),
+        };
         let (m, units) = match compiled {
             Ok(m) => m,
             Err(e) => {
@@ -307,7 +354,7 @@ impl Workspace {
         };
         self.results = Some(res);
         let r = self.results.as_ref().unwrap();
-        summary_json(
+        let json = summary_json(
             &m,
             r,
             model,
@@ -317,7 +364,10 @@ impl Workspace {
             stats,
             experiment,
             &units,
-        )
+            cached,
+        );
+        self.sim_cache = Some((key, m, units));
+        json
     }
 
     /// JSON performance profile and event log of the last simulation (`null` unless it
@@ -558,6 +608,7 @@ fn summary_json(
     stats: Option<daedalus_core::sim::SimStats>,
     experiment: Option<serde_json::Value>,
     units: &UnitMap,
+    cached: bool,
 ) -> String {
     let free: std::collections::HashSet<&str> = m
         .free_params
@@ -613,6 +664,7 @@ fn summary_json(
         model_stats: Some(m.stats.clone()),
         experiment,
         display,
+        cached,
     })
 }
 
@@ -780,6 +832,7 @@ impl Workspace {
             Some(stats),
             experiment,
             &run.units,
+            false,
         );
         self.results = Some(res);
         json
@@ -833,6 +886,11 @@ impl Workspace {
     }
 }
 
+/// Cache key of a translation: the model and the options that change its structure.
+fn translation_key(model: &str, bopts: &daedalus_core::backend::Options) -> String {
+    format!("{model}\0{:?}", bopts.state_overrides)
+}
+
 /// Backend options from a JSON options object: `"stateOverrides": [[name, tier], ...]`.
 fn backend_options(options: &str) -> daedalus_core::backend::Options {
     use daedalus_core::backend::state_select::{StateOverride, parse_tier};
@@ -868,7 +926,7 @@ impl Workspace {
         let mut cached = true;
         // State-selection overrides change the translation, so they are part of the key.
         let bopts = backend_options(options);
-        let key = format!("{model}\0{:?}", bopts.state_overrides);
+        let key = translation_key(model, &bopts);
         if self.compiled.as_ref().is_none_or(|(n, _)| *n != key) {
             cached = false;
             match daedalus_core::translate(&self.lib, model, &bopts) {
@@ -1388,6 +1446,8 @@ impl Workspace {
         if self.ide.set_text(&mut self.lib, uri, text) {
             self.ensured.clear();
             self.compiled = None;
+            self.sim_cache = None;
+        self.sim_cache = None;
             // parse the library classes the document names, so that they resolve
             if self.lib.has_pending()
                 && !registered

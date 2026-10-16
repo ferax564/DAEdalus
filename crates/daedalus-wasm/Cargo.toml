@@ -9,7 +9,7 @@ description = "WebAssembly bindings: load sources, inspect classes, translate an
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-daedalus-core = { path = "../daedalus-core" }
+daedalus-core = { path = "../daedalus-core", features = ["jit"] }
 wasm-bindgen = "=0.2.129"
 serde = { workspace = true }
 anyhow = { workspace = true }
