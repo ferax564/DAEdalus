@@ -48,8 +48,8 @@ Each archive holds the `daedalus` CLI, the FMI runtime it bundles into FMUs, and
 the `library/Daedalus` example library:
 
 ```sh
-tar xzf daedalus-v0.1.0-x86_64-unknown-linux-gnu.tar.gz
-cd daedalus-v0.1.0-x86_64-unknown-linux-gnu
+tar xzf daedalus-v0.2.0-x86_64-unknown-linux-gnu.tar.gz
+cd daedalus-v0.2.0-x86_64-unknown-linux-gnu
 ./daedalus simulate library/Daedalus -m Daedalus.Examples.LandingGear.SinkRates -o sink.mat
 ```
 
@@ -59,7 +59,7 @@ The release also carries the `daedalus-casadi` Python wheel
 (`pip install daedalus_casadi-*.whl`). It drives the CLI, so put the extracted
 folder on `PATH` (or set `DAEDALUS_BIN` to the executable); it then finds the
 `library/Daedalus` shipped next to it, or `DAEDALUS_LIB` if set. Maintainers cut a release by pushing a
-tag that matches the workspace version, for example `git tag v0.1.0 && git push origin v0.1.0`.
+tag that matches the workspace version, for example `git tag v0.2.0 && git push origin v0.2.0`.
 
 ## Quick start
 
