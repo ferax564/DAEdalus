@@ -6,10 +6,13 @@
 #   - on an emulated ESP32 in Espressif's QEMU,
 # each in closed loop with MotorBench simulated by DAEdalus, and every run is
 # compared with the all-Modelica loop (ClosedLoop). The continuous PI (SpeedPI)
-# runs on the host and the Uno too, with RK4 at 1 ms.
+# runs on the host and the Uno too, with RK4 at 1 ms. The "arduino" target builds the
+# generated Arduino sketch with arduino-cli (Arduino core, Serial, micros()) for the Uno
+# and runs it in simavr too; with the esp32:esp32 core installed it also checks that the
+# sketch builds for an ESP32 board.
 #
-# usage: tools/embedded/pil_test.sh [host] [avr] [esp32]     (default: all)
-# env:   DAEDALUS (CLI binary), OUT (work directory)
+# usage: tools/embedded/pil_test.sh [host] [avr] [esp32] [arduino]   (default: host avr esp32)
+# env:   DAEDALUS (CLI binary), OUT (work directory), ARDUINO_CLI
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 D=${DAEDALUS:-$PWD/target/release/daedalus}
@@ -82,6 +85,18 @@ for t in $TARGETS; do
     done
     row "discrete PID, float" "ESP32 (QEMU)" "$OUT/esp32_pid.csv" "$OUT/mil_pid.csv" pid.u bench.y 1e-5
     row "discrete PID, double" "ESP32 (QEMU)" "$OUT/esp32_pidd.csv" "$OUT/mil_pid.csv" pid.u bench.y 1e-6
+    ;;
+  arduino)
+    echo "== processor in the loop: Arduino sketch on an Uno (arduino-cli, simavr)"
+    AC=${ARDUINO_CLI:-arduino-cli}
+    [ -x "$OUT/simavr_bridge" ] || cc -O2 -o "$OUT/simavr_bridge" tools/embedded/simavr_bridge.c -lsimavr -lelf
+    "$AC" compile --fqbn arduino:avr:uno --output-dir "$OUT/pid/ard_uno" "$OUT/pid/hil/arduino/pid_hil"
+    hil "$OUT/pid" pid "$OUT/ard_uno_pid.csv" "$OUT/simavr_bridge" "$OUT/pid/ard_uno/pid_hil.ino.elf"
+    row "discrete PID, float, Arduino core" "Uno sketch (simavr)" "$OUT/ard_uno_pid.csv" "$OUT/mil_pid.csv" pid.u bench.y 1e-5
+    if "$AC" core list 2>/dev/null | grep -q '^esp32:esp32'; then
+      "$AC" compile --fqbn esp32:esp32:esp32 --output-dir "$OUT/pid/ard_esp32" "$OUT/pid/hil/arduino/pid_hil"
+      echo "| discrete PID, float, Arduino core | ESP32 sketch | builds (run it on a board) | | |" >> "$SUMMARY"
+    fi
     ;;
   *) echo "unknown target $t"; exit 2 ;;
   esac

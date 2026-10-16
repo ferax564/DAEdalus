@@ -63,7 +63,9 @@ elimination) translates in 2.5 s and simulates for one second in 3.9 s. See
 - [What's new](whats-new.md): the features added most recently.
 - [Example library](examples.md): every bundled example, with its results.
 - [Command line](cli.md): every `daedalus` command and option.
-- [Python API](python.md): scripting DAEdalus from Python and Jupyter.
+- [Python API](python.md): scripting DAEdalus from Python and Jupyter, and
+  [scientific machine learning](sciml.md) on top of it.
+- [Embedded C and processor in the loop](embedded.md): controllers on Arduino and ESP32.
 - [Structure and state selection](structure.md) and [Sensitivity and calibration](analysis.md):
   understanding a model and its parameters.
 
