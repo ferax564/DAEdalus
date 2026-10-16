@@ -1890,6 +1890,30 @@ impl<'m> Simulation<'m> {
             if after_event && ga.abs() <= self.hysteresis(i) {
                 return tb; // still inside the hysteresis band right after an event
             }
+            if after_event {
+                // The event just handled here kept the relation's value although it is
+                // (barely) past its switching point: the event equations put the system
+                // on that point (a valve opening at zero flow). Handling the same instant
+                // again would change nothing; the next event is where the crossing has
+                // clearly progressed, |g| ten times larger.
+                let target = (10.0 * ga.abs()).max(1e3 * self.hysteresis(i));
+                if !(gb.abs() > target) {
+                    return tb;
+                }
+                for _ in 0..100 {
+                    if b - a <= 1e-13 * b.abs().max(1.0) {
+                        break;
+                    }
+                    let c = 0.5 * (a + b);
+                    let (gc, _) = eval(self, c);
+                    if gc.abs() >= target {
+                        b = c;
+                    } else {
+                        a = c;
+                    }
+                }
+                return b;
+            }
             // Already crossed at the start: right after an event, or a step that ended
             // just past the switching point (a sample instant hit exactly).
             return ta;
