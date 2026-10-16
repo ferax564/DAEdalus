@@ -151,8 +151,22 @@ def test_vars_selection(stall):
 
 
 def test_bad_method(ball):
-    with pytest.raises(ValueError, match="unknown method"):
+    with pytest.raises(ValueError, match="unknown method") as e:
         ball.simulate(method="magic")
+    msg = str(e.value)
+    for name in ("bdf", "dopri5", "rk4", "euler", "radau", "esdirk", "auto"):
+        assert name in msg
+
+
+@pytest.mark.parametrize("method", ["radau", "esdirk", "auto"])
+def test_solver_method(method, tmp_path):
+    src = tmp_path / "decay.mo"
+    src.write_text(
+        "model Decay\n  Real x(start=1, fixed=true);\n"
+        "equation\n  der(x) = -x;\nend Decay;\n"
+    )
+    r = daedalus.Model(src, "Decay").simulate(stop=0.5, method=method, n=20)
+    assert r.final("x") == pytest.approx(math.exp(-0.5), rel=1e-3, abs=1e-3)
 
 
 def test_unknown_parameter_override(ball):
@@ -281,6 +295,32 @@ def test_export_fmu(tmp_path):
     fmpy = pytest.importorskip("fmpy")
     res = fmpy.simulate_fmu(str(out), stop_time=0.3, output=["h"])
     assert res["h"][-1] == pytest.approx(1 - 9.81 / 2 * 0.3**2, abs=1e-3)
+
+
+def test_export_fmu_fmi3(tmp_path):
+    rt = _fmi_runtime()
+    if rt is None:
+        pytest.skip("FMI runtime not built (cargo build --release -p daedalus-fmi)")
+    m = daedalus.Model(MODELS / "events.mo", "E.Ball")
+    out = m.export_fmu(tmp_path / "Ball3.fmu", fmi_lib=rt, fmi_version=3)
+    with zipfile.ZipFile(out) as z:
+        xml = z.read("modelDescription.xml").decode()
+    assert 'fmiVersion="3.0"' in xml
+
+
+def test_steady_and_linear_analysis(tmp_path):
+    src = tmp_path / "s.mo"
+    src.write_text(
+        "model S\n  input Real u;\n  output Real y;\n  Real x(start=1, fixed=true);\n"
+        "equation\n  der(x) = -x + u;\n  y = x;\nend S;\n"
+    )
+    m = daedalus.Model(src, "S")
+    st = m.steady()
+    assert st["states"][0]["name"] == "x"
+    assert st["states"][0]["value"] == pytest.approx(0.0, abs=1e-8)
+    la = m.linear_analysis()
+    assert la["stable"] is True
+    assert "x" in la["states"]
 
 
 def test_export_fmu_missing_runtime(tmp_path, monkeypatch):

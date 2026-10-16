@@ -11,6 +11,7 @@ daedalus-core = { path = "../daedalus-core", features = ["fmu", "jit"] }
 # The workbench's Workspace, run natively by the local engine (`daedalus serve`).
 daedalus-wasm = { path = "../daedalus-wasm" }
 tiny_http = "0.12"
+getrandom = "0.3"
 anyhow = { workspace = true }
 rumoca-ir-ast = { workspace = true }
 rumoca-core = { workspace = true }

@@ -126,5 +126,7 @@ pub fn write_fmu_version(
     z.start_file("resources/model.bin", opts)?;
     z.write_all(&bundle)?;
     z.finish()?.flush()?;
+    // Same process may import the FMU it just wrote without --allow-fmu-code.
+    crate::fmu_import::note_produced_fmu(out);
     Ok(desc)
 }

@@ -159,7 +159,7 @@ fn sim_options(
     }
     if let Some(s) = method {
         o.method = Method::parse(s).ok_or_else(|| {
-            PyValueError::new_err(format!("unknown method '{s}' (bdf | dopri5 | rk4 | euler)"))
+            PyValueError::new_err(format!("unknown method '{s}' ({})", Method::names()))
         })?;
     }
     match (interval, n) {
@@ -468,16 +468,22 @@ impl CompiledModel {
         let (der, vals) = py
             .detach(|| daedalus_core::sim::eval_rhs(m, &params, &t, &states, &inputs, &read))
             .map_err(SimulationError::new_err)?;
-        Ok((matrix(py, &der, m.states.len()), matrix(py, &vals, read.len())))
+        Ok((
+            matrix(py, &der, m.states.len()),
+            matrix(py, &vals, read.len()),
+        ))
     }
 
-    /// Write an FMI 2.0 FMU (Model Exchange and Co-Simulation) to `path`, embedding the
-    /// FMI runtime library at `runtime`. Returns a summary dict.
+    /// Write an FMI 2.0 or 3.0 FMU (Model Exchange and Co-Simulation) to `path`, embedding
+    /// the FMI runtime library at `runtime`. `fmi_version` is 2 (default) or 3. Returns a
+    /// summary dict.
+    #[pyo3(signature = (path, runtime, fmi_version=2))]
     fn export_fmu<'py>(
         &self,
         py: Python<'py>,
         path: std::path::PathBuf,
         runtime: std::path::PathBuf,
+        fmi_version: u32,
     ) -> PyResult<Bound<'py, PyDict>> {
         let bytes = std::fs::read(&runtime).map_err(|e| {
             PyValueError::new_err(format!("FMI runtime {}: {e}", runtime.display()))
@@ -485,11 +491,12 @@ impl CompiledModel {
         let m = &self.model;
         let desc = py
             .detach(|| {
-                daedalus_core::fmu::write_fmu(
+                daedalus_core::fmu::write_fmu_version(
                     m,
                     &path,
                     &bytes,
                     &format!("DAEdalus {} (Python)", env!("CARGO_PKG_VERSION")),
+                    fmi_version,
                 )
             })
             .map_err(|e| DaedalusError::new_err(format!("{e:#}")))?;
@@ -509,7 +516,114 @@ impl CompiledModel {
                 .count(),
         )?;
         d.set_item("outputs", desc.outputs.len())?;
+        d.set_item("fmi_version", fmi_version)?;
         Ok(d)
+    }
+
+    /// Steady state (`der(x) = 0`) as a JSON object. `targets` are `(name, value)` pairs,
+    /// one per name in `free` when trimming.
+    #[pyo3(signature = (at=None, free=Vec::new(), targets=Vec::new(), tol=None, method=None, params=Vec::new()))]
+    #[allow(clippy::too_many_arguments)]
+    fn steady<'py>(
+        &self,
+        py: Python<'py>,
+        at: Option<f64>,
+        free: Vec<String>,
+        targets: Vec<(String, f64)>,
+        tol: Option<f64>,
+        method: Option<String>,
+        params: Vec<(String, f64)>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let o = sim_options(
+            &self.model,
+            None,
+            None,
+            None,
+            None,
+            tol,
+            method.as_deref(),
+            None,
+            params,
+            None,
+            None,
+        )?;
+        let sopts = daedalus_core::steady::SteadyOptions {
+            at_time: at,
+            free,
+            targets,
+            ..Default::default()
+        };
+        let m = &self.model;
+        let st = py
+            .detach(|| daedalus_core::steady::steady_state(m, o, &sopts))
+            .map_err(SimulationError::new_err)?;
+        to_py(py, &st)
+    }
+
+    /// Linearize and analyze (poles, zeros, margins, and optionally Bode, step
+    /// responses, reduction and LQR). Returns the core's JSON object. `lqr` is `(q, r)`.
+    #[pyo3(signature = (at=None, inputs=Vec::new(), outputs=Vec::new(), tol=None, method=None,
+                        params=Vec::new(), bode=false, step=false, reduce=None, lqr=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn linear_analysis<'py>(
+        &self,
+        py: Python<'py>,
+        at: Option<f64>,
+        inputs: Vec<String>,
+        outputs: Vec<String>,
+        tol: Option<f64>,
+        method: Option<String>,
+        params: Vec<(String, f64)>,
+        bode: bool,
+        step: bool,
+        reduce: Option<usize>,
+        lqr: Option<(f64, f64)>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let o = sim_options(
+            &self.model,
+            None,
+            None,
+            None,
+            None,
+            tol,
+            method.as_deref(),
+            None,
+            params,
+            None,
+            None,
+        )?;
+        let lo = daedalus_core::lti::LinearOptions {
+            inputs,
+            outputs,
+            bode,
+            step,
+            reduce,
+            lqr,
+            ..Default::default()
+        };
+        let m = &self.model;
+        let outs = lo.outputs.clone();
+        let res = py
+            .detach(|| {
+                daedalus_core::linearize::linearize_with_outputs(
+                    m,
+                    o,
+                    at,
+                    JacobianMethod::Exact,
+                    &outs,
+                )
+                .and_then(|lin| {
+                    if lin.inputs.is_empty() {
+                        return Err(format!(
+                            "{} has no top-level Real inputs: linear analysis needs `input Real` variables",
+                            m.name
+                        ));
+                    }
+                    daedalus_core::lti::analyze(&lin, &lo)
+                })
+            })
+            .map_err(SimulationError::new_err)?;
+        to_py(py, &res)
     }
 }
 
@@ -612,6 +726,12 @@ impl SimResult {
     }
 }
 
+/// Solver names `Model.simulate(method=...)` accepts, from `Method::name()`.
+#[pyfunction]
+fn method_names() -> String {
+    Method::names()
+}
+
 /// Read a Dymola/DAEdalus `.mat` result file.
 #[pyfunction]
 fn read_mat(path: std::path::PathBuf) -> PyResult<SimResult> {
@@ -630,5 +750,6 @@ fn _daedalus(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<CompiledModel>()?;
     m.add_class::<SimResult>()?;
     m.add_function(wrap_pyfunction!(read_mat, m)?)?;
+    m.add_function(wrap_pyfunction!(method_names, m)?)?;
     Ok(())
 }

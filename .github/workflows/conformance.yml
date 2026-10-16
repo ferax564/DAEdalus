@@ -1,11 +1,15 @@
 name: MSL conformance
 
-# Simulates every MSL 4.1.0 example and compares the comparison signals against the
-# Modelica Association reference results (Dymola-generated). Fails when a model
-# that passes in the committed baseline (docs/conformance/msl-4.1.0.json) no longer
-# passes. Runs nightly and on demand; it is too slow for every pull request.
+# Simulates MSL 4.1.0 examples and compares the comparison signals against the
+# Modelica Association reference results (Dymola-generated). The full sweep of
+# 534 examples is nightly: it fails when `pass` falls below the committed
+# summary in docs/conformance/msl-4.1.0.json. Pull requests run the models the
+# diff names plus the current failures (errors, timeouts and differs), which
+# is small enough to gate a merge. Both runs fail if a model that passes in
+# the baseline no longer does.
 
 on:
+  pull_request:
   schedule:
     - cron: "0 2 * * *"
   workflow_dispatch:
@@ -20,6 +24,8 @@ jobs:
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
+      - name: Roadmap matches the committed baseline
+        run: python3 tools/roadmap_failures.py --check
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Build CLI
@@ -30,12 +36,30 @@ jobs:
           git clone -q --depth 1 --branch v4.1.0 --filter=blob:none --sparse \
             https://github.com/modelica/MAP-LIB_ReferenceResults /tmp/ref
           git -C /tmp/ref sparse-checkout set Modelica
+      - name: Models for this run
+        id: scope
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            # The checkout is one commit deep. Fetch the base tip into FETCH_HEAD
+            # (an explicit refspec does not update origin/<base>) and diff the two
+            # trees. A three-dot diff needs a merge base, which this shallow
+            # history does not have.
+            git fetch --depth=1 origin "${{ github.base_ref }}"
+            python3 tools/conformance_smoke.py FETCH_HEAD smoke-models.txt
+            echo "args=--models smoke-models.txt" >> "$GITHUB_OUTPUT"
+            echo "mode=smoke" >> "$GITHUB_OUTPUT"
+          else
+            pass=$(python3 -c "import json; print(json.load(open('docs/conformance/msl-4.1.0.json'))['summary']['pass'])")
+            echo "args=--min-pass ${pass}" >> "$GITHUB_OUTPUT"
+            echo "mode=full" >> "$GITHUB_OUTPUT"
+          fi
       - name: Compare
         run: |
           python3 tools/refcompare.py --daedalus target/release/daedalus \
             --msl /tmp/msl --ref /tmp/ref --jobs 4 --timeout 120 \
             --json conformance.json --markdown conformance.md \
-            --baseline docs/conformance/msl-4.1.0.json
+            --baseline docs/conformance/msl-4.1.0.json \
+            ${{ steps.scope.outputs.args }}
       - name: Summary
         if: always()
         run: test -f conformance.md && cat conformance.md >> "$GITHUB_STEP_SUMMARY" || true
@@ -46,3 +70,4 @@ jobs:
           path: |
             conformance.json
             conformance.md
+            smoke-models.txt

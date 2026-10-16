@@ -861,7 +861,7 @@ export class DiagramEditor {
           <td class="d">${esc(p.description)}</td></tr>`,
       )
       .join("");
-    back.innerHTML = `<form class="box" role="dialog" aria-label="Parameters of ${esc(comp.name)}">
+    back.innerHTML = `<form class="box" role="dialog" aria-modal="true" aria-label="Parameters of ${esc(comp.name)}">
         <h3>${esc(comp.type_name.split(".").pop()!)} <span class="muted">${esc(comp.type_path)}</span></h3>
         <label class="name">Name <input data-name value="${esc(comp.name)}" /></label>
         <p class="muted">${esc(comp.description)}</p>
@@ -869,13 +869,35 @@ export class DiagramEditor {
         <p class="muted small">Empty fields keep the default shown in grey. Values are written as modifiers into the model.</p>
         <div class="actions"><button type="button" data-cancel>Cancel</button><button type="submit" class="primary">OK</button></div>
       </form>`;
+    const restore = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     document.body.appendChild(back);
     const form = back.querySelector("form")!;
-    back.querySelector<HTMLInputElement>("input[data-param]")?.focus();
-    const close = () => back.remove();
+    const focusable = () =>
+      [...form.querySelectorAll<HTMLElement>("input, button, select, textarea, a[href]")].filter((el) => !el.hasAttribute("disabled"));
+    (form.querySelector<HTMLInputElement>("input[data-param], input[data-name]") ?? form).focus();
+    const close = () => {
+      back.remove();
+      restore?.focus();
+    };
     back.querySelector<HTMLButtonElement>("[data-cancel]")!.onclick = close;
     back.addEventListener("keydown", (e) => {
-      if (e.key === "Escape") close();
+      if (e.key === "Escape") {
+        e.preventDefault();
+        close();
+        return;
+      }
+      if (e.key !== "Tab") return;
+      const els = focusable();
+      if (!els.length) return;
+      const first = els[0];
+      const last = els[els.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
     });
     form.onsubmit = (e) => {
       e.preventDefault();

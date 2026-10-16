@@ -31,12 +31,34 @@ function safeUrl(u: string, img: boolean): boolean {
   return !m || ["http", "https", "mailto", "modelica"].includes(m[1]);
 }
 
-/** Inline styles without `url(...)`, `expression(...)` or positioning that escapes the view. */
-function safeStyle(s: string): string {
+/** Properties a documentation style may set. Anything else is dropped: the sanitizer
+ * only keeps a declaration it can explain as one of these with a plain value. */
+const STYLE_PROPS = new Set(
+  "color background background-color font-size font-weight font-style font-family text-align text-decoration margin margin-top margin-right margin-bottom margin-left padding padding-top padding-right padding-bottom padding-left border border-color border-width border-style width height vertical-align white-space line-height".split(" "),
+);
+
+/** One declaration, or null when it contains a backslash escape or is not explainable. */
+function explainStyle(decl: string): string | null {
+  if (decl.includes("\\")) return null;
+  const m = /^\s*([a-zA-Z-]+)\s*:\s*(.*?)\s*$/.exec(decl);
+  if (!m || !STYLE_PROPS.has(m[1].toLowerCase())) return null;
+  const val = m[2];
+  if (!val || /url\s*\(|expression|javascript:|@import|behavior|\/\*|-moz-binding/i.test(val)) return null;
+  if (/position\s*:/i.test(decl) && /fixed|absolute/i.test(val)) return null;
+  // Parentheses only for rgb()/rgba()/hsl() with numeric arguments. A hex escape
+  // such as `\75 rl(...)` never reaches here: the backslash already rejected it.
+  if (/[()]/.test(val) && !/^(rgb|rgba|hsl|hsla)\(\s*[\d.%\s,/+-]+\)$/i.test(val)) return null;
+  return `${m[1].toLowerCase()}: ${val}`;
+}
+
+/** Inline styles: no `url(...)`, no backslash escapes, no declaration we cannot explain. */
+export function safeStyle(s: string): string {
+  if (s.includes("\\")) return "";
   return s
     .split(";")
-    .filter((d) => d.trim() && !/url\s*\(|expression|javascript:|@import|position\s*:\s*(fixed|absolute)|behavior/i.test(d))
-    .join(";");
+    .map((d) => explainStyle(d))
+    .filter((d): d is string => !!d)
+    .join("; ");
 }
 
 /**

@@ -34,7 +34,7 @@ moves it and `DAEDALUS_NO_CACHE` turns it off).
 | `export-casadi` | Write the index-reduced DAE as JSON for CasADi. See [Optimal control](optimal-control.md). |
 | `lib`, `package`, `diff`, `params-from` | Install libraries, pack a model as a zip, compare classes, and turn parameter data into modifiers. See [Libraries and packages](libraries.md). |
 | `mcp` | Serve the libraries to an AI assistant over the Model Context Protocol. See [AI assistant and MCP](assistant.md). |
-| `serve` | Run the local engine for the browser workbench: its simulations run natively on this computer. See [Workbench](workbench.md#speed-compiled-tapes-and-the-local-engine). |
+| `serve` | Run the local engine for the browser workbench. Prints a one-time bearer token; requests must send `Authorization: Bearer`. See [Workbench](workbench.md#speed-compiled-tapes-and-the-local-engine). |
 | `run` | Run a Dymola or OpenModelica script (`.mos`). See [Scripts and steady states](scripting.md). |
 | `test-library` | Translate and simulate every model with an `experiment` annotation in a package, each in its own process with a time limit, and print a report. |
 
@@ -161,6 +161,7 @@ job runs the MSL examples against their reference results (see
 | `--events` | `simulate`: print the event log |
 | `-s NAME=VALUES`, `--grouped`, `--stats S` | `sweep`: swept parameter, grouped instead of grid, summary columns |
 | `--fmi-version 3` | `fmu`: write an FMI 3.0 FMU |
+| `--allow-fmu-code` | Load an FMU's native binary. Refused otherwise, unless this process just wrote that FMU |
 | `--fmi-type me\|cs`, `--comm-step H` | Simulating an FMU or SSP: interface and communication step |
 | `--units` | `check`: also print unit issues as warnings |
 | `--var NAME`, `--equation N`, `--init` | `debug`: what to explain |

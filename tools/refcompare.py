@@ -16,6 +16,7 @@ Usage:
   tools/refcompare.py --daedalus target/release/daedalus --msl MSL_DIR \
       --ref REF_DIR [--filter Modelica.Blocks] [--jobs 4] [--timeout 120] \
       [--json out.json] [--markdown out.md] [--baseline baseline.json] \
+      [--models FILE] [--min-pass N] \
       [--root ModelicaTest]
 
 MSL_DIR is a checkout of ModelicaStandardLibrary (with Modelica/,
@@ -24,7 +25,10 @@ at the matching tag. --root selects the top-level package whose examples are
 compared (default: the first part of --filter, else Modelica); with ModelicaTest,
 MSL_DIR/ModelicaTest is loaded as well and the models under REF_DIR/ModelicaTest
 are listed. With --baseline, the exit status is non-zero when a model
-that passed in the baseline no longer passes.
+that passed in the baseline no longer passes. --models limits the run to
+those names (one per line, or comma-separated). --min-pass N fails when
+fewer than N models pass; the nightly full sweep passes the committed
+summary's pass count.
 
 The JSON file holds {meta, summary, results}. meta records where the numbers
 came from (generated_at, commit, msl_version, tolerance); files written before
@@ -261,6 +265,8 @@ def main():
     ap.add_argument("--json")
     ap.add_argument("--markdown")
     ap.add_argument("--baseline")
+    ap.add_argument("--models", help="file of model names to run (one per line, or commas) instead of every example")
+    ap.add_argument("--min-pass", type=int, default=None, help="fail if fewer than this many models pass")
     ap.add_argument("--msl-version", help="recorded in the JSON (default: read from MSL_DIR/Modelica/package.mo)")
     args = ap.parse_args()
     meta = {
@@ -280,6 +286,16 @@ def main():
     if args.filter is None:
         args.filter = args.root
     models = list_models(args.ref, args.filter, args.root)
+    if args.models:
+        text = open(args.models, encoding="utf-8").read()
+        wanted = [p.strip() for p in text.replace(",", "\n").splitlines() if p.strip() and not p.strip().startswith("#")]
+        known = set(models)
+        missing = [m for m in wanted if m not in known]
+        if missing:
+            print(f"{len(missing)} --models entries are not in the reference set", file=sys.stderr)
+            for m in missing[:20]:
+                print(f"  {m}", file=sys.stderr)
+        models = [m for m in wanted if m in known]
     results = []
     with cf.ThreadPoolExecutor(args.jobs) as ex:
         futs = {ex.submit(run_one, args, m): m for m in models}
@@ -301,6 +317,7 @@ def main():
             json.dump({"meta": meta, "summary": summary, "results": results}, f, indent=1)
     if args.markdown:
         write_markdown(args.markdown, summary, results)
+    failed = False
     if args.baseline:
         with open(args.baseline) as f:
             # Only "results" is read, so baselines written before "meta" still work.
@@ -311,7 +328,15 @@ def main():
             print("Models that passed in the baseline and no longer do:", file=sys.stderr)
             for m in lost:
                 print(f"  {m}: {now[m]}", file=sys.stderr)
-            sys.exit(1)
+            failed = True
+    if args.min_pass is not None and summary.get("pass", 0) < args.min_pass:
+        print(
+            f"pass count {summary.get('pass', 0)} is below the committed summary ({args.min_pass})",
+            file=sys.stderr,
+        )
+        failed = True
+    if failed:
+        sys.exit(1)
 
 
 def write_markdown(path, summary, results):

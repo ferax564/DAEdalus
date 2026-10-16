@@ -9,10 +9,10 @@
   <body>
     <header id="topbar">
       <div class="brand"><span class="logo">Δ</span><span class="brand-name"> DAEdalus</span></div>
-      <nav class="modes">
-        <button data-mode="modeling" class="active">Modeling</button>
-        <button data-mode="simulation">Simulation</button>
-        <button data-mode="analysis">Analysis</button>
+      <nav class="modes" role="tablist" aria-label="Mode">
+        <button data-mode="modeling" class="active" role="tab" aria-selected="true">Modeling</button>
+        <button data-mode="simulation" role="tab" aria-selected="false">Simulation</button>
+        <button data-mode="analysis" role="tab" aria-selected="false">Analysis</button>
       </nav>
       <div class="tools">
         <!-- Less-used controls: on phones they open from the More menu (see styles.css). -->
@@ -47,12 +47,20 @@
     <main id="app">
       <aside id="left">
         <section id="browser-pane" class="pane">
-          <div class="pane-title">Packages <input id="filter" type="search" placeholder="Filter" /></div>
-          <div id="lib-progress" class="lib-progress hidden" role="progressbar"><div class="track"><div class="fill"></div></div><div class="label"></div></div>
+          <div class="pane-title">
+            <button type="button" class="pane-toggle" aria-controls="browser" aria-expanded="true">Packages</button>
+            <label class="sr-only" for="filter">Filter packages</label>
+            <input id="filter" type="search" placeholder="Filter" />
+          </div>
+          <div id="lib-progress" class="lib-progress hidden" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="track"><div class="fill"></div></div><div class="label"></div></div>
           <div id="browser" class="tree"></div>
         </section>
         <section id="vars-pane" class="pane hidden">
-          <div class="pane-title">Variables <input id="var-filter" type="search" placeholder="Filter" /></div>
+          <div class="pane-title">
+            <button type="button" class="pane-toggle" aria-controls="variables" aria-expanded="true">Variables</button>
+            <label class="sr-only" for="var-filter">Filter variables</label>
+            <input id="var-filter" type="search" placeholder="Filter" />
+          </div>
           <div id="variables" class="tree"></div>
         </section>
       </aside>
@@ -64,14 +72,16 @@
               <button id="nav-fwd" title="Forward (Alt+→)" aria-label="Forward" disabled>›</button>
             </span>
             <span id="model-title" class="model-title">No class open</span>
-            <button data-view="icon">Icon</button>
-            <button data-view="diagram" class="active">Diagram</button>
-            <button data-view="text" title="Modelica text. F12 or Ctrl/Cmd-click: go to definition · Shift+F12: find usages · F2: rename · Ctrl+Space: complete · Ctrl+Shift+O: outline">Text</button>
-            <button data-view="doc">Documentation</button>
-            <button data-view="flat">Flat model</button>
-            <button data-view="structure" title="BLT blocks, incidence, state selection and the state Jacobian">Structure</button>
-            <button data-view="linear" title="Linear analysis: Bode, poles and zeros, step response, model reduction, LQR and PID tuning">Linear</button>
-            <button data-view="diff" title="Differences from the version as loaded, or from a file">Diff</button>
+            <span class="view-tablist" role="tablist" aria-label="Class view">
+            <button data-view="icon" role="tab" aria-selected="false">Icon</button>
+            <button data-view="diagram" class="active" role="tab" aria-selected="true">Diagram</button>
+            <button data-view="text" role="tab" aria-selected="false" title="Modelica text. F12 or Ctrl/Cmd-click: go to definition · Shift+F12: find usages · F2: rename · Ctrl+Space: complete · Ctrl+Shift+O: outline">Text</button>
+            <button data-view="doc" role="tab" aria-selected="false">Documentation</button>
+            <button data-view="flat" role="tab" aria-selected="false">Flat model</button>
+            <button data-view="structure" role="tab" aria-selected="false" title="BLT blocks, incidence, state selection and the state Jacobian">Structure</button>
+            <button data-view="linear" role="tab" aria-selected="false" title="Linear analysis: Bode, poles and zeros, step response, model reduction, LQR and PID tuning">Linear</button>
+            <button data-view="diff" role="tab" aria-selected="false" title="Differences from the version as loaded, or from a file">Diff</button>
+            </span>
           </div>
           <div id="views">
             <div id="view-graphic" class="view"></div>
@@ -136,7 +146,10 @@
       </aside>
     </main>
     <footer id="messages">
-      <div class="pane-title">Messages <button id="msg-clear">Clear</button></div>
+      <div class="pane-title">
+        <button type="button" class="pane-toggle" aria-controls="log" aria-expanded="true">Messages</button>
+        <button id="msg-clear">Clear</button>
+      </div>
       <div id="log"></div>
     </footer>
     <script type="module" src="/src/main.ts"></script>

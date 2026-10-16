@@ -336,8 +336,8 @@ class Model:
         """Simulate; unset options come from the ``experiment`` annotation.
 
         ``n`` is the number of output intervals (default 500) and ``interval`` the
-        output step (overrides ``n``); ``method`` is "bdf" (default), "dopri5", "rk4"
-        or "euler" (``step`` sets the fixed step of the last two); ``vars`` restricts
+        output step (overrides ``n``); ``method`` is one of METHODS (``step`` sets
+        the fixed step of rk4 and euler); ``vars`` restricts
         :attr:`Result.names`; ``params`` are overrides for this run only, on top of
         :meth:`set_parameters`; ``timeout`` aborts after that many seconds of wall time.
         Failures raise :class:`SimulationError`; its ``partial`` attribute holds the
@@ -444,18 +444,88 @@ class Model:
 
     # -- FMU --------------------------------------------------------------------------
 
-    def export_fmu(self, path: Optional[PathLike] = None, *, fmi_lib: Optional[PathLike] = None) -> Path:
-        """Write an FMI 2.0 FMU supporting both Model Exchange and Co-Simulation.
+    def steady(
+        self,
+        *,
+        at: Optional[float] = None,
+        free: Optional[Sequence[str]] = None,
+        targets: Optional[Mapping[str, float]] = None,
+        tol: Optional[float] = None,
+        method: Optional[str] = None,
+        params: Optional[Mapping[str, float]] = None,
+    ) -> Dict[str, Any]:
+        """Steady state (``der(x) = 0``) as the JSON object the core returns.
 
-        The FMU embeds the prebuilt DAEdalus FMI runtime (``libdaedalus_fmi.so`` /
-        ``.dylib`` / ``daedalus_fmi.dll``), found at ``fmi_lib``, ``$DAEDALUS_FMI_LIB``,
-        inside this package, or next to a ``daedalus`` executable on ``PATH``. Build it
-        with ``cargo build --release -p daedalus-fmi``. Returns the FMU path.
+        ``at`` simulates to that time first. ``free`` names inputs or parameters to
+        solve for, and ``targets`` maps a variable to the value those must achieve
+        (one target per free name).
+        """
+        pairs = list((targets or {}).items())
+        return self._m.steady(
+            at=at,
+            free=list(free or []),
+            targets=[(k, float(v)) for k, v in pairs],
+            tol=tol,
+            method=method,
+            params=self._params(params),
+        )
+
+    def linear_analysis(
+        self,
+        *,
+        at: Optional[float] = None,
+        inputs: Optional[Sequence[str]] = None,
+        outputs: Optional[Sequence[str]] = None,
+        tol: Optional[float] = None,
+        method: Optional[str] = None,
+        params: Optional[Mapping[str, float]] = None,
+        bode: bool = False,
+        step: bool = False,
+        reduce: Optional[int] = None,
+        lqr: Optional[tuple] = None,
+    ) -> Dict[str, Any]:
+        """Linearize and analyze; returns the core's JSON object (poles, zeros, margins).
+
+        The model needs a top-level ``input Real``. ``bode`` and ``step`` keep frequency
+        and time responses; ``reduce`` is a balanced-truncation order; ``lqr`` is ``(q, r)``.
+        """
+        lqr_pair = (float(lqr[0]), float(lqr[1])) if lqr is not None else None
+        return self._m.linear_analysis(
+            at=at,
+            inputs=list(inputs or []),
+            outputs=list(outputs or []),
+            tol=tol,
+            method=method,
+            params=self._params(params),
+            bode=bode,
+            step=step,
+            reduce=reduce,
+            lqr=lqr_pair,
+        )
+
+    def export_fmu(
+        self,
+        path: Optional[PathLike] = None,
+        *,
+        fmi_lib: Optional[PathLike] = None,
+        fmi_version: int = 2,
+    ) -> Path:
+        """Write an FMI FMU supporting both Model Exchange and Co-Simulation.
+
+        ``fmi_version`` is 2 (default) or 3. The FMU embeds the prebuilt DAEdalus FMI
+        runtime (``libdaedalus_fmi.so`` / ``.dylib`` / ``daedalus_fmi.dll``), found at
+        ``fmi_lib``, ``$DAEDALUS_FMI_LIB``, inside this package, or next to a
+        ``daedalus`` executable on ``PATH``. Build it with
+        ``cargo build --release -p daedalus-fmi``. Returns the FMU path.
         """
         out = Path(path) if path is not None else Path(self.name.replace(".", "_") + ".fmu")
         runtime = _find_fmi_runtime(fmi_lib)
-        self._m.export_fmu(os.fspath(out), os.fspath(runtime))
+        self._m.export_fmu(os.fspath(out), os.fspath(runtime), int(fmi_version))
         return out
+
+
+# The method list is Method::name() in the extension, so the docstring cannot drift.
+Model.simulate.__doc__ = (Model.simulate.__doc__ or "").replace("METHODS", _daedalus.method_names())
 
 
 def _runtime_name() -> str:

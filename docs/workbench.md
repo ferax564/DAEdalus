@@ -3,7 +3,8 @@
 The workbench is a Dymola-style modeling and simulation environment that runs in the
 browser. The compiler and solvers are the same Rust code as the command line, compiled to
 WebAssembly and run in a Web Worker, so the page stays responsive while a model
-translates or simulates, and models never leave your machine.
+translates or simulates. Simulation in the page or via `daedalus serve` stays on the
+machine; **✦ Assistant** sends the text it reads and the numbers it asks for to Anthropic.
 
 [Open the workbench](https://daedalus.apps.ezkeel.com/#Daedalus.Examples.TorqueConverter.StallTest)
 
@@ -11,15 +12,20 @@ translates or simulates, and models never leave your machine.
 
 ![The workbench in Modeling mode: package browser, diagram, component inspector and messages](img/wb/component_selected.webp)
 
-- **Toolbar.** **Modeling** and **Simulation** switch modes. **Open .mo** and **Library**
-  load your own files or folders. **Check** translates the model and reports its
-  statistics. **Stop**, **Intervals**, **Tol** and **Method** override the model's
-  `experiment` annotation for the next run, and **▶ Simulate** (Ctrl+Enter) runs it.
+- **Toolbar.** **Modeling**, **Simulation** and **Analysis** switch modes. **Open**,
+  **Folder** and **Libraries** load your own files, a library folder, or a package from
+  the index. **Save .zip** downloads the open model with the files and resources it needs.
+  **Check** translates the model and reports its statistics. **Stop**, **Intervals**,
+  **Tol** and **Method** override the model's `experiment` annotation for the next run,
+  and **▶ Simulate** (Ctrl+Enter) runs it. On a narrow window, **More** holds Open,
+  Folder, Libraries, Save .zip and those experiment fields.
 - **Packages** (left). Every loaded library: `Daedalus`, the MSL (`Modelica`,
   `ModelicaServices`, `Complex`) and whatever you opened. Models with a ▶ can be simulated.
-  The filter box narrows the tree to matching classes.
-- **Class views** (centre). The open class in one of five views, with Back and Forward
-  arrows next to its name.
+  The filter box narrows the tree to matching classes. On a phone the pane starts
+  collapsed behind its title, so the diagram is the first screen.
+- **Class views** (centre). The open class in one of eight views — **Icon**, **Diagram**,
+  **Text**, **Documentation**, **Flat model**, **Structure**, **Linear** and **Diff** —
+  with Back and Forward arrows next to its name.
 - **Component** (right). Click a component in the diagram to see its class, description
   and parameter values; **Open** jumps to that class.
 - **Messages** (bottom). Translation statistics, timings, warnings and errors.
@@ -47,8 +53,9 @@ with zoom and pan (wheel and drag). It works for the bundled library and for the
 Classes in your own documents can be edited in the Diagram view. The bundled `Daedalus`
 library and the MSL are read-only: **Duplicate to my models** copies the open class into
 `MyModels.mo`, with every class name it uses written in full, and opens the copy.
-**New model** adds an empty model there. `MyModels.mo` is kept in the browser, and
-**Save .mo** downloads it.
+**New model** adds an empty model there. `MyModels.mo` is kept in the browser. The
+editor's **Save .mo** downloads that file; the toolbar's **Save .zip** downloads the
+open model with the files and resources it needs.
 
 <div class="pair">
 <figure><img src="img/editing/connect.webp" alt="Connecting a resistor to a voltage source"><figcaption>Dragging a connection: the compatible connectors light up.</figcaption></figure>
@@ -105,17 +112,21 @@ line tool:
 daedalus serve
 ```
 
-and press **Local engine** in the toolbar. Simulations, analyses and experiment runs then
+It prints a one-time token. Press **Local engine** in the toolbar and paste that token
+(it is remembered next to the engine address). Simulations, analyses and experiment runs then
 go to the native process on your computer, which is faster again than the browser, uses
 every core for experiments and has no 4 GB memory limit. The class tree, diagrams and
 editing stay in the page, and every document and library you load is sent to the engine,
 so both always see the same sources. It gives the same numbers as `daedalus simulate`.
 The button shows the number of cores when it is connected; press it again to go back to
 the browser. The choice is remembered, and `?engine=URL` connects to another address.
+The hosted page's content security policy allows that connection (any `http:` or `https:`
+URL), including a `daedalus serve --port` other than 7878.
 
-The engine listens on 127.0.0.1 only (port 7878, `--port` to change it) and answers only
-this site and pages served from localhost (`--allow-origin ORIGIN` adds another). Your
-models stay on your computer either way.
+The engine listens on 127.0.0.1 only (port 7878, `--port` to change it). A browser may
+call it only from this site or from localhost (`--allow-origin ORIGIN` adds another),
+and every request needs the token as `Authorization: Bearer`. Your models stay on your
+computer either way.
 
 ## Plots
 

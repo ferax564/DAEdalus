@@ -118,6 +118,43 @@ fn nonlinear_loop_tearing() {
     assert!(close(z, 0.5 * y - x * z, 1e-9));
 }
 
+/// Reduced form of `Modelica.Clocked.Examples.Systems.ControlledMixingUnit`'s
+/// singular partition: a clocked state written from its own `pre(der(x))`.
+#[test]
+fn clocked_state_updated_from_pre_der() {
+    let path = format!(
+        "{}/tests/models/clocked_pre_der.mo",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let text = std::fs::read_to_string(&path).unwrap();
+    let mut lib = Library::new();
+    let errs = lib.set_document(&path, &text);
+    assert!(errs.is_empty(), "{errs:?}");
+    match daedalus_core::translate(&lib, "ClockedPreDer", &Default::default()) {
+        Ok(m) => {
+            let opts = SimOptions {
+                stop_time: 0.5,
+                method: Method::Bdf,
+                tolerance: 1e-8,
+                interval: 0.01,
+                ..SimOptions::from_model(&m)
+            };
+            let (r, _) = simulate(&m, opts)
+                .map_err(|e| e.message)
+                .expect("clocked pre(der(x)) run");
+            assert!(r.time.len() > 2, "the clocked model produced no trajectory");
+            assert!(r.final_value("x").unwrap().is_finite());
+        }
+        Err(e) => {
+            let msg = format!("{e:#}");
+            assert!(
+                msg.contains("unsupported") && msg.contains("pre(der("),
+                "expected an unsupported diagnostic for a clocked pre(der(x)) update, got {msg}"
+            );
+        }
+    }
+}
+
 #[test]
 fn clocked_partitions() {
     let r = run("clocked.mo", "Clocked", 0.65, Method::Bdf);

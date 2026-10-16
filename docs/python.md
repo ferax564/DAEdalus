@@ -61,7 +61,9 @@ Failures raise `daedalus.TranslationError` with the compiler's message.
 | `simulate(start, stop, n, tol, method, vars, *, interval, step, params, store_events, timeout)` | returns a `Result`; unset options come from the experiment annotation; `method` is `bdf` (default), `radau`, `esdirk`, `dopri5`, `auto`, `rk4` or `euler`; `params` apply to this run only; the GIL is released while it runs |
 | `derivatives(t, states, *, inputs, params, read)` | The right-hand side `der(x) = f(t, x, u)` at given points, as a dictionary of arrays: a way to check or plot the model's dynamics without simulating. |
 | `linearize(at=None, *, start, tol, method, params, jacobian="exact")` | returns a `Linearization` (after initialization, or after simulating to `at`) |
-| `export_fmu(path=None, *, fmi_lib=None)` | writes an FMI 2.0 FMU (Model Exchange and Co-Simulation in one file) and returns its path |
+| `steady(*, at=None, free=None, targets=None, tol=None, method=None, params=None)` | steady state (`der(x) = 0`), as the JSON object the core returns; `free` / `targets` trim |
+| `linear_analysis(*, at=None, inputs=None, outputs=None, bode=False, step=False, reduce=None, lqr=None)` | linearize and analyze (poles, zeros, margins); JSON from the core. Needs a top-level `input Real` |
+| `export_fmu(path=None, *, fmi_lib=None, fmi_version=2)` | writes an FMI 2.0 or 3.0 FMU (`fmi_version=3`) with Model Exchange and Co-Simulation, and returns its path |
 
 Simulation failures raise `daedalus.SimulationError`; its `partial` attribute holds the
 `Result` up to the failure, if any. Both errors derive from `daedalus.DaedalusError`.
@@ -87,7 +89,7 @@ The FMU embeds the model-independent FMI runtime library built from
 `crates/daedalus-fmi` (`cargo build --release -p daedalus-fmi` gives
 `target/release/libdaedalus_fmi.so`). `export_fmu` finds it at `fmi_lib=`,
 `$DAEDALUS_FMI_LIB`, inside the installed package, or next to a `daedalus` executable
-on `PATH`.
+on `PATH`. `fmi_version=2` (the default) writes an FMI 2.0 FMU; `fmi_version=3` writes FMI 3.0 (`fmiVersion="3.0"` in `modelDescription.xml`).
 
 ## Coming from OMPython / Dymola
 

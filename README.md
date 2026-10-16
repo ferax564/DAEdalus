@@ -207,8 +207,8 @@ initialization). FMU state get/set is not provided.
 ```sh
 # simulate an FMU (FMI 2.0 or 3.0) on its own: Model Exchange if it has it, its
 # outputs and local variables in the result
-./target/release/daedalus simulate StallTest.fmu -o fmu.csv --vars rpm_engine
-./target/release/daedalus simulate StallTest.fmu --fmi-type cs --comm-step 0.004 -o cs.csv
+./target/release/daedalus --allow-fmu-code simulate StallTest.fmu -o fmu.csv --vars rpm_engine
+./target/release/daedalus --allow-fmu-code simulate StallTest.fmu --fmi-type cs --comm-step 0.004 -o cs.csv
 # wrapper block, usable as a component in any model (connect its inputs and outputs)
 ./target/release/daedalus import-fmu Plant.fmu -o Plant.mo [--fmi-type me|cs] [--comm-step H] [--class NAME] [--within PKG]
 # SSP: simulate a system of FMUs as a co-simulation master, import it as a model,

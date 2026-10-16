@@ -24,7 +24,38 @@ use md::{FmiVersion, ModelDescription};
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{LazyLock, Mutex};
+
+/// Set by `daedalus --allow-fmu-code`. Loading an FMU binary is remote code execution.
+static ALLOW_FMU_CODE: AtomicBool = AtomicBool::new(false);
+/// FMUs [`crate::fmu::write_fmu_version`] wrote in this process. Those may be loaded
+/// again without the flag: the bytes are the runtime this process just embedded.
+static PRODUCED_FMUS: LazyLock<Mutex<Vec<PathBuf>>> = LazyLock::new(|| Mutex::new(Vec::new()));
+
+/// Allow `Library::new` on FMU binaries that this process did not just write.
+pub fn allow_fmu_code(allow: bool) {
+    ALLOW_FMU_CODE.store(allow, Ordering::Relaxed);
+}
+
+/// Remember an FMU path this process produced, so a later import in the same process is allowed.
+pub fn note_produced_fmu(path: &Path) {
+    let stored = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    if let Ok(mut g) = PRODUCED_FMUS.lock() {
+        g.push(stored);
+    }
+}
+
+fn fmu_code_permitted(source: &Path) -> bool {
+    if ALLOW_FMU_CODE.load(Ordering::Relaxed) {
+        return true;
+    }
+    let stored = std::fs::canonicalize(source).unwrap_or_else(|_| source.to_path_buf());
+    PRODUCED_FMUS
+        .lock()
+        .map(|g| g.iter().any(|p| p == &stored))
+        .unwrap_or(false)
+}
 
 /// An unpacked FMU.
 pub struct Fmu {
@@ -158,6 +189,16 @@ impl Fmu {
                     format!(" - it has binaries for: {}", have.join(", "))
                 }
             ));
+        }
+        eprintln!("FMU native code: {}", file.display());
+        if !fmu_code_permitted(&self.source) {
+            let msg = format!(
+                "refusing to load native code from {} ({}). Pass --allow-fmu-code to execute this FMU.",
+                self.source.display(),
+                file.display()
+            );
+            eprintln!("{msg}");
+            return Err(msg);
         }
         let lib = unsafe { libloading::Library::new(&file) }
             .map_err(|e| format!("loading {}: {e}", file.display()))?;

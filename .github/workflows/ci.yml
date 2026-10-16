@@ -22,6 +22,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Build CLI and FMI runtime (the FMU import tests need libdaedalus_fmi.so)
         run: cargo build --release -p daedalus-cli -p daedalus-fmi
+      - name: Shared dependency versions match the Python lockfile
+        run: python3 tools/lockfile_versions.py
       - name: Test
         run: cargo test --release --workspace
       - name: Simulate every Daedalus example
@@ -57,8 +59,8 @@ jobs:
       - name: Import the FMUs back (Model Exchange and Co-Simulation)
         run: |
           for f in /tmp/StallTest.fmu /tmp/StallTest3.fmu; do
-            ./target/release/daedalus simulate $f -o /tmp/me.csv --vars rpm_engine
-            ./target/release/daedalus simulate $f --fmi-type cs -o /tmp/cs.csv --vars rpm_engine
+            ./target/release/daedalus simulate $f --allow-fmu-code -o /tmp/me.csv --vars rpm_engine
+            ./target/release/daedalus simulate $f --fmi-type cs --allow-fmu-code -o /tmp/cs.csv --vars rpm_engine
           done
       - name: Scalability smoke test (2000-mass chain)
         run: |
@@ -194,9 +196,9 @@ jobs:
       - name: Build WebAssembly module
         working-directory: web
         run: npm run wasm
-      - name: Typecheck and bundle
+      - name: Test, typecheck and bundle
         working-directory: web
-        run: npm run build
+        run: npm test && npm run build
       - uses: actions/upload-artifact@v4
         with:
           name: workbench

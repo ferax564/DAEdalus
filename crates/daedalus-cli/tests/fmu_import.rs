@@ -79,6 +79,7 @@ impl Drop for Scratch {
 #[track_caller]
 fn daedalus(dir: &Scratch, rt: &Path, args: &[&str]) -> String {
     let o = Command::new(env!("CARGO_BIN_EXE_daedalus"))
+        .arg("--allow-fmu-code")
         .args(args)
         .current_dir(&dir.0)
         .env("DAEDALUS_FMI_LIB", rt)

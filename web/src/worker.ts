@@ -1,7 +1,7 @@
 // Web Worker owning the WebAssembly workspace, so translation and simulation never block the UI.
 import init, { Workspace, doePlan, doeAnalyze } from "./wasm/daedalus_wasm.js";
 import type { BundleInfo, BundleProgress } from "./types";
-import { engineBytes, engineCall, enginePost, engineStatus, engineValues, type EngineStatus } from "./engine";
+import { engineBytes, engineCall, enginePost, engineStatus, engineValues, setEngineToken, type EngineStatus } from "./engine";
 
 let ws: Workspace | null = null;
 const ready = init().then((wasm) => {
@@ -326,8 +326,9 @@ self.onmessage = async (ev: MessageEvent<Req>) => {
         await engineForward("/sources", { remove: [args[0]] });
         break;
       case "engine": {
-        // Connect to the local engine at args[0], or disconnect (null).
+        // Connect to the local engine at args[0], or disconnect (null). args[1] is the bearer token.
         const base = args[0] as string | null;
+        setEngineToken((args[1] as string | null) ?? null);
         engine = null;
         if (base) result = await engineConnect(base);
         break;

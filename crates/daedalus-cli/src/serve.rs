@@ -9,8 +9,9 @@
 //! Simulate button, `pool-N` for the runs of an experiment, which run in parallel.
 //!
 //! HTTP on 127.0.0.1 only. Browsers may call it only from the allowed origins (the public
-//! workbench and local development servers); requests without an `Origin` header come from
-//! local programs, which can run `daedalus` directly anyway.
+//! workbench and local development servers) and must send the one-time bearer token printed
+//! at startup. Requests without an `Origin` header come from local programs, which can run
+//! `daedalus` directly anyway; they still need the token.
 //!
 //! - `GET /status` → `{"engine": "daedalus", "version", "cores"}`
 //! - `POST /reset` → forget all sources and spaces (a worker connecting afresh)
@@ -23,11 +24,14 @@
 use daedalus_wasm::Workspace;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::sync::{Arc, Mutex};
 use tiny_http::{Header, Method, Request, Response, Server};
 
 const DEFAULT_PORT: u16 = 7878;
 const DEFAULT_ORIGINS: &[&str] = &["https://daedalus.apps.ezkeel.com"];
+/// Library bundles are a few megabytes; a few tens of megabytes covers a large one.
+const MAX_BODY: usize = 32 * 1024 * 1024;
 
 enum SrcOp {
     Set(String, String),
@@ -166,9 +170,9 @@ fn call(ws: &mut Workspace, op: &str, args: &[Value]) -> Result<Reply, String> {
             &json_arg(args, 2),
             &json_arg(args, 3),
         )),
-        "analysisStep" => Reply::Json(
-            ws.analysis_step(args.first().and_then(Value::as_f64).unwrap_or(120.0)),
-        ),
+        "analysisStep" => {
+            Reply::Json(ws.analysis_step(args.first().and_then(Value::as_f64).unwrap_or(120.0)))
+        }
         "analysisResult" => Reply::Json(ws.analysis_result()),
         "analysisCancel" => {
             ws.analysis_cancel();
@@ -189,7 +193,60 @@ fn allowed(origin: &str, extra: &[String]) -> bool {
     local || DEFAULT_ORIGINS.contains(&origin) || extra.iter().any(|o| o == origin)
 }
 
-fn handle(engine: &Engine, mut req: Request, origins: &[String]) {
+fn bearer_ok(req: &Request, token: &str) -> bool {
+    req.headers().iter().any(|h| {
+        h.field.equiv("Authorization")
+            && h.value
+                .as_str()
+                .strip_prefix("Bearer ")
+                .or_else(|| h.value.as_str().strip_prefix("bearer "))
+                .is_some_and(|t| t == token)
+    })
+}
+
+fn read_body(req: &mut Request) -> Result<Vec<u8>, String> {
+    if let Some(h) = req
+        .headers()
+        .iter()
+        .find(|h| h.field.equiv("Content-Length"))
+        && h.value.as_str().parse::<usize>().unwrap_or(usize::MAX) > MAX_BODY
+    {
+        return Err(format!(
+            "request body exceeds {} MB",
+            MAX_BODY / (1024 * 1024)
+        ));
+    }
+    let mut body = Vec::new();
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = req.as_reader().read(&mut buf).map_err(|e| e.to_string())?;
+        if n == 0 {
+            break;
+        }
+        if body.len().saturating_add(n) > MAX_BODY {
+            return Err(format!(
+                "request body exceeds {} MB",
+                MAX_BODY / (1024 * 1024)
+            ));
+        }
+        body.extend_from_slice(&buf[..n]);
+    }
+    Ok(body)
+}
+
+fn mint_token() -> String {
+    let mut bytes = [0u8; 24];
+    getrandom::fill(&mut bytes).expect("operating system random");
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        s.push(HEX[(b >> 4) as usize] as char);
+        s.push(HEX[(b & 0xf) as usize] as char);
+    }
+    s
+}
+
+fn handle(engine: &Engine, mut req: Request, origins: &[String], token: &str) {
     let origin = req
         .headers()
         .iter()
@@ -213,19 +270,31 @@ fn handle(engine: &Engine, mut req: Request, origins: &[String]) {
         // https page calling 127.0.0.1).
         let mut r = cors(Response::from_data(Vec::new()).with_status_code(204));
         r.add_header(header("Access-Control-Allow-Methods", "GET, POST, OPTIONS"));
-        r.add_header(header("Access-Control-Allow-Headers", "Content-Type"));
+        r.add_header(header(
+            "Access-Control-Allow-Headers",
+            "Content-Type, Authorization",
+        ));
         r.add_header(header("Access-Control-Allow-Private-Network", "true"));
         r.add_header(header("Access-Control-Max-Age", "600"));
         let _ = req.respond(r);
         return;
     }
-    let url = req.url().to_string();
-    let (path, query) = url.split_once('?').unwrap_or((&url, ""));
-    let mut body = Vec::new();
-    if let Err(e) = req.as_reader().read_to_end(&mut body) {
-        let _ = req.respond(cors(Response::from_string(e.to_string()).with_status_code(400)));
+    if !bearer_ok(&req, token) {
+        let _ = req.respond(cors(
+            Response::from_string("missing or invalid Authorization: Bearer token")
+                .with_status_code(401),
+        ));
         return;
     }
+    let url = req.url().to_string();
+    let (path, query) = url.split_once('?').unwrap_or((&url, ""));
+    let body = match read_body(&mut req) {
+        Ok(b) => b,
+        Err(e) => {
+            let _ = req.respond(cors(Response::from_string(e).with_status_code(400)));
+            return;
+        }
+    };
     let result: Result<Reply, String> = (|| {
         let json = || -> Result<Value, String> {
             serde_json::from_slice(&body).map_err(|e| format!("bad JSON: {e}"))
@@ -287,10 +356,15 @@ fn handle(engine: &Engine, mut req: Request, origins: &[String]) {
         }
     })();
     let resp = match result {
-        Ok(Reply::Json(s)) => Response::from_string(s).with_header(header("Content-Type", "application/json")),
-        Ok(Reply::Text(s)) => Response::from_string(s).with_header(header("Content-Type", "text/plain")),
+        Ok(Reply::Json(s)) => {
+            Response::from_string(s).with_header(header("Content-Type", "application/json"))
+        }
+        Ok(Reply::Text(s)) => {
+            Response::from_string(s).with_header(header("Content-Type", "text/plain"))
+        }
         Ok(Reply::Bytes(b, hs)) => {
-            let mut r = Response::from_data(b).with_header(header("Content-Type", "application/octet-stream"));
+            let mut r = Response::from_data(b)
+                .with_header(header("Content-Type", "application/octet-stream"));
             for (k, v) in hs {
                 r.add_header(header(&k, &v));
             }
@@ -301,6 +375,40 @@ fn handle(engine: &Engine, mut req: Request, origins: &[String]) {
     let _ = req.respond(cors(resp));
 }
 
+fn spawn_call_pool(
+    cores: usize,
+    engine: &Arc<Engine>,
+    origins: &Arc<Vec<String>>,
+    token: &Arc<String>,
+) -> SyncSender<Request> {
+    let (tx, rx) = sync_channel::<Request>(cores);
+    let rx = Arc::new(Mutex::new(rx));
+    for _ in 0..cores {
+        let rx = Arc::clone(&rx);
+        let engine = Arc::clone(engine);
+        let origins = Arc::clone(origins);
+        let token = Arc::clone(token);
+        std::thread::spawn(move || call_worker(rx, engine, origins, token));
+    }
+    tx
+}
+
+fn call_worker(
+    rx: Arc<Mutex<Receiver<Request>>>,
+    engine: Arc<Engine>,
+    origins: Arc<Vec<String>>,
+    token: Arc<String>,
+) {
+    loop {
+        let req = {
+            let guard = rx.lock().unwrap_or_else(|e| e.into_inner());
+            guard.recv()
+        };
+        let Ok(req) = req else { break };
+        handle(&engine, req, &origins, &token);
+    }
+}
+
 pub fn run(args: &[String]) -> anyhow::Result<()> {
     let mut port = DEFAULT_PORT;
     let mut origins = Vec::new();
@@ -309,28 +417,58 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
         match args[i].as_str() {
             "--port" => {
                 i += 1;
-                port = args.get(i).and_then(|p| p.parse().ok()).ok_or_else(|| anyhow::anyhow!("--port needs a number"))?;
+                port = args
+                    .get(i)
+                    .and_then(|p| p.parse().ok())
+                    .ok_or_else(|| anyhow::anyhow!("--port needs a number"))?;
             }
             "--allow-origin" => {
                 i += 1;
-                origins.push(args.get(i).cloned().ok_or_else(|| anyhow::anyhow!("--allow-origin needs an origin"))?);
+                origins.push(
+                    args.get(i)
+                        .cloned()
+                        .ok_or_else(|| anyhow::anyhow!("--allow-origin needs an origin"))?,
+                );
             }
-            a => anyhow::bail!("unknown option {a} (serve takes --port N and --allow-origin ORIGIN)"),
+            a => {
+                anyhow::bail!("unknown option {a} (serve takes --port N and --allow-origin ORIGIN)")
+            }
         }
         i += 1;
     }
-    let server = Server::http(("127.0.0.1", port)).map_err(|e| anyhow::anyhow!("cannot listen on 127.0.0.1:{port}: {e}"))?;
+    let server = Server::http(("127.0.0.1", port))
+        .map_err(|e| anyhow::anyhow!("cannot listen on 127.0.0.1:{port}: {e}"))?;
     let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let token = Arc::new(mint_token());
     eprintln!(
-        "DAEdalus local engine on http://127.0.0.1:{port} ({cores} cores). In the workbench, \
-         turn on \"Local engine\" to simulate here. Ctrl+C stops it."
+        "DAEdalus local engine on http://127.0.0.1:{port} ({cores} cores).\n\
+         Token (Authorization: Bearer, shown once): {token}\n\
+         In the workbench, turn on \"Local engine\" and paste the token. Ctrl+C stops it."
     );
     let engine = Arc::new(Engine::default());
     let origins = Arc::new(origins);
+    let calls = spawn_call_pool(cores, &engine, &origins, &token);
     for req in server.incoming_requests() {
-        let engine = engine.clone();
-        let origins = origins.clone();
-        std::thread::spawn(move || handle(&engine, req, &origins));
+        let path = req.url().split('?').next().unwrap_or("").to_string();
+        let is_call = *req.method() == Method::Post && path.starts_with("/call/");
+        if is_call {
+            if let Err(e) = calls.try_send(req) {
+                // The pool and its queue (one slot per core) are full: answer here
+                // instead of starting another /call thread.
+                let req = match e {
+                    std::sync::mpsc::TrySendError::Full(r)
+                    | std::sync::mpsc::TrySendError::Disconnected(r) => r,
+                };
+                let _ = req.respond(
+                    Response::from_string("too many simulations in flight").with_status_code(503),
+                );
+            }
+        } else {
+            let engine = engine.clone();
+            let origins = origins.clone();
+            let token = token.clone();
+            std::thread::spawn(move || handle(&engine, req, &origins, &token));
+        }
     }
     Ok(())
 }
