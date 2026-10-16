@@ -22,6 +22,16 @@ pub struct Document {
     pub text: Arc<str>,
     pub ast: ast::StoredDefinition,
     pub errors: Vec<String>,
+    /// The parse errors as short messages with their byte ranges (for editor diagnostics).
+    pub error_spans: Vec<ParseDiag>,
+}
+
+/// A syntax error located in its document: byte range and a one-line message.
+#[derive(Clone, Debug)]
+pub struct ParseDiag {
+    pub start: usize,
+    pub end: usize,
+    pub message: String,
 }
 
 /// A set of Modelica sources (libraries + user models) that compile together.
@@ -58,6 +68,12 @@ impl Library {
         } else {
             self.docs.push(doc);
         }
+    }
+
+    /// Whether a document is a file of a library registered for on-demand parsing
+    /// (as opposed to a document set directly, such as the user's own models).
+    pub fn is_registered_file(&self, uri: &str) -> bool {
+        self.lazy_file_of(uri).is_some()
     }
 
     pub fn remove_document(&mut self, uri: &str) {
@@ -179,6 +195,7 @@ impl Library {
         let first = f.flatten(id);
         if !f.oc_log.used {
             first?;
+            self.mark_externals(&tree, &mut f)?;
             return Ok(f.model);
         }
         // Overconstrained connectors: flatten again with the spanning-tree answers, so that
@@ -196,7 +213,102 @@ impl Library {
         f.resource_roots = roots;
         f.oc_answers = Some(answers);
         f.flatten(id)?;
+        self.mark_externals(&tree, &mut f)?;
         Ok(f.model)
+    }
+
+    /// Record the instances of FMU wrapper blocks (classes annotated
+    /// `__Daedalus_FMU(fileName = ..., fmiType = ...)`) and make the values they supply
+    /// (their outputs and the derivatives of their states) externally set variables;
+    /// see [`crate::external_component`].
+    fn mark_externals(&self, tree: &tree::ClassTree, f: &mut inst::Flattener) -> Result<()> {
+        use crate::external_component::{DERIVATIVES, ExternalComponent, FMU_ANNOTATION, FmiKind};
+        let mut found: Vec<ExternalComponent> = Vec::new();
+        // Per component: names of the wrapper's outputs (`output` components, or of a
+        // `...Output` connector type).
+        let mut outputs: Vec<Vec<String>> = Vec::new();
+        for i in &f.insts {
+            let Some(def) = tree.def(i.class) else {
+                continue;
+            };
+            let Some(a) = inspect::find_annotation(&def.annotation, FMU_ANNOTATION) else {
+                continue;
+            };
+            if found.iter().any(|e| e.prefix == i.prefix) {
+                continue;
+            }
+            let node = tree.node(i.class);
+            let v = inspect::expr_json(a, None);
+            let file = v["fileName"].as_str().ok_or_else(|| {
+                anyhow!(
+                    "{FMU_ANNOTATION} annotation of '{}' has no fileName",
+                    node.path
+                )
+            })?;
+            let kind_s = v["fmiType"].as_str().unwrap_or("ModelExchange");
+            let kind = FmiKind::parse(kind_s).ok_or_else(|| {
+                anyhow!(
+                    "{FMU_ANNOTATION} of '{}': unknown fmiType '{kind_s}'",
+                    node.path
+                )
+            })?;
+            let src = self.docs.get(node.source).map_or("", |d| d.uri.as_str());
+            outputs.push(
+                def.components
+                    .iter()
+                    .filter(|(_, c)| {
+                        matches!(c.causality, rumoca_core::Causality::Output(_))
+                            || c.type_name
+                                .name
+                                .last()
+                                .is_some_and(|t| t.text.ends_with("Output"))
+                    })
+                    .map(|(n, _)| n.clone())
+                    .collect(),
+            );
+            found.push(ExternalComponent {
+                prefix: i.prefix.clone(),
+                file: resolve_file(file, src),
+                kind,
+                class: node.path.clone(),
+            });
+        }
+        for (e, outs) in found.iter().zip(&outputs) {
+            let pre = if e.prefix.is_empty() {
+                String::new()
+            } else {
+                format!("{}.", e.prefix)
+            };
+            for v in &mut f.model.vars {
+                let Some(rest) = v.name.strip_prefix(&pre) else {
+                    continue;
+                };
+                if rest.contains('.') {
+                    continue;
+                }
+                let base = rest.split('[').next().unwrap_or(rest);
+                if base == DERIVATIVES || outs.iter().any(|o| o == base) {
+                    v.kind = crate::flat::VarKind::Input;
+                }
+            }
+        }
+        f.model.externals = found;
+        Ok(())
+    }
+}
+
+/// An FMU file named in a wrapper annotation: absolute paths and `file://` URIs as they
+/// are, other paths relative to the directory of the wrapper's source file.
+fn resolve_file(file: &str, source_uri: &str) -> String {
+    let file = file.strip_prefix("file://").unwrap_or(file);
+    let absolute = file.starts_with('/') || file.as_bytes().get(1) == Some(&b':');
+    if absolute || file.contains("://") {
+        return file.to_string();
+    }
+    let src = source_uri.strip_prefix("file://").unwrap_or(source_uri);
+    match src.rfind(['/', '\\']) {
+        Some(k) => format!("{}/{}", &src[..k], file),
+        None => file.to_string(),
     }
 }
 
@@ -208,11 +320,42 @@ pub fn parse_document(uri: &str, text: &str) -> Document {
         .iter()
         .map(|e| rumoca_phase_parse::format_parse_error(e, uri, text))
         .collect();
+    let error_spans = syntax
+        .parse_errors()
+        .iter()
+        .map(|e| {
+            let sp = e.span();
+            let message = match e {
+                rumoca_phase_parse::ParseError::SyntaxError {
+                    message,
+                    expected,
+                    unexpected,
+                    ..
+                } => {
+                    let mut m = message.lines().next().unwrap_or("syntax error").to_string();
+                    if let Some(u) = unexpected {
+                        m = format!("{m}: unexpected `{u}`");
+                    }
+                    if !expected.is_empty() && expected.len() <= 6 {
+                        m = format!("{m} (expected {})", expected.join(", "));
+                    }
+                    m
+                }
+                other => format!("{other:?}"),
+            };
+            ParseDiag {
+                start: sp.start.0,
+                end: sp.end.0.max(sp.start.0 + 1),
+                message,
+            }
+        })
+        .collect();
     let ast = syntax.best_effort().clone();
     Document {
         uri: uri.to_string(),
         text: Arc::from(text),
         ast,
         errors,
+        error_spans,
     }
 }

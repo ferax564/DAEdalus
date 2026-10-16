@@ -1,10 +1,10 @@
 // DAEdalus workbench: package browser, icon/diagram/text views, simulation and plotting.
 import "./styles.css";
 import { api } from "./rpc";
-import type { ClassEntry, ClassInfo, ComponentInfo, SimSettings, SimSummary, VarSummary } from "./types";
+import type { ClassEntry, ClassInfo, ComponentInfo, SimSettings, SimSummary, UnitSummary, VarSummary } from "./types";
 import { DiagramView, type ViewKind } from "./diagram";
 import { TextView } from "./editor";
-import { PlotWindow, displayUnit, interp } from "./plot";
+import { PlotWindow, displayUnit, interp, pickUnit, type DisplayChoices } from "./plot";
 import { bundledLibrary, bundledResources, readPicked, type Picked } from "./library";
 import { drawIcon, newCtx, SVG_NS, systemExtent, IDENTITY, el } from "./graphics";
 import type { Animation3D, AnimData } from "./anim3d";
@@ -15,6 +15,14 @@ import { StructureView, stateOverridesFor } from "./structure";
 import { DiagramEditor, DRAG_TYPE, editableUri } from "./diagram-edit";
 import { AnalysisPanel } from "./analysis";
 import { decorateMethodSelect, showRecommendation } from "./solver-hint";
+import { LinearView } from "./linear";
+import { PlotTools } from "./plottools";
+import { Dashboard, layoutFromHash } from "./dashboard";
+import type { LiveChunk } from "./rpc";
+import { renderDoc } from "./docview";
+import { DiffView } from "./diffview";
+import { librarySources, openLibraries, openPackage, reportConflicts, restoreInstalled, savePackage, type LibHost } from "./libmgr";
+import { importParams } from "./paramsui";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -40,7 +48,7 @@ const src = {
 let tree: ClassEntry[] = [];
 const expanded = new Set<string>(["Daedalus", "Daedalus.Examples"]);
 let current: ClassInfo | null = null;
-let view: ViewKind | "text" | "doc" | "flat" | "structure" = "diagram";
+let view: ViewKind | "text" | "doc" | "flat" | "structure" | "linear" | "diff" = "diagram";
 let mode: "modeling" | "simulation" | "analysis" = "modeling";
 let summary: SimSummary | null = null;
 /** Model the variables in `summary` belong to. */
@@ -51,6 +59,8 @@ const overrides = new Map<string, number>();
 const docs = new Map<string, string>();
 /** Non-Modelica files loaded with the libraries (shape meshes), keyed by relative path. */
 const resources = new Map<string, ArrayBuffer>();
+/** Each document's text as it was loaded, before edits in the text view: what the Diff view compares with. */
+const baseline = new Map<string, string>();
 
 // ---------------------------------------------------------------- messages
 function log(msg: string, cls = "") {
@@ -62,11 +72,75 @@ function log(msg: string, cls = "") {
 }
 $("msg-clear").onclick = () => ($("log").innerHTML = "");
 
+/** A message with a link that runs `action` (e.g. open the debugger). */
+function logLink(msg: string, cls: string, label: string, action: () => void) {
+  log(msg, cls);
+  const a = document.createElement("a");
+  a.className = "log-link";
+  a.textContent = label;
+  a.onclick = action;
+  $("log").lastElementChild?.appendChild(a);
+}
+
+/** Open the Structure view's debugger on `model` (after a failed check or simulation). */
+async function openDebugger(model: string, simulation: boolean) {
+  if (current?.path !== model) await openClass(model);
+  view = "structure";
+  if (mode !== "modeling") setMode("modeling");
+  setActive($("view-tabs"), "data-view", view);
+  for (const id of ["view-graphic", "view-text", "view-doc", "view-flat"]) $(id).classList.add("hidden");
+  $("view-structure").classList.remove("hidden");
+  await structureView.showInit(model, simulation);
+}
+
+/** Show a source position of the debugger: the Text view of the class that holds it. */
+async function openLocation(file: string, line: number) {
+  const holder = current?.source?.uri === file ? current : ([...classes.values()].find((c) => c.source?.uri === file) ?? null);
+  if (!holder) {
+    log(`${file}:${line}`);
+    return;
+  }
+  if (holder !== current) await openClass(holder.path);
+  view = "text";
+  if (mode !== "modeling") setMode("modeling");
+  await showView();
+  let t = docs.get(file);
+  if (t === undefined) {
+    t = (await api.documentText(file)) ?? "";
+    docs.set(file, t);
+  }
+  let off = 0;
+  for (let k = 1, i = 0; k < line && i >= 0; k++) {
+    i = t.indexOf("\n", i);
+    if (i >= 0) off = ++i;
+  }
+  text.setText(t, off);
+}
+
 // ---------------------------------------------------------------- views
 const diagram = new DiagramView($("view-graphic"), src, classes);
 const text = new TextView($("view-text"));
 const plot = new PlotWindow($("plot"));
 initPerformance(plot);
+const linear = new LinearView($("view-linear"));
+linear.onLog = (m, c) => log(m, c);
+linear.params = () => [...overrides.entries()];
+
+/** Read and write a per-viewer setting (local storage may be unavailable). */
+function pref(key: string, def: string): string {
+  try {
+    return localStorage.getItem(`daedalus.${key}`) ?? def;
+  } catch {
+    return def;
+  }
+}
+function setPref(key: string, v: string) {
+  try {
+    localStorage.setItem(`daedalus.${key}`, v);
+  } catch {
+    /* storage unavailable: the setting lasts for this page */
+  }
+}
 
 diagram.onSelect = (c) => showInspector(c);
 diagram.onOpen = (p) => openClass(p);
@@ -78,6 +152,8 @@ const editor = new DiagramEditor(diagram, {
   classInfo: (p) => src.get(p),
   log,
   documentChanged: async (uri, t, open) => {
+    // the Diff view compares against the text before the first edit
+    if (!baseline.has(uri)) baseline.set(uri, docs.get(uri) ?? "");
     docs.set(uri, t);
     for (const [k, v] of classes) if (v.source?.uri === uri) classes.delete(k);
     expanded.add("MyModels");
@@ -95,12 +171,13 @@ let editTimer = 0;
 text.onChange = (t) => {
   if (!current?.source) return;
   const uri = current.source.uri;
+  if (!baseline.has(uri) && docs.has(uri)) baseline.set(uri, docs.get(uri)!);
   docs.set(uri, t);
   clearTimeout(editTimer);
   editTimer = window.setTimeout(async () => {
-    const errs = await api.setDocuments([[uri, t]]);
+    // Syntax errors show in the editor itself (the linter); this refreshes the browser.
+    await api.ideUpdate(uri, t);
     classes.clear();
-    if (errs[uri]) for (const e of errs[uri].slice(0, 5)) log(e, "err");
     await refreshTree();
     if (current) {
       const keep = view;
@@ -111,13 +188,51 @@ text.onChange = (t) => {
   }, 500);
 };
 
+// Editor intelligence: the compiler answers in the worker; navigation opens classes here.
+/** A range to select once the text view shows a document (go to definition, usages). */
+let pendingSelect: { uri: string; from: number; to: number } | null = null;
+text.ide = {
+  uri: () => (view === "text" ? current?.source?.uri ?? null : null),
+  update: (uri, t) => api.ideUpdate(uri, t),
+  definition: (uri, t, pos) => api.ideDefinition(uri, t, pos),
+  references: (uri, t, pos) => api.ideReferences(uri, t, pos),
+  rename: (uri, t, pos, name) => api.ideRename(uri, t, pos, name),
+  completion: (uri, t, pos) => api.ideCompletion(uri, t, pos),
+  hover: (uri, t, pos) => api.ideHover(uri, t, pos),
+  symbols: (uri, t) => api.ideSymbols(uri, t),
+  goto: (loc) => {
+    const uri = current?.source?.uri;
+    if (uri === loc.uri && (!loc.class || loc.class === current?.path)) {
+      text.select(loc.from, loc.to);
+      return;
+    }
+    pendingSelect = { uri: loc.uri, from: loc.from, to: loc.to };
+    view = "text";
+    if (loc.class && loc.class !== current?.path) openClass(loc.class);
+    else showView();
+  },
+  applyEdits: async (edits) => {
+    const byUri = new Map<string, typeof edits>();
+    for (const e of edits) byUri.set(e.uri, [...(byUri.get(e.uri) ?? []), e]);
+    for (const [uri, es] of byUri) {
+      let t = docs.get(uri) ?? (await api.documentText(uri)) ?? "";
+      for (const e of [...es].sort((a, b) => b.from - a.from)) t = t.slice(0, e.from) + e.text + t.slice(e.to);
+      docs.set(uri, t);
+      await api.ideUpdate(uri, t);
+    }
+    classes.clear();
+    await refreshTree();
+  },
+  log: (msg, cls) => log(msg, cls),
+};
+
 function setActive(container: HTMLElement, attr: string, value: string) {
   container.querySelectorAll<HTMLButtonElement>(`button[${attr}]`).forEach((b) => b.classList.toggle("active", b.getAttribute(attr) === value));
 }
 
 async function showView() {
   setActive($("view-tabs"), "data-view", view);
-  for (const id of ["view-graphic", "view-text", "view-doc", "view-flat", "view-structure"]) $(id).classList.add("hidden");
+  for (const id of ["view-graphic", "view-text", "view-doc", "view-flat", "view-structure", "view-linear", "view-diff"]) $(id).classList.add("hidden");
   if (!current) return;
   if (view === "icon" || view === "diagram") {
     $("view-graphic").classList.remove("hidden");
@@ -134,12 +249,17 @@ async function showView() {
       // the source offsets are byte offsets; convert to a character offset
       const start = current.source!.start;
       const chars = new TextDecoder().decode(new TextEncoder().encode(t).slice(0, start)).length;
-      text.setText(t, chars);
+      const sel = pendingSelect?.uri === uri ? pendingSelect : undefined;
+      pendingSelect = null;
+      text.setText(t, chars, sel);
+      if (sel) text.view.focus();
     }
   } else if (view === "doc") {
     $("view-doc").classList.remove("hidden");
-    const d = current.documentation;
-    $("view-doc").innerHTML = `<h2>${escapeHtml(current.path)}</h2><p class="muted">${escapeHtml(current.description)}</p>` + (d ?? "<p class='muted'>No documentation.</p>");
+    await renderDoc($("view-doc"), current, docHost);
+  } else if (view === "linear") {
+    $("view-linear").classList.remove("hidden");
+    await linear.show(current.path);
   } else if (view === "flat") {
     $("view-flat").classList.remove("hidden");
     $("view-flat").textContent = "Flattening…";
@@ -147,8 +267,119 @@ async function showView() {
   } else if (view === "structure") {
     $("view-structure").classList.remove("hidden");
     await structureView.show(current.path);
+  } else if (view === "diff") {
+    $("view-diff").classList.remove("hidden");
+    await diffView.show(current);
   }
 }
+
+// ---------------------------------------------------------------- documentation, diff, edits
+/** Replace a document's text: the workbench reparses it and redraws the open class. */
+async function applyEdit(uri: string, t: string) {
+  if (!baseline.has(uri)) baseline.set(uri, docs.get(uri) ?? (await api.documentText(uri)) ?? "");
+  docs.set(uri, t);
+  const errs = await api.setDocuments([[uri, t]]);
+  classes.clear();
+  if (errs[uri]) for (const e of errs[uri].slice(0, 5)) log(e, "err");
+  await refreshTree();
+  if (current) {
+    const info = await src.get(current.path);
+    if (info) current = info;
+    showInspector(null);
+    await showView();
+  }
+}
+
+const blobUrls = new Map<string, string>();
+/** Directory of a library's top-level package (`library/Daedalus`), from its package.mo. */
+async function libraryDir(root: string): Promise<string | null> {
+  const info = await src.get(root);
+  const uri = info?.source?.uri;
+  return uri && /(^|\/)package\.mo$/.test(uri) ? uri.replace(/\/?package\.mo$/, "") : null;
+}
+
+const docHost = {
+  open: (p: string) => void openClass(p),
+  async resourceUrl(cls: string, path: string): Promise<string | null> {
+    const root = cls.split(".")[0];
+    const dir = await libraryDir(root);
+    // packages below the top level that are directories hold their own resources
+    let base = dir;
+    if (dir) {
+      const segs = cls.split(".");
+      for (let i = 1; i < segs.length; i++) {
+        const sub = await src.get(segs.slice(0, i + 1).join("."));
+        const u = sub?.source?.uri;
+        if (u && u === `${base}/${segs[i]}/package.mo`) base = `${base}/${segs[i]}`;
+        else break;
+      }
+    }
+    const key = base ? `${base}/${path}` : null;
+    if (key) {
+      const hit = blobUrls.get(key);
+      if (hit) return hit;
+      let buf = resources.get(key);
+      if (!buf) {
+        const b = await api.resource(key);
+        if (b) {
+          buf = b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer;
+          resources.set(key, buf);
+        }
+      }
+      if (buf) {
+        const ext = path.split(".").pop()!.toLowerCase();
+        const type = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", svg: "image/svg+xml", webp: "image/webp", bmp: "image/bmp", pdf: "application/pdf" }[ext] ?? "application/octet-stream";
+        const url = URL.createObjectURL(new Blob([buf], { type }));
+        blobUrls.set(key, url);
+        return url;
+      }
+    }
+    // not stored locally: the library's sources on jsDelivr's GitHub CDN, when online
+    const s = librarySources.get(root);
+    if (s && navigator.onLine) return `https://cdn.jsdelivr.net/gh/${s.repo}@${s.ref}/${root}/${path.split("/").map(encodeURIComponent).join("/")}`;
+    return null;
+  },
+  async saveMetadata(cls: string, entries: [string, string][]) {
+    const e = await api.setMetadata(cls, entries);
+    await applyEdit(e.uri, e.text);
+    log(`Metadata of ${cls} saved (${entries.length} entries)`, "ok");
+  },
+};
+
+const diffView = new DiffView($("view-diff"), src, classes, {
+  async currentText(uri) {
+    return docs.get(uri) ?? (await api.documentText(uri)) ?? "";
+  },
+  async baselineText(uri) {
+    return baseline.get(uri) ?? docs.get(uri) ?? (await api.documentText(uri));
+  },
+  pickFile: () =>
+    new Promise((resolve) => {
+      const i = document.createElement("input");
+      i.type = "file";
+      i.accept = ".mo";
+      i.onchange = async () => {
+        const f = i.files?.[0];
+        resolve(f ? { name: f.name, text: await f.text() } : null);
+      };
+      i.addEventListener("cancel", () => resolve(null));
+      i.click();
+    }),
+});
+
+const libHost: LibHost = {
+  log,
+  refresh: async () => {
+    classes.clear();
+    await refreshTree();
+  },
+  async pullResources(paths: string[]) {
+    for (const p of paths) {
+      const b = await api.resource(p);
+      if (b) resources.set(p, b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer);
+    }
+  },
+};
 
 $("view-tabs").addEventListener("click", (e) => {
   const v = (e.target as HTMLElement).getAttribute("data-view");
@@ -196,9 +427,14 @@ async function showInspector(c: ComponentInfo | null) {
     <div class="muted">${escapeHtml(c.type_name)}</div>
     <p>${escapeHtml(c.description)}</p>
     <table>${rows.join("") || "<tr><td class='muted'>No parameters</td></tr>"}</table>
-    ${c.type_path ? `<p><button id="open-type">Open ${escapeHtml(c.type_path.split(".").pop()!)}</button></p>` : ""}`;
+    <p>${c.type_path ? `<button id="open-type">Open ${escapeHtml(c.type_path.split(".").pop()!)}</button> ` : ""}<button id="import-params" title="Set parameters of ${escapeHtml(c.name)} from a CSV (name,value[,unit]) or SSP .ssv file">Import parameters…</button></p>`;
   const b = document.getElementById("open-type");
   if (b) b.onclick = () => openClass(c.type_path!);
+  const ip = document.getElementById("import-params");
+  if (ip && current) {
+    const model = current.path;
+    ip.onclick = () => importParams(model, c, { applyOps: async (ops) => !!(await editor.apply(ops)), log });
+  }
 }
 
 // ---------------------------------------------------------------- package browser
@@ -371,10 +607,14 @@ async function openClass(path: string, push = true) {
     history.replaceState({ idx: navIdx }, "", hash);
   }
   updateNav();
-  if (view !== "text" && view !== "doc" && view !== "flat" && view !== "structure") view = info.kind !== "connector" && info.kind !== "package" && (info.components.some((c) => c.type_kind !== "type" && !c.protected) || (editableUri(info.source?.uri) && ["model", "block", "class"].includes(info.kind))) ? "diagram" : "icon";
+  if (view !== "text" && view !== "doc" && view !== "flat" && view !== "structure" && view !== "linear" && view !== "diff") view = info.kind !== "connector" && info.kind !== "package" && (info.components.some((c) => c.type_kind !== "type" && !c.protected) || (editableUri(info.source?.uri) && ["model", "block", "class"].includes(info.kind))) ? "diagram" : "icon";
   renderTree();
   renderVariables();
   showInspector(null);
+  dashboard.setModel(info.path, pendingDash?.model === info.path ? pendingDash.layout : null);
+  pendingDash = null;
+  tools.closeMenu();
+  if (mode === "modeling") placePlot();
   if (mode === "analysis") analysis.refresh();
   await showView();
 }
@@ -400,7 +640,7 @@ function settings(): SimSettings {
   return s;
 }
 
-const structureView = new StructureView($("view-structure"), { settings, log, simulate: () => simulate() });
+const structureView = new StructureView($("view-structure"), { settings, log, simulate: () => simulate(), openLocation: (f, l) => void openLocation(f, l) });
 
 let cache: { time: Float64Array; cols: Map<string, Float64Array> } | null = null;
 
@@ -414,24 +654,131 @@ async function fetchSeries(names: string[]) {
   }
 }
 
-async function simulate() {
+// ---------------------------------------------------------------- live runs
+/** Rows of a run streaming in from the worker (grown in place). */
+class LiveData {
+  private tbuf = new Float64Array(1024);
+  n = 0;
+  start = NaN;
+  stop = NaN;
+  t = NaN;
+  private cols = new Map<string, { a: Float64Array; n: number }>();
+  private static grow(a: Float64Array, need: number) {
+    if (need <= a.length) return a;
+    const b = new Float64Array(Math.max(need, 2 * a.length));
+    b.set(a);
+    return b;
+  }
+  add(c: LiveChunk) {
+    this.tbuf = LiveData.grow(this.tbuf, c.from + c.time.length);
+    this.tbuf.set(c.time, c.from);
+    this.n = c.from + c.time.length;
+    if (this.n && isNaN(this.start)) this.start = this.tbuf[0];
+    this.stop = c.stop;
+    this.t = c.t;
+    for (const [name, { from, v }] of Object.entries(c.cols)) {
+      const e = this.cols.get(name) ?? { a: new Float64Array(1024), n: 0 };
+      e.a = LiveData.grow(e.a, from + v.length);
+      e.a.set(v, from);
+      e.n = from + v.length;
+      this.cols.set(name, e);
+    }
+  }
+  time() {
+    return this.tbuf.subarray(0, this.n);
+  }
+  col(name: string): Float64Array | undefined {
+    const e = this.cols.get(name);
+    return e ? e.a.subarray(0, Math.min(e.n, this.n)) : undefined;
+  }
+}
+let liveData: LiveData | null = null;
+const liveBox = $("plot-live") as HTMLInputElement;
+liveBox.checked = pref("livePlot", "1") === "1";
+liveBox.onchange = () => setPref("livePlot", liveBox.checked ? "1" : "0");
+
+/** Data of a plotted series from a result (`time`, `col`), expressions evaluated. */
+function seriesData(name: string, s: { expr?: string } | undefined, time: Float64Array, col: (n: string) => Float64Array | undefined) {
+  if (s?.expr) return tools.evalSeries(s as Parameters<typeof tools.evalSeries>[0]);
+  const y = col(name);
+  if (!y) return null;
+  const sp = plot.subplots.find((p) => p.series.some((q) => q.name === name));
+  const x = sp?.xName ? col(sp.xName) : time;
+  return x ? { x, y } : null;
+}
+
+/** The time axis and trajectories shown: a live run's rows so far, or the last result's. */
+const shownTime = () => liveData?.time() ?? cache?.time ?? null;
+const shownCol = (n: string) => (liveData ? liveData.col(n) : cache?.cols.get(n));
+
+let liveDraw = false;
+/** Counts of live slices received and drawn (for automated checks). */
+const liveStats = { chunks: 0, draws: 0, runs: 0, lastPoints: 0 };
+function onLiveChunk(c: LiveChunk) {
+  if (!liveData) return;
+  liveData.add(c);
+  liveStats.chunks++;
+  liveStats.lastPoints = liveData.n;
+  if (liveDraw) return;
+  liveDraw = true;
+  requestAnimationFrame(() => {
+    liveDraw = false;
+    const d = liveData;
+    if (!d) return;
+    plot.liveRange = isFinite(d.start) && d.stop > d.start ? [d.start, d.stop] : null;
+    plot.setLive((n, s) => seriesData(n, s, d.time(), (k) => d.col(k)));
+    liveStats.draws++;
+    dashboard.data(d.time(), (k) => d.col(k));
+    const st = `t = ${+d.t.toPrecision(4)} / ${+d.stop.toPrecision(4)} s${c.paused ? " (paused)" : ""}`;
+    $("live-status").textContent = st;
+    dashboard.setStatus(st);
+  });
+}
+
+/** Simulate the open model. A live run (the Live box, or `opts.pace` from the dashboard)
+ * streams its rows into the plot while it runs; `opts.pace` paces it against wall time. */
+async function simulate(opts: { pace?: number; names?: string[] } = {}) {
   if (!current) {
     log("Open a model first.", "warn");
     return;
   }
+  if (liveData) {
+    log("A live run is going on: stop it first.", "warn");
+    return;
+  }
   const name = current.path;
-  log(`Simulating ${name}…`);
+  log(`Simulating ${name}${opts.pace ? ` live at ${opts.pace}× real time` : ""}…`);
   const btn = $("btn-sim") as HTMLButtonElement;
   btn.disabled = true;
   const t0 = performance.now();
   try {
     const set = settings();
-    const s = await api.simulate(name, set);
+    const live = !!opts.pace || (liveBox.checked && !set.profile);
+    let s: SimSummary & { stopped?: boolean };
+    if (live) {
+      const plotted = plot.subplots.flatMap((sp) => [...sp.series.filter((x) => !x.run && !x.expr).map((x) => x.name), ...(sp.xName && sp.xName !== "frequency" ? [sp.xName] : [])]);
+      const names = [...new Set([...plotted, ...tools.exprNames(), ...dashboard.outputNames(), ...(opts.names ?? [])])];
+      liveData = new LiveData();
+      liveStats.runs++;
+      $("live-stop").classList.remove("hidden");
+      $("live-status").textContent = "starting…";
+      if (!(mode === "modeling" && stripShown())) setMode("simulation");
+      try {
+        s = await api.simulateLive(name, set, { names, pace: opts.pace }, onLiveChunk);
+      } finally {
+        liveData = null;
+        plot.liveRange = null;
+        $("live-stop").classList.add("hidden");
+        $("live-status").textContent = "";
+      }
+    } else s = await api.simulate(name, set);
     summary = s;
     summaryPath = name;
     void updatePerformance(!!set.profile);
     if (!s.ok) {
-      log(s.error ?? "simulation failed", "err");
+      const err = s.error ?? "simulation failed";
+      const atInit = !s.vars?.length || /initiali[sz]ation|structurally singular|overdetermined|underdetermined/i.test(err);
+      logLink(err, "err", atInit ? "Debug initialization ▸" : "Debug the failing solve ▸", () => void openDebugger(name, !atInit));
       if (!s.vars?.length) return;
     }
     for (const w of s.warnings ?? []) log(`warning: ${w}`, "warn");
@@ -446,18 +793,21 @@ async function simulate() {
     }
     showRecommendation($("solver-hint"), $("set-method") as HTMLSelectElement, s.stats, log);
     cache = { time: new Float64Array(), cols: new Map() };
-    const plotted = plot.subplots.flatMap((sp) => sp.series.map((x) => x.name));
+    const plotted = plot.subplots.flatMap((sp) => sp.series.filter((x) => !x.expr).map((x) => x.name));
     const xNames = plot.subplots.map((sp) => sp.xName).filter((x): x is string => !!x);
-    const names = [...new Set([...plotted, ...xNames])].filter((n) => s.vars.some((v) => v.name === n));
+    const names = [...new Set([...plotted, ...xNames, ...tools.exprNames(), ...dashboard.outputNames()])].filter((n) => s.vars.some((v) => v.name === n));
     await fetchSeries(names.length ? names : ["time"]);
-    plot.update((n) => {
-      const y = cache!.cols.get(n);
-      if (!y) return null;
-      const sp = plot.subplots.find((p) => p.series.some((q) => q.name === n));
-      const x = sp?.xName ? cache!.cols.get(sp.xName) : cache!.time;
-      return x ? { x, y } : null;
-    });
-    setMode("simulation");
+    plot.update((n, ser) => seriesData(n, ser, cache!.time, (k) => cache!.cols.get(k)));
+    for (const sp of plot.subplots) {
+      for (const q of sp.series) q.choices = choicesOf(s.vars.find((v) => v.name === q.name));
+      if (sp.xName) sp.xChoices = choicesOf(s.vars.find((v) => v.name === sp.xName));
+    }
+    plot.applyUnits();
+    refreshUnitSelects();
+    dashboard.data(cache.time, (k) => cache!.cols.get(k));
+    if (s.stopped) log(`${name}: stopped by the user`, "warn");
+    if (!(mode === "modeling" && stripShown())) setMode("simulation");
+    else placePlot();
     renderVariables();
     refreshXSelect();
     experiments.recordSimulation(name, settings(), s, cache.time, cache.cols);
@@ -470,6 +820,7 @@ async function simulate() {
 }
 
 $("btn-sim").onclick = () => simulate();
+$("live-stop").onclick = () => void api.liveControl({ stop: true });
 decorateMethodSelect($("set-method") as HTMLSelectElement);
 window.addEventListener("keydown", (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
@@ -489,8 +840,26 @@ $("btn-check").onclick = async () => {
       "ok",
     );
     for (const w of r.warnings ?? []) log(`warning: ${w}`, "warn");
-  } else log(r.error ?? "check failed", "err");
+  } else {
+    const path = current.path;
+    logLink(r.error ?? "check failed", "err", "Diagnose ▸", () => void openDebugger(path, false));
+  }
+  logUnits(r.units);
 };
+
+/** Unit issues of a Check, as warnings in the messages panel. */
+function logUnits(u: UnitSummary | undefined) {
+  if (!u) return;
+  const shown = 50;
+  for (const i of u.issues.slice(0, shown)) log(`unit warning: ${i.message}`, "warn unit");
+  if (u.issues.length > shown) log(`… ${u.issues.length - shown} more unit warnings`, "warn unit");
+  log(
+    `Units: ${u.issues.length} issue${u.issues.length === 1 ? "" : "s"}; ${u.declared} variables with a declared unit, ` +
+      `${u.inferred} inferred, ${u.unknown} unknown` +
+      (u.unparsed.length ? `; unparsed unit strings: ${u.unparsed.join(", ")}` : ""),
+    u.issues.length ? "warn" : "ok",
+  );
+}
 
 // ---------------------------------------------------------------- variable browser
 interface VarNode {
@@ -569,7 +938,7 @@ function renderVariables() {
       nm.textContent = k.name;
       row.appendChild(nm);
       if (k.v) {
-        row.title = `${k.full}${k.v.unit ? ` [${k.v.unit}]` : ""}${k.v.description ? `\n${k.v.description}` : ""}`;
+        row.title = `${k.full}${k.v.unit ? ` [${k.v.unit}]${k.v.unit_inferred ? " (inferred)" : ""}` : ""}${k.v.description ? `\n${k.v.description}` : ""}`;
         if (k.v.kind === "param") {
           const inp = document.createElement("input");
           inp.className = "par";
@@ -601,9 +970,9 @@ function renderVariables() {
           val.className = "val";
           const y = cache?.cols.get(k.full);
           if (y && t && y.length) {
-            const du = displayUnit(k.v.unit);
+            const du = varDisplay(k.v);
             val.textContent = `${(+((y[y.length - 1] * du.scale + du.offset).toPrecision(5))).toString()} ${du.unit}`;
-          } else val.textContent = k.v.unit ? `[${displayUnit(k.v.unit).unit}]` : "";
+          } else val.textContent = k.v.unit ? `[${varDisplay(k.v).unit}]` : "";
           row.appendChild(val);
         }
       }
@@ -626,12 +995,21 @@ function renderVariables() {
 $("var-filter").addEventListener("input", () => renderVariables());
 
 async function togglePlot(name: string, v: VarSummary) {
+  if (liveData) {
+    // A run is streaming in: plot its rows so far and stream this variable too.
+    const d = liveData;
+    await api.liveVars([name]);
+    plot.toggle({ name, unit: v.unit, x: d.time(), y: d.col(name) ?? new Float64Array() });
+    renderVariables();
+    return;
+  }
+  if (!cache) return;
   await fetchSeries([name]);
   const sp = plot.subplots[plot.active];
   if (sp.xName) await fetchSeries([sp.xName]);
   const y = cache!.cols.get(name)!;
   const x = sp.xName ? cache!.cols.get(sp.xName)! : cache!.time;
-  plot.toggle({ name, unit: v.unit, x, y });
+  plot.toggle({ name, unit: v.unit, x, y, choices: choicesOf(v) });
   renderVariables();
   experiments.noteSeries(summaryPath, name, v.unit, cache!.time, y);
 }
@@ -641,7 +1019,76 @@ function refreshXSelect() {
   const cur = plot.subplots[plot.active]?.xName ?? "";
   sel.innerHTML = `<option value="">time</option>` + (summary?.vars ?? []).filter((v) => v.kind !== "param").map((v) => `<option${v.name === cur ? " selected" : ""}>${escapeHtml(v.name)}</option>`).join("");
 }
+// ---------------------------------------------------------------- display units
+/** Display units of a variable: the result's unit table entry for its unit and displayUnit. */
+function choicesOf(v: VarSummary | undefined): DisplayChoices | undefined {
+  if (!v?.unit) return undefined;
+  return summary?.display?.[`${v.unit}|${v.display_unit ?? ""}`];
+}
+
+/** How a variable is shown outside the plot: its default display unit in the chosen system. */
+function varDisplay(v: VarSummary): { unit: string; scale: number; offset: number } {
+  const c = choicesOf(v);
+  return c?.options.length ? pickUnit(c, plot.imperial) : displayUnit(v.unit);
+}
+
+function fillUnitSelect(sel: HTMLSelectElement, c: DisplayChoices | undefined, picked: string | undefined) {
+  if (!c?.options.length) {
+    sel.innerHTML = `<option value="">—</option>`;
+    sel.disabled = true;
+    return;
+  }
+  sel.disabled = false;
+  const auto = pickUnit(c, plot.imperial).unit;
+  sel.innerHTML =
+    `<option value="">auto (${escapeHtml(auto)})</option>` +
+    c.options
+      .map((o) => `<option value="${escapeHtml(o.unit)}"${o.unit === picked ? " selected" : ""}>${escapeHtml(o.unit)}${o.imperial ? " ·imp" : ""}</option>`)
+      .join("");
+}
+
+function refreshUnitSelects() {
+  const sp = plot.subplots[plot.active];
+  fillUnitSelect($("plot-yunit") as HTMLSelectElement, plot.yChoices(sp), sp?.yUnit);
+  fillUnitSelect($("plot-xunit") as HTMLSelectElement, plot.xChoices(sp), sp?.xDisplay);
+}
+
+$("plot-yunit").onchange = () => {
+  const sp = plot.subplots[plot.active];
+  if (!sp) return;
+  sp.yUnit = ($("plot-yunit") as HTMLSelectElement).value || undefined;
+  plot.applyUnits();
+  renderVariables();
+};
+$("plot-xunit").onchange = () => {
+  const sp = plot.subplots[plot.active];
+  if (!sp) return;
+  sp.xDisplay = ($("plot-xunit") as HTMLSelectElement).value || undefined;
+  plot.draw();
+};
+{
+  const box = $("plot-imperial") as HTMLInputElement;
+  try {
+    plot.imperial = localStorage.getItem("daedalus.imperial") === "1";
+  } catch {
+    /* storage unavailable: SI */
+  }
+  box.checked = plot.imperial;
+  box.onchange = () => {
+    plot.imperial = box.checked;
+    try {
+      localStorage.setItem("daedalus.imperial", box.checked ? "1" : "0");
+    } catch {
+      /* not persisted */
+    }
+    plot.applyUnits();
+    refreshUnitSelects();
+    renderVariables();
+  };
+}
+
 plot.onChange = () => {
+  refreshUnitSelects();
   refreshXSelect();
   renderVariables();
 };
@@ -649,7 +1096,10 @@ $("plot-x").onchange = async () => {
   const xName = ($("plot-x") as HTMLSelectElement).value || undefined;
   const sp = plot.subplots[plot.active];
   sp.xName = xName;
-  sp.xUnit = xName ? summary?.vars.find((v) => v.name === xName)?.unit : undefined;
+  const xv = xName ? summary?.vars.find((v) => v.name === xName) : undefined;
+  sp.xUnit = xv?.unit;
+  sp.xChoices = choicesOf(xv);
+  sp.xDisplay = undefined;
   if (xName) await fetchSeries([xName]);
   for (const s of sp.series) if (!s.run) s.x = xName ? cache!.cols.get(xName)! : cache!.time;
   plot.draw();
@@ -694,9 +1144,10 @@ let animData: AnimData | null = null;
 function setSimView(v: typeof simView) {
   simView = v;
   setActive($("sim-views"), "data-sim", v);
-  $("plot").classList.toggle("hidden", v !== "plot");
+  $("plot-body").classList.toggle("hidden", v !== "plot");
+  $("plot-tools").classList.toggle("hidden", v !== "plot");
   $("anim").classList.toggle("hidden", v !== "anim");
-  for (const id of ["plot-new", "plot-clear", "export-csv", "export-mat"]) $(id).classList.toggle("hidden", v !== "plot");
+  for (const id of ["plot-new", "plot-clear", "export-csv", "export-mat", "plot-units"]) $(id).classList.toggle("hidden", v !== "plot");
   $("plot-x").parentElement!.classList.toggle("hidden", v !== "plot");
   if (v === "plot") {
     anim?.stop();
@@ -762,14 +1213,170 @@ function setMode(m: typeof mode) {
   $("model-pane").classList.toggle("hidden", m !== "modeling");
   $("plot-pane").classList.toggle("hidden", m !== "simulation");
   analysis.setVisible(m === "analysis");
-  if (m === "simulation") requestAnimationFrame(() => (simView === "plot" ? plot.draw() : anim?.resize()));
-  else if (m === "modeling") showView();
+  tools.closeMenu();
+  placePlot();
+  if (m === "simulation") {
+    requestAnimationFrame(() => (simView === "plot" ? plot.draw() : anim?.resize()));
+    void refreshSimDiagram();
+  } else if (m === "modeling") showView();
 }
 $("topbar").querySelectorAll<HTMLButtonElement>("button[data-mode]").forEach((b) => (b.onclick = () => setMode(b.dataset.mode as typeof mode)));
 
+// ---------------------------------------------------------------- plot tools
+/** Variables of the result the plot shows. */
+const shownVars = () => summary?.vars ?? null;
+const tools = new PlotTools(
+  {
+    plot,
+    vars: shownVars,
+    time: shownTime,
+    col: shownCol,
+    fetch: async (names) => {
+      if (liveData) await api.liveVars(names);
+      else await fetchSeries(names);
+    },
+    toggle: async (name) => {
+      const v = summary?.vars.find((x) => x.name === name);
+      if (!v) return;
+      if (mode === "modeling" && !stripOpen) setStrip(true);
+      await togglePlot(name, v);
+    },
+    log,
+    classInfo: (p) => src.get(p),
+  },
+  $("plot-tools"),
+  $("plot-stats"),
+);
+
+/** Whether the diagram's clicks plot variables: results of the class shown, not editing. */
+function plottable(cls: ClassInfo | null | undefined) {
+  return !!summary && !!cls && summaryPath === cls.path && !diagram.svg.classList.contains("editing");
+}
+diagram.onComponentClick = (c, ev) => {
+  if (plottable(current) && view === "diagram") tools.componentMenu(c, ev.clientX, ev.clientY);
+};
+diagram.onConnection = (from, to, ev) => {
+  if (plottable(current) && view === "diagram" && current) void tools.connectionMenu(current, from, to, ev.clientX, ev.clientY);
+};
+
+// The plot strip of the Modeling page shows the same plot window as the Simulation page.
+let stripOpen = pref("plotStrip", "open") !== "closed";
+let stripH = Math.max(80, +pref("plotStripH", "260") || 260);
+/** Whether the strip shows the plot right now (Modeling page, results, open). */
+const stripShown = () => mode === "modeling" && !!summary && stripOpen;
+function placePlot() {
+  const strip = $("plot-strip");
+  strip.classList.toggle("hidden", !(mode === "modeling" && summary));
+  strip.classList.toggle("collapsed", !stripOpen);
+  strip.style.height = `${stripH}px`;
+  $("strip-toggle").textContent = stripOpen ? "▾ Plot" : "▸ Plot";
+  $("strip-note").textContent =
+    summary && current && summaryPath !== current.path
+      ? `Results of ${summaryPath}`
+      : "Click a component or connection in the diagram to plot its variables";
+  plot.moveTo(stripShown() ? $("strip-host") : $("plot"));
+}
+function setStrip(open: boolean) {
+  stripOpen = open;
+  setPref("plotStrip", open ? "open" : "closed");
+  placePlot();
+}
+$("strip-toggle").onclick = () => setStrip(!stripOpen);
+$("strip-new").onclick = () => plot.addSubplot();
+$("strip-clear").onclick = () => plot.clear();
+$("strip-open").onclick = () => setMode("simulation");
+$("strip-resize").addEventListener("pointerdown", (e) => {
+  const el = $("strip-resize");
+  el.setPointerCapture(e.pointerId);
+  const y0 = e.clientY;
+  const h0 = stripH;
+  const max = $("model-pane").clientHeight - 80;
+  const move = (ev: PointerEvent) => {
+    stripH = Math.max(80, Math.min(max, h0 - (ev.clientY - y0)));
+    $("plot-strip").style.height = `${stripH}px`;
+  };
+  const up = () => {
+    el.removeEventListener("pointermove", move);
+    el.removeEventListener("pointerup", up);
+    setPref("plotStripH", String(Math.round(stripH)));
+  };
+  el.addEventListener("pointermove", move);
+  el.addEventListener("pointerup", up);
+});
+
+// The diagram of the results' model next to the plot (Simulation page).
+const simDiagram = new DiagramView($("sim-diagram"), src, classes);
+let simDiagramOn = pref("simDiagram", "1") === "1";
+let simDiagramShown = "";
+simDiagram.onSelect = (c) => showInspector(c);
+simDiagram.onComponentClick = (c, ev) => tools.componentMenu(c, ev.clientX, ev.clientY);
+simDiagram.onConnection = (from, to, ev) => {
+  const info = classes.get(summaryPath);
+  if (info) void tools.connectionMenu(info, from, to, ev.clientX, ev.clientY);
+};
+async function refreshSimDiagram() {
+  $("sim-diagram").classList.toggle("hidden", !simDiagramOn);
+  $("sim-diagram-btn").classList.toggle("active", simDiagramOn);
+  if (!simDiagramOn || mode !== "simulation" || !summaryPath) return;
+  const info = await src.get(summaryPath);
+  if (!info || (simDiagramShown === summaryPath && simDiagram.rendered?.cls === info)) return;
+  simDiagramShown = summaryPath;
+  await simDiagram.show(info, info.components.some((c) => c.type_kind !== "type" && !c.protected) ? "diagram" : "icon");
+}
+$("sim-diagram-btn").onclick = () => {
+  simDiagramOn = !simDiagramOn;
+  setPref("simDiagram", simDiagramOn ? "1" : "0");
+  simDiagramShown = "";
+  void refreshSimDiagram();
+};
+
+// ---------------------------------------------------------------- dashboard
+const dashboard = new Dashboard($("dashboard"), {
+  model: () => current?.path ?? null,
+  vars: () => (summary && current && summaryPath === current.path ? summary.vars : null),
+  overrides,
+  runLive: (pace, names) => simulate({ pace, names }),
+  running: () => !!liveData,
+  setParams: (ps) => api.liveParams(ps),
+  fetch: async (names) => {
+    if (liveData) {
+      await api.liveVars(names);
+      return;
+    }
+    if (!cache || !summary || summaryPath !== current?.path) return;
+    await fetchSeries(names.filter((n) => summary!.vars.some((v) => v.name === n)));
+    dashboard.data(cache.time, (k) => cache!.cols.get(k));
+  },
+  control: (c) => api.liveControl(c),
+  log,
+});
+dashboard.shareBase = () => {
+  const plotted = [...new Set(plot.subplots.flatMap((sp) => sp.series.filter((x) => !x.run && !x.expr).map((x) => x.name)))];
+  const st = settings();
+  const options: SimSettings = { ...st };
+  delete options.params;
+  return experiments.shareUrl(current?.path ?? "", [...overrides.entries()], options, plotted);
+};
+let dashOn = pref("dashboardOpen", "0") === "1";
+function showDashboard(on: boolean) {
+  dashOn = on;
+  setPref("dashboardOpen", on ? "1" : "0");
+  $("dashboard").classList.toggle("hidden", !on);
+  $("dash-btn").classList.toggle("active", on);
+  if (on && mode !== "simulation") setMode("simulation");
+}
+$("dash-btn").onclick = () => showDashboard(!dashOn);
+$("dashboard").classList.toggle("hidden", !dashOn);
+$("dash-btn").classList.toggle("active", dashOn);
+
 // ---------------------------------------------------------------- loading sources
 async function load(files: [string, string][], label: string, res: [string, ArrayBuffer][] = []) {
-  for (const [p, b] of res) resources.set(p, b);
+  for (const [p, b] of res) {
+    resources.set(p, b);
+    // the worker keeps a copy for model packages (Save .zip)
+    void api.setResource(p, b.slice(0));
+  }
+  for (const [p, t] of files) baseline.set(p, t);
   if (!files.length) {
     if (res.length) log(`Loaded ${res.length} shape files (${label})`, "ok");
     return;
@@ -786,7 +1393,26 @@ async function load(files: [string, string][], label: string, res: [string, Arra
   for (const [uri, e] of Object.entries(errs).slice(0, 5)) log(`${uri}: ${e[0]}`, "err");
   await refreshTree();
 }
-const loadPicked = (p: Picked, label: string) => load(p.mo, label, p.resources);
+async function loadPicked(p: Picked, label: string) {
+  for (const z of p.zips) {
+    try {
+      const model = await openPackage(z, libHost);
+      if (model) await openClass(model);
+    } catch (e) {
+      log(`${z.name}: ${e instanceof Error ? e.message : e}`, "err");
+    }
+  }
+  if (p.mo.length || p.resources.length) await load(p.mo, label, p.resources);
+}
+$("btn-libs").onclick = () => openLibraries(libHost);
+$("btn-save-zip").onclick = async () => {
+  if (!current) return log("Open a model first.", "warn");
+  try {
+    await savePackage(current.path, libHost);
+  } catch (e) {
+    log(`Save .zip: ${e instanceof Error ? e.message : e}`, "err");
+  }
+};
 $("open-files").onchange = async (e) => loadPicked(await readPicked((e.target as HTMLInputElement).files!), "files");
 $("open-dir").onchange = async (e) => loadPicked(await readPicked((e.target as HTMLInputElement).files!), "folder");
 document.body.addEventListener("dragover", (e) => e.preventDefault());
@@ -841,13 +1467,26 @@ async function loadMsl(): Promise<boolean> {
 /** Milestones since navigation start, for automated checks. */
 const timings: { interactive?: number; mslBrowsable?: number } = {};
 
+/** Dashboard layout from a share link, applied when its model opens. */
+let pendingDash: { model: string; layout: ReturnType<typeof layoutFromHash> } | null = null;
+
 async function start() {
-  // `#Model.Name`, or a shared run `#Model.Name?p.k=2&stop=3&plot=y` (experiments.ts)
+  // `#Model.Name`, or a shared run `#Model.Name?p.k=2&stop=3&plot=y` (experiments.ts),
+  // with `&dash=` a dashboard layout (dashboard.ts)
   const share = experiments.parseShare(location.hash);
   const hash = share.model;
+  {
+    const l = layoutFromHash(location.hash);
+    if (l && hash) {
+      pendingDash = { model: hash, layout: l };
+      $("dashboard").classList.remove("hidden");
+      $("dash-btn").classList.add("active");
+      dashOn = true;
+    }
+  }
   // for automated checks
   const w = window as unknown as { daedalus: Record<string, unknown> };
-  w.daedalus = { api, simulate, openClass, plot, timings, analysis, setMode, togglePlot: (n: string) => togglePlot(n, summary!.vars.find((v) => v.name === n)!), editor, anim: () => anim, animData: () => animData, setSimView };
+  w.daedalus = { api, simulate, openClass, plot, timings, analysis, setMode, togglePlot: (n: string) => togglePlot(n, summary!.vars.find((v) => v.name === n)!), editor, textView: text, anim: () => anim, animData: () => animData, setSimView, tools, dashboard, diagram, simDiagram, overrides, live: () => liveData, liveStats, mode: () => mode, linear, applyEdit, baseline, setView: (v: typeof view) => { view = v; return showView(); } };
   await load(bundledLibrary(), "Daedalus library", await bundledResources());
   initAssistant({
     currentClass: () => current?.path ?? null,
@@ -867,6 +1506,8 @@ async function start() {
   await editor.restore();
   const msl = loadMsl();
   w.daedalus.msl = msl;
+  // libraries installed on earlier visits, once the MSL they use is registered
+  w.daedalus.libs = msl.then(() => restoreInstalled(libHost)).then(() => reportConflicts(libHost));
   if (hash && isMsl(hash)) {
     log(`${hash} opens once the Modelica Standard Library is loaded…`);
     await msl;

@@ -188,7 +188,7 @@ impl StateJac {
         rt: &mut Runtime,
         t: f64,
         y: &[f64],
-        atol: f64,
+        atol: &[f64],
         rtol: f64,
         stats: &mut SolverStats,
     ) -> bool {
@@ -252,7 +252,7 @@ impl StateJac {
         t: f64,
         y: &[f64],
         f0: &[f64],
-        atol: f64,
+        atol: &[f64],
         rtol: f64,
         stats: &mut SolverStats,
     ) -> bool {
@@ -265,7 +265,7 @@ impl StateJac {
             let group = std::mem::take(&mut self.colors[c]);
             let mut hs = Vec::with_capacity(group.len());
             for &j in &group {
-                let h = eps * y[j].abs().max(atol / rtol.max(1e-12)).max(1e-8);
+                let h = eps * y[j].abs().max(atol[j] / rtol.max(1e-12)).max(1e-8);
                 yp[j] = y[j] + h;
                 hs.push(h);
             }

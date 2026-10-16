@@ -61,7 +61,8 @@ const NEWTON_MAXITER: usize = 8;
 
 pub struct Esdirk {
     pub rtol: f64,
-    pub atol: f64,
+    /// Absolute tolerance of each state (`tolerance * |nominal|`).
+    pub atol: Vec<f64>,
     pub max_step: f64,
     n: usize,
     t: f64,
@@ -97,7 +98,7 @@ impl Esdirk {
     pub fn new(
         n: usize,
         rtol: f64,
-        atol: f64,
+        atol: Vec<f64>,
         max_step: f64,
         pattern: &[Vec<u32>],
         mode: JacobianMode,
@@ -159,7 +160,7 @@ impl Esdirk {
             self.base[i] = acc;
             // Predictor after a restart: the explicit part plus the last stage derivative.
             self.z[i] = acc + hg * self.k[s - 1][i];
-            self.scale[i] = self.atol + self.rtol * acc.abs();
+            self.scale[i] = self.atol[i] + self.rtol * acc.abs();
         }
         // Better: the cubic Hermite interpolant of the last step, extrapolated.
         let hp = self.t - self.t_old;
@@ -258,7 +259,8 @@ impl Esdirk {
             self.dz
                 .iter()
                 .zip(&self.base)
-                .map(|(e, u)| e / (self.atol + self.rtol * u.abs())),
+                .zip(&self.atol)
+                .map(|((e, u), a)| e / (a + self.rtol * u.abs())),
             n,
         );
         if est.is_finite() { est } else { 1e10 }
@@ -302,7 +304,7 @@ impl Integrator for Esdirk {
                 &f0,
                 3.0,
                 self.rtol,
-                self.atol,
+                &self.atol,
                 span.min(self.max_step),
             );
             self.stats.rhs_evals += 1;
@@ -321,7 +323,7 @@ impl Integrator for Esdirk {
             if self.need_jac {
                 let x = self.x.clone();
                 self.jac
-                    .compute(rt, self.t, &x, self.atol, self.rtol, &mut self.stats);
+                    .compute(rt, self.t, &x, &self.atol, self.rtol, &mut self.stats);
                 self.need_jac = false;
                 self.jac_current = true;
                 self.lu_hg = f64::NAN;
@@ -370,7 +372,7 @@ impl Integrator for Esdirk {
                 }
                 // (I - hγJ)^-1 (h e) = (I/(hγ) - J)^-1 (e / γ)
                 self.dz[i] = e / GAMMA;
-                self.scale[i] = self.atol + self.rtol * self.x[i].abs().max(self.z[i].abs());
+                self.scale[i] = self.atol[i] + self.rtol * self.x[i].abs().max(self.z[i].abs());
             }
             self.sys.solve(&mut self.dz);
             let err = rms(self.dz.iter().zip(&self.scale).map(|(d, s)| d / s), n);

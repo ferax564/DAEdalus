@@ -259,7 +259,7 @@ pub fn create_derivative_vars(w: &mut Work) {
 
 /// Check that the number of equations matches the number of unknowns
 /// (unknowns whose derivative appears count as determined by integration).
-fn check_balance(w: &Work) -> Result<()> {
+fn check_balance(w: &mut Work) -> Result<()> {
     let n_unknown = w.unknown.iter().filter(|&&u| u).count();
     let n_diff = (0..w.vars.len())
         .filter(|&v| w.unknown[v] && w.der_of[v].is_some())
@@ -272,6 +272,11 @@ fn check_balance(w: &Work) -> Result<()> {
         } else {
             "underdetermined"
         };
+        if w.trace.is_some() {
+            let active: Vec<bool> = w.der_of.iter().map(|d| d.is_none()).collect();
+            let eqs = w.eqs.clone();
+            w.record_singular("model", &eqs, &|v| active[v as usize]);
+        }
         bail!(
             "model is {what}: {n_eq} equations for {need} unknowns ({n_unknown} variables, {n_diff} of them appear differentiated){}",
             unmatched_hint(w)
@@ -338,6 +343,7 @@ fn unmatched_hint(w: &Work) -> String {
 pub fn pantelides(w: &mut Work) -> Result<()> {
     check_balance(w)?;
     prefer_state_change(w);
+    prefer_derivative_states(w);
     let n_orig = w.eqs.len();
     // Time-invariant unknowns and their defining equations are solved like parameters:
     // they take no part in index reduction.
@@ -401,6 +407,13 @@ pub fn pantelides(w: &mut Work) -> Result<()> {
             colored_eqs.sort_unstable();
             let no_unknowns = colored_eqs.iter().all(|&e| adj[e].is_empty());
             if no_unknowns || level > 10 || w.eqs.len() > max_eqs {
+                if w.trace.is_some() {
+                    let active: Vec<bool> = (0..w.vars.len())
+                        .map(|v| w.der_of[v].is_none() && !invariant.contains(&(v as VarId)))
+                        .collect();
+                    let eqs = w.eqs.clone();
+                    w.record_singular("index reduction", &eqs, &|v| active[v as usize]);
+                }
                 let mut msg = String::from(
                     "structurally singular system; the following equations cannot be solved:\n",
                 );
@@ -432,6 +445,7 @@ pub fn pantelides(w: &mut Work) -> Result<()> {
                     origin: eq.origin,
                     parent: Some(l),
                     derived: None,
+                    src: eq.src,
                 };
                 w.eqs.push(new);
                 let ni = w.eqs.len() - 1;
@@ -582,9 +596,64 @@ fn prefer_state_change(w: &mut Work) {
             origin: eq.origin,
             parent: Some(l),
             derived: None,
+            src: eq.src,
         });
         let ni = w.eqs.len() - 1;
         w.eqs[l].derived = Some(ni);
+    }
+}
+
+/// Make a preferred variable defined as a derivative (`v_rel = der(s_rel)` with
+/// `stateSelect = prefer` in a translational spring-damper, whose `v_rel` is never
+/// differentiated in the model) a candidate state, as Dymola does: the defining equation
+/// is differentiated, so index reduction differentiates the constraints on `s_rel` once
+/// more and the dummy-derivative selection can keep `v_rel` as a state instead of the
+/// velocity of a neighbouring mass. Which variable is a state decides what a `reinit`
+/// leaves untouched: a mass hitting its stop must not stop the mass at the other end of
+/// the spring.
+fn prefer_derivative_states(w: &mut Work) {
+    let n_eqs = w.eqs.len();
+    for k in 0..n_eqs {
+        let eq = w.eqs[k];
+        if w.invariant_eqs.contains(&k) || eq.derived.is_some() || eq.parent.is_some() {
+            continue;
+        }
+        let u = w.eq_unknowns(&eq);
+        if u.len() != 2 {
+            continue;
+        }
+        let preferred = |v: VarId| {
+            let x = &w.vars[v as usize];
+            w.unknown[v as usize]
+                && w.der_of[v as usize].is_none()
+                && w.base_of[v as usize].is_none()
+                && !w.invariant.contains(&v)
+                && x.ty == VarType::Real
+                && x.kind == VarKind::Continuous
+                && matches!(x.state_select, StateSelect::Prefer | StateSelect::Always)
+        };
+        let is_der = |v: VarId| w.base_of[v as usize].is_some() && w.der_of[v as usize].is_none();
+        let (p, d) = if preferred(u[0]) && is_der(u[1]) {
+            (u[0], u[1])
+        } else if preferred(u[1]) && is_der(u[0]) {
+            (u[1], u[0])
+        } else {
+            continue;
+        };
+        w.der_var(p);
+        w.der_var(d);
+        let lhs = w.time_derivative(eq.lhs);
+        let rhs = w.time_derivative(eq.rhs);
+        w.eqs.push(Eq {
+            lhs,
+            rhs,
+            origin: eq.origin,
+            parent: Some(k),
+            derived: None,
+            src: eq.src,
+        });
+        let ni = w.eqs.len() - 1;
+        w.eqs[k].derived = Some(ni);
     }
 }
 

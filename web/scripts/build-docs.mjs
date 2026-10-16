@@ -47,6 +47,8 @@ const NAV = [
     ["linearize.md", "Linearization"],
     ["fmi.md", "FMI 2.0 export"],
     ["optimal-control.md", "Optimal control, MPC, MHE"],
+    ["embedded.md", "Embedded C and processor in the loop"],
+    ["sciml.md", "Scientific machine learning"],
   ]],
   ["Internals", [
     ["architecture.md", "Architecture"],

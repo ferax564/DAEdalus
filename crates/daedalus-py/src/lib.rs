@@ -451,6 +451,26 @@ impl CompiledModel {
         Ok(d)
     }
 
+    /// State derivatives `der(x) = f(t, x, u)` at the given points (rows of `states`), with
+    /// input columns `inputs` and the values of the variables `read`. Returns
+    /// `(derivatives, values)` as 2-D NumPy arrays (one row per point).
+    #[pyo3(signature = (t, states, inputs=Vec::new(), params=Vec::new(), read=Vec::new()))]
+    fn rhs<'py>(
+        &self,
+        py: Python<'py>,
+        t: Vec<f64>,
+        states: Vec<Vec<f64>>,
+        inputs: Vec<(String, Vec<f64>)>,
+        params: Vec<(String, f64)>,
+        read: Vec<String>,
+    ) -> PyResult<(Bound<'py, PyArray2<f64>>, Bound<'py, PyArray2<f64>>)> {
+        let m = &self.model;
+        let (der, vals) = py
+            .detach(|| daedalus_core::sim::eval_rhs(m, &params, &t, &states, &inputs, &read))
+            .map_err(SimulationError::new_err)?;
+        Ok((matrix(py, &der, m.states.len()), matrix(py, &vals, read.len())))
+    }
+
     /// Write an FMI 2.0 FMU (Model Exchange and Co-Simulation) to `path`, embedding the
     /// FMI runtime library at `runtime`. Returns a summary dict.
     fn export_fmu<'py>(

@@ -702,6 +702,7 @@ impl<'a, 't> Flattener<'a, 't> {
             );
         }
         // 3. Clock inference over the rate relations.
+        let mut default_base: Option<usize> = None;
         loop {
             let mut changed = false;
             for r in &rels {
@@ -716,6 +717,40 @@ impl<'a, 't> Flattener<'a, 't> {
                         changed = true;
                     }
                     _ => {}
+                }
+            }
+            // A state machine whose clock is not inferred runs on a default clock of 1 s.
+            if !changed {
+                let mut sm_parts: Vec<usize> = self
+                    .sm
+                    .vars
+                    .iter()
+                    .map(|&v| ix_find(&mut part, v as usize))
+                    .filter(|p| clocked.contains(p) && !clock_of.contains_key(p))
+                    .collect();
+                sm_parts.sort();
+                if let Some(&p) = sm_parts.first() {
+                    let base = match default_base {
+                        Some(b) => b,
+                        None => {
+                            cs.bases.push(Base {
+                                kind: BaseKind::Periodic(Arena::ONE),
+                                solver: false,
+                                implicit: false,
+                            });
+                            default_base = Some(cs.bases.len() - 1);
+                            cs.bases.len() - 1
+                        }
+                    };
+                    clock_of.insert(
+                        p,
+                        ClockVal {
+                            base,
+                            period: Rat(1, 1),
+                            shift: Rat(0, 1),
+                        },
+                    );
+                    continue;
                 }
             }
             // An inferred factor still ties the two partitions to the same base.
@@ -811,7 +846,7 @@ impl<'a, 't> Flattener<'a, 't> {
                 bail!("an event clock cannot be super-sampled");
             }
             let g = g.max(1);
-            let (cond, idx, mut acts, h) = match base.kind {
+            let (cond, idx, mut acts, h, now) = match base.kind {
                 BaseKind::Periodic(t) => {
                     let a = &mut self.model.arena;
                     let qe = a.constant(q as f64 / g as f64);
@@ -819,8 +854,13 @@ impl<'a, 't> Flattener<'a, 't> {
                     let ke = a.constant(kmin as f64 / q as f64);
                     let start = a.mul(ke, t);
                     let (cond, n) = self.sample_counter(start, h);
-                    let idx = self.model.arena.pre(n);
-                    (cond, idx, Vec::new(), Some(h))
+                    let a = &mut self.model.arena;
+                    let idx = a.pre(n);
+                    // The nominal instant of the tick, free of the round-off of locating
+                    // the event.
+                    let ih = a.mul(idx, h);
+                    let now = a.add(start, ih);
+                    (cond, idx, Vec::new(), Some(h), now)
                 }
                 BaseKind::Event(c) => {
                     let k = self.sample_count;
@@ -850,7 +890,13 @@ impl<'a, 't> Flattener<'a, 't> {
                     let first = a.cmp(Cmp::Eq, idx, Arena::ZERO);
                     let h = a.if_(first, Arena::ZERO, since);
                     let acts = vec![WhenAction::Assign(n, inc), WhenAction::Assign(tl, now)];
-                    (c, idx, acts, Some(h))
+                    // An event clock whose condition already holds at initialization
+                    // ticks then (as the reference tool does), and afterwards whenever the
+                    // condition becomes true: `{initial() and c, c}`.
+                    let init = a.initial();
+                    let at_init = a.f2(Fn2::And, init, c);
+                    let cond = a.f2(Fn2::Or, at_init, c);
+                    (cond, idx, acts, Some(h), now)
                 }
             };
             for p in parts {
@@ -883,6 +929,7 @@ impl<'a, 't> Flattener<'a, 't> {
                 let info = PartInfo {
                     interval,
                     first_tick: first,
+                    now,
                 };
                 let mut es = part_eqs.remove(&p).unwrap_or_default();
                 let mut vars = part_vars.remove(&p).unwrap_or_default();
@@ -894,6 +941,9 @@ impl<'a, 't> Flattener<'a, 't> {
                     e.rhs = self.strip_clk(e.rhs, Some(&info));
                 }
                 let sols = self.solve_partition(&es, &vars)?;
+                if vars.iter().any(|v| self.sm.vars.contains(v)) {
+                    self.check_acyclic(&sols)?;
+                }
                 for (v, s) in sols {
                     let a = &mut self.model.arena;
                     let val = if active == Arena::ONE {
@@ -959,9 +1009,9 @@ impl<'a, 't> Flattener<'a, 't> {
         let mut cur = e;
         for _ in 0..64 {
             let mut found = false;
-            let (interval, first) = info
-                .map(|i| (i.interval, i.first_tick))
-                .unwrap_or((Arena::ZERO, Arena::ZERO));
+            let (interval, first, now) = info
+                .map(|i| (i.interval, i.first_tick, i.now))
+                .unwrap_or((Arena::ZERO, Arena::ZERO, Arena::ZERO));
             let mut memo = FxHashMap::default();
             let in_part = info.is_some();
             let next = self
@@ -996,6 +1046,7 @@ impl<'a, 't> Flattener<'a, 't> {
                             _ => x,
                         })
                     }
+                    Node::Time if in_part => Some(now),
                     // Inside a partition, comparisons are evaluated at the tick, not latched.
                     Node::Rel(r) if in_part => {
                         let rel = a.relations[r as usize];
@@ -1152,6 +1203,68 @@ impl<'a, 't> Flattener<'a, 't> {
         Ok(out)
     }
 
+    /// Reject a cycle among the solved equations of a partition (an algebraic loop
+    /// between discrete variables, such as an immediate transition whose condition
+    /// reads a variable its from-state computes in the same tick).
+    fn check_acyclic(&self, sols: &[(VarId, ExprId)]) -> Result<()> {
+        let index: FxHashMap<VarId, usize> =
+            sols.iter().enumerate().map(|(i, &(v, _))| (v, i)).collect();
+        let deps: Vec<Vec<usize>> = sols
+            .iter()
+            .map(|&(_, e)| {
+                let mut d = Vec::new();
+                self.model.arena.visit_leaves(e, &mut |n| {
+                    if let Node::Var(w) = n
+                        && let Some(&j) = index.get(&w)
+                    {
+                        d.push(j);
+                    }
+                });
+                d
+            })
+            .collect();
+        // Iterative depth-first search with colours: 1 = on the stack, 2 = done.
+        let mut state = vec![0u8; sols.len()];
+        for root in 0..sols.len() {
+            if state[root] != 0 {
+                continue;
+            }
+            let mut stack: Vec<(usize, usize)> = vec![(root, 0)];
+            state[root] = 1;
+            while let Some(&mut (k, ref mut next)) = stack.last_mut() {
+                if let Some(&j) = deps[k].get(*next) {
+                    *next += 1;
+                    match state[j] {
+                        0 => {
+                            state[j] = 1;
+                            stack.push((j, 0));
+                        }
+                        1 => {
+                            let at = stack.iter().position(|&(x, _)| x == j).unwrap_or(0);
+                            let names: Vec<&str> = stack[at..]
+                                .iter()
+                                .map(|&(x, _)| self.model.var_name(sols[x].0))
+                                .filter(|n| !n.contains('$'))
+                                .take(6)
+                                .collect();
+                            bail!(
+                                "algebraic loop between clocked variables of a state machine{}{} (an immediate \
+                                 transition whose condition depends on its from-state?)",
+                                if names.is_empty() { "" } else { ": " },
+                                names.join(", ")
+                            );
+                        }
+                        _ => {}
+                    }
+                } else {
+                    state[k] = 2;
+                    stack.pop();
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// `if c1 then r1 elseif c2 then r2 else r3` as `([c1, c2], [r1, r2, r3])`.
     fn if_chain(&self, r: ExprId) -> (Vec<ExprId>, Vec<ExprId>) {
         let mut conds = Vec::new();
@@ -1170,7 +1283,7 @@ impl<'a, 't> Flattener<'a, 't> {
     }
 
     /// Residual `r` solved for `v` when `r` is linear in `v`.
-    fn solve_for(&mut self, r: ExprId, v: VarId) -> Option<ExprId> {
+    pub(super) fn solve_for(&mut self, r: ExprId, v: VarId) -> Option<ExprId> {
         let a = &mut self.model.arena;
         let mut memo = FxHashMap::default();
         let d = a.diff(r, Node::Var(v), &mut memo);
@@ -1322,6 +1435,8 @@ impl<'a, 't> Flattener<'a, 't> {
 struct PartInfo {
     interval: ExprId,
     first_tick: ExprId,
+    /// `time` at the tick.
+    now: ExprId,
 }
 
 fn lcm(a: i64, b: i64) -> i64 {

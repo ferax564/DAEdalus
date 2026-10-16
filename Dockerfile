@@ -14,6 +14,8 @@ RUN curl -fsSL "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/$
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
+# The library index is compiled into daedalus-core (`libraries::INDEX_JSON`).
+COPY library/packages.json ./library/packages.json
 ENV CARGO_NET_GIT_FETCH_WITH_CLI=true
 RUN cargo build -p daedalus-wasm --profile release-wasm --target wasm32-unknown-unknown \
     && wasm-bindgen --target web --out-dir /out \

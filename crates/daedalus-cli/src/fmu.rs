@@ -1,4 +1,4 @@
-//! `daedalus fmu`: write an FMI 2.0 FMU (Model Exchange and Co-Simulation).
+//! `daedalus fmu`: write an FMI 2.0 or 3.0 FMU (Model Exchange and Co-Simulation).
 //!
 //! The FMU is written by [`daedalus_core::fmu::write_fmu`]; this module finds the
 //! model-independent runtime `libdaedalus_fmi.so` (crate `daedalus-fmi`) it embeds.
@@ -40,17 +40,18 @@ fn find_runtime(explicit: Option<&Path>) -> anyhow::Result<PathBuf> {
     )
 }
 
-pub fn export(m: &Model, out: &Path, runtime: Option<&Path>) -> anyhow::Result<()> {
+pub fn export(m: &Model, out: &Path, runtime: Option<&Path>, version: u32) -> anyhow::Result<()> {
     let lib = find_runtime(runtime)?;
     let lib_bytes = std::fs::read(&lib).with_context(|| lib.display().to_string())?;
-    let desc = daedalus_core::fmu::write_fmu(
+    let desc = daedalus_core::fmu::write_fmu_version(
         m,
         out,
         &lib_bytes,
         &format!("DAEdalus {}", env!("CARGO_PKG_VERSION")),
+        version,
     )?;
     eprintln!(
-        "FMU {}: {} variables, {} states, {} event indicators, {} inputs, {} outputs",
+        "FMU {} (FMI {version}.0): {} variables, {} states, {} event indicators, {} inputs, {} outputs",
         fmi::model_identifier(&m.name),
         desc.vars.len(),
         desc.n_states,

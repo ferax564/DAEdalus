@@ -55,6 +55,43 @@ pub fn write_fmu(
     runtime: &[u8],
     generator: &str,
 ) -> anyhow::Result<fmi::Description> {
+    write_fmu_version(m, out, runtime, generator, 2)
+}
+
+/// The FMI 3.0 platform tuple of the host (`x86_64-linux`, ...).
+pub fn platform3() -> &'static str {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("linux", "aarch64") => "aarch64-linux",
+        ("linux", "x86") => "x86-linux",
+        ("macos", "aarch64") => "aarch64-darwin",
+        ("macos", _) => "x86_64-darwin",
+        ("windows", "x86") => "x86-windows",
+        ("windows", _) => "x86_64-windows",
+        _ => "x86_64-linux",
+    }
+}
+
+/// [`write_fmu`] for FMI version `version` (2 or 3).
+pub fn write_fmu_version(
+    m: &Model,
+    out: &Path,
+    runtime: &[u8],
+    generator: &str,
+    version: u32,
+) -> anyhow::Result<fmi::Description> {
+    if !m.externals.is_empty() {
+        anyhow::bail!(
+            "the model contains FMU components ({}): exporting it as an FMU is not supported",
+            m.externals
+                .iter()
+                .map(|e| e.file.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    if version != 2 && version != 3 {
+        anyhow::bail!("FMI version {version} is not supported (2 or 3)");
+    }
     let model_bytes = bincode::serialize(m)?;
     let guid = fmi::guid_of(&model_bytes);
     drop(model_bytes);
@@ -64,8 +101,13 @@ pub fn write_fmu(
     })?;
     let id = fmi::model_identifier(&m.name);
     let desc = fmi::describe(m);
-    let xml = fmi::model_description_xml(m, &desc, &id, &guid, generator);
+    let xml = if version == 3 {
+        fmi::model_description_xml3(m, &desc, &id, &guid, generator)
+    } else {
+        fmi::model_description_xml(m, &desc, &id, &guid, generator)
+    };
     let (plat, ext) = platform();
+    let plat = if version == 3 { platform3() } else { plat };
     let f = std::fs::File::create(out).with_context(|| out.display().to_string())?;
     let mut z = zip::ZipWriter::new(std::io::BufWriter::new(f));
     let opts = zip::write::SimpleFileOptions::default()
