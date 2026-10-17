@@ -39,7 +39,7 @@ Your own models open with **Open** (single files, plus `.stl` and `.obj` meshes 
 (a package from the index). **Save .zip** downloads the open model with the files it needs.
 
 Simulation in the page, or through `daedalus serve` on this computer, stays on the machine.
-**✦ Assistant** sends the text it reads and the numbers it asks for to Anthropic.
+**✦ Assistant** sends the text it reads and the numbers it asks for to OpenRouter, and to the provider of the selected model.
 
 ## 2. Release binaries
 

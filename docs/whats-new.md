@@ -166,7 +166,7 @@ rotate, flip and set parameters, with undo. Edits change only the text they must
 
 ## AI assistant and MCP server
 
-**✦ Assistant** in the workbench is a chat with Claude that can read, write, check and
+**✦ Assistant** in the workbench is a chat, via OpenRouter, that can read, write, check and
 simulate models and read the structure and profile reports, with your own API key.
 `daedalus mcp` gives Claude Code and other MCP clients the same tools. See
 [AI assistant and MCP](assistant.md).

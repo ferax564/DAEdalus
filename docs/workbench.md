@@ -5,7 +5,7 @@ browser. The compiler and solvers are the same Rust code as the command line, co
 WebAssembly (a compact format that browsers run at close to native speed) and run in a Web
 Worker (a background thread, so the page stays responsive while a model
 translates or simulates. Simulation in the page or via `daedalus serve` stays on the
-machine; **✦ Assistant** sends the text it reads and the numbers it asks for to Anthropic.
+machine; **✦ Assistant** sends the text it reads and the numbers it asks for to OpenRouter, and to the provider of the selected model.
 
 [Open the workbench](https://daedalus.apps.ezkeel.com/#Daedalus.Examples.TorqueConverter.StallTest)
 
@@ -151,7 +151,7 @@ runs sensitivities, Monte Carlo, calibration and optimization
 ([Sensitivity, uncertainty and calibration](analysis.md)). Every run is kept in the
 **Runs** pane for overlays, differences, sweeps and share links
 ([Experiments](experiments.md)), and **Profile** adds a **Performance** tab
-([Performance analyzer](performance.md)). **✦ Assistant** opens a chat with Claude that
+([Performance analyzer](performance.md)). **✦ Assistant** opens a chat that
 can use all of these ([AI assistant](assistant.md)).
 
 ## Animation
