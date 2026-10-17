@@ -6,6 +6,7 @@
 }
 .assistant-panel.hidden { display: none; }
 .assistant-panel .pane-title { display: flex; align-items: center; gap: 6px; }
+.assistant-panel .pane-title .assistant-model { max-width: 12.5rem; font-size: 12px; }
 .assistant-panel .pane-title .close { margin-left: auto; border: none; background: none; }
 .assistant-starters { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
 .assistant-starters p { margin: 0; color: var(--muted); font-size: 12px; }

@@ -1,6 +1,6 @@
 # AI assistant and MCP server
 
-Simulation in the page or via `daedalus serve` stays on the machine; **✦ Assistant** sends the text it reads and the numbers it asks for to Anthropic (see [Workbench](workbench.md)).
+Simulation in the page or via `daedalus serve` stays on the machine; **✦ Assistant** sends the text it reads and the numbers it asks for to OpenRouter, and to the provider of the selected model (see [Workbench](workbench.md)).
 
 DAEdalus exposes its compiler to AI assistants as tools: browse the libraries, read and
 write classes, check, simulate, linearize, and read the structure report and the
@@ -16,9 +16,13 @@ act on your models rather than only describe them.
 
 ## In the workbench
 
-**✦ Assistant** in the toolbar opens a chat with Claude about the open model. It can:
+**✦ Assistant** in the toolbar opens a chat about the open model, using your OpenRouter
+key. The model control lists the GPT-6 Luna models (`openai/gpt-6-luna`,
+`openai/gpt-6-luna-pro`, and their batch variants). It can:
 
 - browse the package tree and read any class's source;
+- read the documentation shipped with the workbench (the same pages as this site), not
+  only the class that is open;
 - write models to `user/*.mo` files (library files stay read-only) and check them;
 - simulate, with the result filling the variable browser as if you had pressed
   **Simulate**;
@@ -26,8 +30,8 @@ act on your models rather than only describe them.
   to explain why a model is stiff, slow or chattering;
 - open classes in the editor.
 
-It uses your own Claude API key, which stays in that browser; requests go straight from
-the page to the Claude API, and **Forget key** removes it. Other workbench features add
+It uses your own OpenRouter API key, which stays in that browser; requests go straight
+from the page to OpenRouter, and **Forget key** removes it. Other workbench features add
 their own tools with `registerAssistantTool` in `web/src/assistant.ts`.
 
 ## MCP server

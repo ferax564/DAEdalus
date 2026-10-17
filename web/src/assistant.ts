@@ -1,13 +1,25 @@
-// In-app assistant: Claude with tools over the workbench (browse, read and edit models,
-// check, simulate, and the analysis reports). The API key is the user's own; it stays in
-// this browser and requests go straight from the page to the Claude API.
-import type { BetaMessageParam, BetaToolResultBlockParam, BetaToolUnion } from "@anthropic-ai/sdk/resources/beta/messages/messages";
+// In-app assistant: an OpenRouter model with tools over the workbench (browse, read and
+// edit models, check, simulate, the analysis reports, and the shipped documentation).
+// The API key is the user's own; it stays in this browser and requests go straight
+// from the page to OpenRouter.
 import "./assistant.css";
+import {
+  articleText,
+  DEFAULT_MODEL,
+  DOC_PAGES,
+  isAbortError,
+  isAuthError,
+  LUNA_MODELS,
+  openRouterChat,
+  parseToolArguments,
+  redactSecrets,
+  type ORMessage,
+} from "./assistant-openrouter";
 import { api } from "./rpc";
 import type { ClassEntry, SimSettings, SimSummary } from "./types";
 
-const MODEL = "claude-opus-5-5";
 const KEY_STORE = "daedalus.assistant.key";
+const MODEL_STORE = "daedalus.assistant.model";
 
 /** What the assistant needs from the rest of the workbench. */
 export interface AssistantHooks {
@@ -247,17 +259,23 @@ function builtinTools(hooks: AssistantHooks): AssistantTool[] {
         return "opened";
       },
     },
+    {
+      name: "read_documentation",
+      description: `Read a page of the DAEdalus documentation shipped with this workbench, the same pages the Docs site serves. The whole manual is available, not only the open class. page is "list" or one of: ${DOC_PAGES.map((p) => p.id).join(", ")}.`,
+      input_schema: { type: "object", properties: { page: { type: "string", description: "Page id, or list" } }, required: ["page"] },
+      async run(i) {
+        const page = (str(i.page) ?? "list").replace(/^\//, "").replace(/\.html$/, "").replace(/\.md$/, "");
+        if (page === "list" || page === "") return DOC_PAGES.map((p) => `${p.id} — ${p.title}`).join("\n");
+        if (!DOC_PAGES.some((p) => p.id === page) || page.includes("..")) throw new Error(`no documentation page '${page}'. Pass page "list".`);
+        const res = await fetch(new URL(`docs/${page}.html`, document.baseURI));
+        if (!res.ok) throw new Error(`documentation page '${page}' is not available (${res.status})`);
+        const text = redactSecrets(articleText(await res.text()));
+        if (!text) throw new Error(`documentation page '${page}' was empty`);
+        return text.length > 60000 ? text.slice(0, 60000) + "\n… truncated" : text;
+      },
+    },
   ];
 }
-
-const SYSTEM = `You are the assistant inside DAEdalus, an open-source Modelica modeling and simulation workbench that runs in the browser.
-You help engineers build, debug and understand Modelica models with the tools provided: browse classes, read source, write user model files, check, simulate, and read analysis reports.
-Rules:
-- Library files (the Modelica Standard Library under msl/ and the bundled Daedalus library) are read-only. To change a model, write a user file (user/Name.mo) that defines a new class, extending or copying the original.
-- After every edit, run check_model on the edited model and fix what it reports before telling the user it works.
-- Ground claims in tool output: quote the numbers you got from a simulation or a check, and say when something is an inference.
-- When a translation or simulation fails, explain the cause in engineering terms (which equation or component, why) and propose a concrete fix.
-- Keep answers short and direct.`;
 
 interface ChatEntry {
   role: "user" | "assistant" | "tool" | "error";
@@ -268,23 +286,23 @@ export function initAssistant(hooks: AssistantHooks) {
   const btn = document.createElement("button");
   btn.id = "btn-assistant";
   btn.textContent = "✦ Assistant";
-  btn.title = "Ask Claude about the model";
+  btn.title = "Ask about the model";
   document.querySelector("#topbar .tools")!.appendChild(btn);
 
   const panel = document.createElement("aside");
   panel.id = "assistant";
   panel.className = "assistant-panel pane hidden";
   panel.innerHTML = `
-    <div class="pane-title">Assistant <span class="muted">Claude</span><button class="close" title="Close">✕</button></div>
+    <div class="pane-title">Assistant <select class="assistant-model" title="Model"></select><button class="close" title="Close">✕</button></div>
     <div class="assistant-starters">
-      <p>Ask about the open model.</p>
+      <p>Ask about the open model, or about DAEdalus.</p>
       <button type="button" data-prompt="Why is this model stiff?">Why is this model stiff?</button>
       <button type="button" data-prompt="Add a damper between the masses.">Add a damper between the masses.</button>
       <button type="button" data-prompt="What does this model do?">What does this model do?</button>
     </div>
     <div class="assistant-key hidden">
-      <p>The assistant calls the Claude API from this page with your own API key. The key is kept only in this browser.</p>
-      <input type="password" placeholder="sk-ant-…" autocomplete="off" />
+      <p>The assistant calls OpenRouter from this page with your own API key. The key is kept only in this browser. Simulation stays on this machine; the assistant sends the text it reads and the numbers it asks for to OpenRouter, and to the provider of the selected model.</p>
+      <input type="password" placeholder="sk-or-v1-…" autocomplete="off" />
       <button type="button">Save key</button>
     </div>
     <div class="assistant-log"></div>
@@ -302,6 +320,28 @@ export function initAssistant(hooks: AssistantHooks) {
   const form = panel.querySelector<HTMLFormElement>("form")!;
   const ta = form.querySelector<HTMLTextAreaElement>("textarea")!;
   const stopBtn = form.querySelector<HTMLButtonElement>(".stop")!;
+  const modelSelect = panel.querySelector<HTMLSelectElement>(".assistant-model")!;
+  for (const m of LUNA_MODELS) {
+    const opt = document.createElement("option");
+    opt.value = m.id;
+    opt.textContent = m.label;
+    modelSelect.appendChild(opt);
+  }
+  const storedModel = (() => {
+    try {
+      return localStorage.getItem(MODEL_STORE) ?? "";
+    } catch {
+      return "";
+    }
+  })();
+  modelSelect.value = LUNA_MODELS.some((m) => m.id === storedModel) ? storedModel : DEFAULT_MODEL;
+  modelSelect.addEventListener("change", () => {
+    try {
+      localStorage.setItem(MODEL_STORE, modelSelect.value);
+    } catch {
+      /* private window: the select itself keeps the choice */
+    }
+  });
 
   const getKey = (): string => {
     try {
@@ -372,7 +412,7 @@ export function initAssistant(hooks: AssistantHooks) {
     return d;
   };
 
-  let messages: BetaMessageParam[] = [];
+  let messages: ORMessage[] = [];
   let abort: AbortController | null = null;
 
   async function send(question: string) {
@@ -392,11 +432,8 @@ export function initAssistant(hooks: AssistantHooks) {
     setStartersEnabled(false);
     const tools = [...builtinTools(hooks), ...extraTools];
     const byName = new Map(tools.map((t) => [t.name, t]));
-    // Loaded on first use, so the SDK stays out of the page's initial bundle.
     let busy: HTMLElement | undefined;
     try {
-      const { default: Anthropic } = await import("@anthropic-ai/sdk");
-      const client = new Anthropic({ apiKey: key, dangerouslyAllowBrowser: true });
       const cur = hooks.currentClass();
       show({ role: "user", text: question });
       const base = messages.length;
@@ -406,51 +443,44 @@ export function initAssistant(hooks: AssistantHooks) {
       const bubble = busy;
       try {
         for (let turn = 0; turn < 25; turn++) {
-          const res = await client.beta.messages.create(
-            {
-              model: MODEL,
-              max_tokens: 16000,
-              system: SYSTEM,
-              thinking: { type: "adaptive" },
-              tools: tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.input_schema })) as BetaToolUnion[],
-              messages,
-              betas: ["server-side-fallback-2026-07-01"],
-              fallbacks: "default",
-            },
-            { signal: controller.signal },
-          );
-          messages.push({ role: "assistant", content: res.content });
-          for (const b of res.content) if (b.type === "text" && b.text.trim()) logEl.insertBefore(show({ role: "assistant", text: b.text }), bubble);
-          if (res.stop_reason === "refusal") {
-            logEl.insertBefore(show({ role: "error", text: "Claude declined this request." }), bubble);
+          const res = await openRouterChat({
+            apiKey: key,
+            model: modelSelect.value || DEFAULT_MODEL,
+            messages,
+            tools: tools.map((t) => ({ name: t.name, description: t.description, parameters: t.input_schema })),
+            signal: controller.signal,
+          });
+          messages.push(res.message);
+          const text = res.message.content?.trim() ?? "";
+          if (text) logEl.insertBefore(show({ role: "assistant", text }), bubble);
+          if (res.finishReason === "content_filter") {
+            logEl.insertBefore(show({ role: "error", text: "The model declined this request." }), bubble);
             break;
           }
-          if (res.stop_reason === "pause_turn") continue;
-          if (res.stop_reason !== "tool_use") break;
-          const results: BetaToolResultBlockParam[] = [];
-          for (const b of res.content) {
-            if (b.type !== "tool_use") continue;
-            const tool = byName.get(b.name);
-            let text: string;
+          const calls = res.message.tool_calls ?? [];
+          if (!calls.length) break;
+          for (const b of calls) {
+            const tool = byName.get(b.function.name);
+            let textOut: string;
             let isError = false;
+            const input = parseToolArguments(b.function.arguments);
             try {
-              if (!tool) throw new Error(`unknown tool ${b.name}`);
-              text = await tool.run((b.input ?? {}) as Record<string, unknown>);
+              if (!tool) throw new Error(`unknown tool ${b.function.name}`);
+              textOut = await tool.run(input);
             } catch (e) {
-              text = `error: ${e instanceof Error ? e.message : String(e)}`;
+              textOut = `error: ${e instanceof Error ? e.message : String(e)}`;
               isError = true;
             }
-            const arg = JSON.stringify(b.input);
-            logEl.insertBefore(show({ role: "tool", text: `${isError ? "✗" : "✓"} ${b.name} ${arg.length > 120 ? arg.slice(0, 117) + "…" : arg}\n${text}` }), bubble);
-            results.push({ type: "tool_result", tool_use_id: b.id, content: text.slice(0, 60000), is_error: isError });
+            const arg = b.function.arguments;
+            logEl.insertBefore(show({ role: "tool", text: `${isError ? "✗" : "✓"} ${b.function.name} ${arg.length > 120 ? arg.slice(0, 117) + "…" : arg}\n${textOut}` }), bubble);
+            messages.push({ role: "tool", tool_call_id: b.id, content: textOut.slice(0, 60000) });
           }
-          messages.push({ role: "user", content: results });
         }
       } catch (e) {
-        if (!(e instanceof Anthropic.APIUserAbortError)) {
-          const msg = e instanceof Anthropic.AuthenticationError ? "The API key was rejected. Enter a valid key." : e instanceof Error ? e.message : String(e);
+        if (!isAbortError(e)) {
+          const msg = isAuthError(e) ? "The API key was rejected. Enter a valid key." : e instanceof Error ? e.message : String(e);
           logEl.insertBefore(show({ role: "error", text: msg }), bubble);
-          if (e instanceof Anthropic.AuthenticationError) setKey("");
+          if (isAuthError(e)) setKey("");
           // Drop the failed exchange so the conversation stays valid.
           messages.length = base;
         }

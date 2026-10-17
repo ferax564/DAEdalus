@@ -690,11 +690,16 @@ claude mcp add daedalus -- /path/to/daedalus mcp /path/to/library/Daedalus --wor
 ```
 
 The workbench has the same tools built in: **✦ Assistant** in the top bar opens a chat
-with Claude (`claude-opus-5-5`) that can browse and read classes, write models to
-`user/*.mo` files, check, simulate (the result shows in the variable browser), read the
-structure report and the performance profile, and open classes. Library files stay read-only. It uses your own Claude API key, which is kept
-only in that browser; requests go straight from the page to the Claude API. Other
-workbench features add their tools with `registerAssistantTool` (`web/src/assistant.ts`).
+on OpenRouter. The model control lists the GPT-6 Luna models (`openai/gpt-6-luna`,
+`openai/gpt-6-luna-pro`, and their batch variants). It can browse and read classes, read
+the documentation shipped with the workbench, write models to `user/*.mo` files, check,
+simulate (the result shows in the variable browser), read the structure report and the
+performance profile, and open classes. Library files stay read-only. It uses your own
+OpenRouter API key, which is kept only in that browser; requests go straight from the
+page to OpenRouter, and from there to the provider of the selected model. Simulation
+stays on the machine; the assistant sends the text it reads and the numbers it asks for.
+Other workbench features add their tools with `registerAssistantTool`
+(`web/src/assistant.ts`).
 
 ## Sensitivity, uncertainty and calibration
 

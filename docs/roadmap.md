@@ -48,7 +48,7 @@
   with a model-independent runtime library and the compiled model as a resource;
   validated with FMPy in CI.
 - `mcp`: a Model Context Protocol server (browse, edit, check, simulate,
-  linearize) and an in-app Claude assistant in the workbench with the same tools.
+  linearize) and an in-app assistant in the workbench with the same tools.
 - `linear-analysis`: poles and zeros, Bode and Nyquist with margins, step and
   impulse responses, PID suggestions, balanced truncation and LQR
   ([linear-analysis.md](linear-analysis.md)).
